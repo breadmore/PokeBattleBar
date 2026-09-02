@@ -77,13 +77,21 @@ PokeBattleBar $VERSION  (프로토콜 v$PROTO)
 그러니 팀원 전원이 함께 업데이트해주세요.
 
 설치 / 업데이트 — 파일 하나 실행하면 끝
-  PokeBattleBar-$VERSION-Install.command 를 실행하세요.
+  PokeBattleBar-$VERSION-Install.command
   기존 앱 종료, 설치, 격리 해제, 실행까지 전부 자동으로 처리합니다.
 
-  방법 1) 더블클릭
-          "확인되지 않은 개발자" 경고가 뜨면 → 우클릭 > 열기
-  방법 2) 터미널을 열고 이 파일을 터미널 창으로 끌어다 놓고 엔터
-          ↑ 경고 없이 항상 됩니다
+  ★ 실행 방법
+    1) 터미널을 엽니다 (Spotlight 에서 "터미널")
+    2) bash 를 치고 스페이스바를 한 번 누릅니다
+    3) 이 파일을 터미널 창으로 끌어다 놓습니다
+    4) 엔터
+
+       bash /Users/본인/Downloads/PokeBattleBar-$VERSION-Install.command
+
+  ※ 파일을 그냥 더블클릭하거나, bash 없이 끌어다 놓으면
+    "permission denied" 또는 "확인되지 않은 개발자" 오류가 납니다.
+    전송 과정에서 실행 권한이 벗겨지기 때문입니다.
+    bash 를 앞에 붙이면 권한과 무관하게, 경고 없이 실행됩니다.
 
   ※ 사전 준비: PokeTokenBar 가 설치되어 포켓몬이 1마리 이상 있어야 합니다
        brew install --cask poke-token-bar
