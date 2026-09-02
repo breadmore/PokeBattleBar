@@ -152,13 +152,16 @@ struct RosterCard: View {
             if slot.origin == .active && !slot.fullyEvolved {
                 Text("진화중").font(.system(size: 9)).foregroundStyle(.orange)
             }
+            // 특수 변신 자격 — 어떤 포켓몬을 데려갈지 고를 때 필요한 정보다.
+            // 다이맥스는 모두 가능하므로 표시하지 않는다.
+            EligibilityBadges(e: model.eligibility(for: slot))
             if !moves.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(moves.prefix(4)) { m in
                         Text("· \(m.display)").font(.system(size: 9)).lineLimit(1)
                     }
                 }
-                .frame(width: 92, alignment: .leading)
+                .frame(width: 104, alignment: .leading)
             }
             Button("기술 다시뽑기") {
                 Task {
@@ -168,9 +171,12 @@ struct RosterCard: View {
             }
             .font(.system(size: 9))
             .buttonStyle(.link)
+
+            Divider().padding(.vertical, 1)
+            LoadoutPickers(model: model, slot: slot)
         }
         .padding(8)
-        .frame(width: 112)
+        .frame(width: 136)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(selected ? Color.accentColor.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
@@ -181,6 +187,102 @@ struct RosterCard: View {
         )
         .onTapGesture { model.toggleSelection(slot) }
         .task { moves = await model.moveset(for: slot) }
+    }
+}
+
+/// 지닌 도구 + 특성 선택.
+/// 메가진화·Z기술·다이맥스는 해당 도구를 끼워야 쓸 수 있다.
+struct LoadoutPickers: View {
+    let model: AppModel
+    let slot: RosterSlot
+
+    private var items: [ItemDef] { model.itemsForSpecies[slot.speciesID] ?? [] }
+    private var abilities: [AbilityDef] { model.abilitiesForSpecies[slot.speciesID] ?? [] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            // 지닌 도구
+            Menu {
+                Button("없음") { Task { await model.setItem(nil, for: slot) } }
+                ForEach(groupedItems(), id: \.0) { group, list in
+                    Section(group) {
+                        ForEach(list) { it in
+                            Button(it.display) { Task { await model.setItem(it, for: slot) } }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Text("🎒").font(.system(size: 8))
+                    Text(model.currentItem(for: slot)?.display ?? "도구 없음")
+                        .font(.system(size: 9)).lineLimit(1)
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 108, alignment: .leading)
+            .help(model.currentItem(for: slot)?.shortEffect ?? "지닌 도구를 고릅니다")
+
+            // 특성
+            Menu {
+                ForEach(abilities) { a in
+                    Button {
+                        Task { await model.setAbility(a, for: slot) }
+                    } label: {
+                        Text(a.display + (a.isHidden ? " (숨겨진)" : "")
+                             + (a.isImplemented ? "" : " · 표시만"))
+                    }
+                }
+            } label: {
+                HStack(spacing: 2) {
+                    Text("✨").font(.system(size: 8))
+                    Text(model.currentAbility(for: slot)?.display ?? "특성")
+                        .font(.system(size: 9)).lineLimit(1)
+                    if let a = model.currentAbility(for: slot), !a.isImplemented {
+                        Text("표시만").font(.system(size: 7)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 108, alignment: .leading)
+            .help(model.currentAbility(for: slot)?.shortEffect ?? "특성을 고릅니다")
+        }
+    }
+
+    private func groupedItems() -> [(String, [ItemDef])] {
+        Dictionary(grouping: items, by: \.group)
+            .map { ($0.key, $0.value.sorted { $0.display < $1.display }) }
+            .sorted { $0.0 < $1.0 }
+    }
+}
+
+/// 메가진화 / 거다이맥스 자격 배지
+struct EligibilityBadges: View {
+    let e: (mega: Bool, gigantamax: Bool, megaFormCount: Int)
+
+    var body: some View {
+        if e.mega || e.gigantamax {
+            HStack(spacing: 3) {
+                if e.mega {
+                    Badge(text: e.megaFormCount > 1 ? "✦ 메가 X/Y" : "✦ 메가", color: .purple)
+                }
+                if e.gigantamax {
+                    Badge(text: "◈ 거다이맥스", color: .pink)
+                }
+            }
+        }
+    }
+
+    struct Badge: View {
+        let text: String
+        let color: Color
+        var body: some View {
+            Text(text)
+                .font(.system(size: 8, weight: .bold))
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(Capsule().fill(color.opacity(0.25)))
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
     }
 }
 
@@ -213,8 +315,21 @@ struct HostSection: View {
             Divider()
             Text("특수 변신 (각각 배틀당 1회)").font(.caption.bold()).foregroundStyle(.secondary)
             Toggle("메가진화 허용", isOn: $model.rules.allowMega)
-            Toggle("거다이맥스 허용", isOn: $model.rules.allowGmax)
+            Toggle("다이맥스 허용", isOn: $model.rules.allowDynamax)
+            Toggle("거다이맥스 허용", isOn: $model.rules.allowGigantamax)
+                .disabled(!model.rules.allowDynamax)
+                .padding(.leading, 14)
             Toggle("Z기술 허용", isOn: $model.rules.allowZMove)
+            Text("다이맥스와 거다이맥스는 같은 슬롯을 씁니다 — 둘 중 하나만 쓸 수 있습니다.")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+
+            Divider()
+            Text("도구 · 특성").font(.caption.bold()).foregroundStyle(.secondary)
+            Toggle("변신에 도구 필요", isOn: $model.rules.requireItems)
+            Toggle("도구 상시 효과 사용", isOn: $model.rules.itemEffects)
+            Toggle("특성 사용", isOn: $model.rules.abilities)
+            Text("메가스톤·Z크리스탈·다이맥스밴드를 끼워야 변신할 수 있습니다.")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
 
             Button("방 열기") { Task { await model.startHosting() } }
                 .buttonStyle(.borderedProminent)
@@ -485,8 +600,24 @@ struct ActiveBattlerView: View {
                         .background(Capsule().fill(.orange.opacity(0.35)))
                 }
             }
+            HStack(spacing: 4) {
+                if let it = b.heldItem {
+                    Text("🎒 \(it.display)")
+                        .font(.system(size: 9))
+                        .strikethrough(b.itemConsumed)
+                        .foregroundStyle(b.itemConsumed ? .secondary : .primary)
+                }
+                if let ab = b.ability {
+                    Text("✨ \(ab.display)").font(.system(size: 9))
+                        .foregroundStyle(ab.isImplemented ? .primary : .secondary)
+                }
+            }
+            if let locked = b.lockedMoveIndex, b.moves.indices.contains(locked) {
+                Text("고정: \(b.moves[locked].def.display)")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+            }
             if let label = b.formLabel {
-                Text(label + (b.isGmax ? " \(b.gmaxTurnsLeft)턴" : ""))
+                Text(label + (b.isDynamaxed ? " \(b.dynamaxTurnsLeft)턴" : ""))
                     .font(.system(size: 9, weight: .bold))
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(.orange.opacity(0.4)))
@@ -609,13 +740,13 @@ struct MoveGrid: View {
 
     private func transformNote(_ slot: Battler.MoveSlot) -> String? {
         guard transformedDef(slot.def) != nil else { return nil }
-        if battler.isGmax { return "맥스" }
+        if battler.isDynamaxed { return "맥스" }
         if case .zMove = pendingSpecial { return "Z" }
         return nil
     }
 
     private func transformedDef(_ move: MoveDef) -> MoveDef? {
-        if battler.isGmax {
+        if battler.isDynamaxed {
             guard let n = FormTables.maxMove[move.type], var mx = zMoveCache[n] else { return nil }
             mx.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
             mx.damageClass = move.damageClass

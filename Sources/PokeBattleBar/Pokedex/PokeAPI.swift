@@ -90,6 +90,13 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     }
 }
 
+/// 종이 가질 수 있는 특성 한 칸
+struct AbilitySlot: Codable, Hashable, Sendable {
+    var name: String
+    var slot: Int
+    var hidden: Bool
+}
+
 /// 메가 / 거다이맥스 폼의 종족값과 타입
 struct FormStats: Codable, Sendable {
     var name: String
@@ -127,9 +134,12 @@ struct SpeciesDef: Codable, Sendable {
     var megaForms: [String] = []
     /// 거다이맥스 폼 이름. 없으면 거다이맥스 불가.
     var gmaxForm: String? = nil
+    /// 이 종이 가질 수 있는 특성 (슬롯 순서, 숨겨진 특성 포함)
+    var abilitySlots: [AbilitySlot] = []
 
     var canMega: Bool { !megaForms.isEmpty }
-    var canGmax: Bool { gmaxForm != nil }
+    /// 거다이맥스 전용 폼이 있는가 (다이맥스는 종족 제한이 없다)
+    var canGigantamax: Bool { gmaxForm != nil }
 
     var display: String { koName.isEmpty ? name : koName }
     func base(_ s: Stat) -> Int { baseStats[s] ?? 1 }
@@ -223,6 +233,19 @@ actor PokeAPI {
         let koName = Self.localizedName(sp["names"], lang: "ko")
             ?? (poke["name"] as? String ?? "#\(id)")
 
+        // 특성 슬롯 — PokeAPI 가 슬롯 번호와 숨겨진 특성 여부를 준다
+        var abilitySlots: [AbilitySlot] = []
+        if let abs = poke["abilities"] as? [[String: Any]] {
+            for a in abs {
+                guard let ab = a["ability"] as? [String: Any],
+                      let n = ab["name"] as? String else { continue }
+                abilitySlots.append(AbilitySlot(name: n,
+                                                slot: a["slot"] as? Int ?? 0,
+                                                hidden: a["is_hidden"] as? Bool ?? false))
+            }
+            abilitySlots.sort { $0.slot < $1.slot }
+        }
+
         // 메가 / 거다이맥스 폼은 species 의 varieties 에 별도 pokemon 으로 들어 있다
         var megaForms: [String] = []
         var gmaxForm: String?
@@ -243,7 +266,8 @@ actor PokeAPI {
             baseStats: stats,
             learnableMoves: learnable,
             megaForms: megaForms.sorted(),
-            gmaxForm: gmaxForm
+            gmaxForm: gmaxForm,
+            abilitySlots: abilitySlots
         )
         species[id] = def
         return def

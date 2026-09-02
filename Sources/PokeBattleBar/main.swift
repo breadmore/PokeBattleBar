@@ -2,6 +2,23 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--loadouttest") {
+    let verbose = args.contains("--verbose")
+    Task {
+        let passed = await LoadoutTest.run(verbose: verbose)
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--itemtest") {
+    Task {
+        let passed = await ItemTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--formtest") {
     let verbose = args.contains("--verbose")
     Task {

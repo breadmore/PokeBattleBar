@@ -71,8 +71,8 @@ enum FormTest {
         if var e2 = await makeEngine(ids: [317, 87], chart: chart) {   // 꿀꺽몬 (폼 없음)
             e2.resolveTurn(hostAction: .useMove(index: 0, special: .gmax),
                            guestAction: .useMove(index: 0))
-            let noGmax = !e2.state.sides[0].team[0].isGmax && !e2.state.sides[0].usedGmax
-            ok = show(noGmax, "꿀꺽몬은 거다이맥스 선언이 무시된다 (횟수도 소모 안 함)") && ok
+            let noGiga = !e2.state.sides[0].team[0].isDynamaxed && !e2.state.sides[0].usedDynamax
+            ok = show(noGiga, "꿀꺽몬은 거다이맥스 선언이 무시된다 (횟수도 소모 안 함)") && ok
         }
 
         // --- 거다이맥스: HP 증가 + 3턴 후 해제 ---
@@ -84,22 +84,48 @@ enum FormTest {
             let after = e3.state.sides[0].team[0]
             ok = show(after.maxHP > hpBefore, "거다이맥스로 최대 HP 증가",
                       "\(hpBefore) → \(after.maxHP)") && ok
-            ok = show(after.isGmax, "거다이맥스 상태 진입", "남은 \(after.gmaxTurnsLeft)턴") && ok
+            ok = show(after.isDynamaxed, "거다이맥스 상태 진입", "남은 \(after.dynamaxTurnsLeft)턴") && ok
 
             // 턴을 넘겨 해제되는지
             var turns = 0
             while turns < 6, case .awaitingMoves = e3.state.phase,
-                  e3.state.sides[0].team[e3.state.sides[0].activeIndex].isGmax {
+                  e3.state.sides[0].team[e3.state.sides[0].activeIndex].isDynamaxed {
                 e3.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
                 turns += 1
             }
             let cur = e3.state.sides[0].team[e3.state.sides[0].activeIndex]
-            let reverted = !cur.isGmax
+            let reverted = !cur.isDynamaxed
             ok = show(reverted, "거다이맥스 자동 해제", "\(turns)턴 경과, HP상한 \(cur.maxHP)") && ok
             if reverted {
                 ok = show(cur.maxHP == cur.baseMaxHP, "해제 시 HP 상한 원복",
                           "\(cur.maxHP) vs 원래 \(cur.baseMaxHP)") && ok
             }
+        }
+
+        // --- 다이맥스와 거다이맥스는 슬롯을 공유하는가 ---
+        print("\n-- 다이맥스 / 거다이맥스 슬롯 공유 --")
+        if var e4 = await makeEngine(ids: [143, 6], chart: chart) {   // 잠만보 (거다이맥스 가능)
+            e4.resolveTurn(hostAction: .useMove(index: 0, special: .dynamax),
+                           guestAction: .useMove(index: 0))
+            let dyn = e4.state.sides[0].team[0].isDynamaxed && !e4.state.sides[0].team[0].isGigantamaxed
+            ok = show(dyn, "다이맥스 발동 (거다이맥스 아님)",
+                      e4.state.sides[0].team[0].formLabel ?? "-") && ok
+            ok = show(e4.state.sides[0].usedDynamax, "다이맥스 슬롯 소모") && ok
+
+            // 같은 배틀에서 거다이맥스 시도 → 거부되어야 한다
+            if case .awaitingMoves = e4.state.phase {
+                let before = e4.state.log.count
+                e4.resolveTurn(hostAction: .useMove(index: 0, special: .gmax),
+                               guestAction: .useMove(index: 0))
+                let refused = e4.state.log[before...].contains { $0.contains("이미 사용") }
+                ok = show(refused, "다이맥스를 썼으면 거다이맥스 불가 (같은 슬롯)") && ok
+            }
+        }
+        if var e5 = await makeEngine(ids: [317, 87], chart: chart) {   // 꿀꺽몬 (폼 없음)
+            e5.resolveTurn(hostAction: .useMove(index: 0, special: .dynamax),
+                           guestAction: .useMove(index: 0))
+            ok = show(e5.state.sides[0].team[0].isDynamaxed,
+                      "폼이 없는 포켓몬도 다이맥스는 가능 (종족 제한 없음)") && ok
         }
 
         // --- 위력 변환표 ---
@@ -129,7 +155,7 @@ enum FormTest {
         guard let sp = try? await PokeAPI.shared.species(id) else {
             print("  ✗ \(label) — 로드 실패"); return false
         }
-        return show(sp.canMega == mega && sp.canGmax == gmax, label)
+        return show(sp.canMega == mega && sp.canGigantamax == gmax, label)
     }
 
     private static func makeEngine(ids: [Int], chart: TypeChart) async -> BattleEngine? {
@@ -172,7 +198,11 @@ enum FormTest {
         }
         if let g = try? await PokeAPI.shared.move(FormTables.maxGuard) { maxCache[FormTables.maxGuard] = g }
 
-        var st = BattleState(rules: BattleRules(maxTeamSize: 6, level: 50),
+        // 이 테스트는 **횟수 규칙**(배틀당 1회)과 지속턴을 본다.
+        // 도구 게이팅은 --loadouttest 가 따로 검증하므로 여기서는 도구 요구를 끈다.
+        var rules = BattleRules(maxTeamSize: 6, level: 50)
+        rules.requireItems = false
+        var st = BattleState(rules: rules,
                              sides: [SideState(playerName: "A", team: teamA, activeIndex: 0),
                                      SideState(playerName: "B", team: teamB, activeIndex: 0)])
         st.phase = .awaitingMoves
