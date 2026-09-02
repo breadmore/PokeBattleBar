@@ -76,7 +76,7 @@ actor MovesetStore {
             fetches += 1
             guard let m = try? await PokeAPI.shared.move(name) else { continue }
 
-            let isDamaging = (m.power ?? 0) > 0
+            let isDamaging = m.isDamaging
             let slotsLeft = 4 - chosen.count
             // 남은 자리를 전부 써도 공격기 최소치를 못 채우게 되면 변화기는 받지 않는다
             if !isDamaging, slotsLeft <= minDamaging - damaging { continue }
@@ -92,7 +92,7 @@ actor MovesetStore {
             guard let m = try? await PokeAPI.shared.move(name),
                   !chosen.contains(where: { $0.name == m.name }) else { continue }
             chosen.append(m)
-            if (m.power ?? 0) > 0 { damaging += 1 }
+            if m.isDamaging { damaging += 1 }
         }
 
         if damaging == 0 {

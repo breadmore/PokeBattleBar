@@ -30,6 +30,10 @@ struct BattleRules: Codable, Hashable, Sendable {
     var statStages: Bool = true
     /// 급소
     var criticalHits: Bool = true
+    /// 특수 변신 허용. 각 항목은 **플레이어당 배틀 1회**만 쓸 수 있다.
+    var allowMega: Bool = true
+    var allowGmax: Bool = true
+    var allowZMove: Bool = true
 
     static let `default` = BattleRules()
 }
@@ -45,6 +49,18 @@ struct SideState: Codable, Sendable, Equatable {
     var playerName: String
     var team: [Battler]
     var activeIndex: Int
+    /// **배틀 전체에서 한 번씩만.** 6마리가 다 거다이맥스할 수는 없다.
+    var usedMega: Bool = false
+    var usedGmax: Bool = false
+    var usedZMove: Bool = false
+
+    func hasUsed(_ a: SpecialAction) -> Bool {
+        switch a {
+        case .mega:  usedMega
+        case .gmax:  usedGmax
+        case .zMove: usedZMove
+        }
+    }
     var active: Battler { team[activeIndex] }
     var remaining: Int { team.filter { !$0.isFainted }.count }
     var aliveIndices: [Int] {
@@ -72,8 +88,19 @@ struct BattleState: Codable, Sendable, Equatable {
 // MARK: - 행동
 
 enum BattleAction: Codable, Sendable, Equatable {
-    case useMove(index: Int)
+    /// 기술을 쓴다. `special` 은 이번 턴에 함께 선언하는 특수 변신
+    /// (원작처럼 기술 선택과 같은 시점에 선언한다).
+    case useMove(index: Int, special: SpecialAction? = nil)
     case replace(teamIndex: Int)
+
+    var moveIndex: Int? {
+        if case .useMove(let i, _) = self { return i }
+        return nil
+    }
+    var special: SpecialAction? {
+        if case .useMove(_, let s) = self { return s }
+        return nil
+    }
 }
 
 // MARK: - 엔진 (호스트에서만 실행)
@@ -82,6 +109,15 @@ struct BattleEngine {
     var state: BattleState
     let chart: TypeChart
     private var rng: SeededRNG
+
+    /// 메가 / 거다이맥스 폼의 종족값. 배틀 시작 전에 호스트가 채워 넣는다
+    /// (배틀 중에 네트워크를 기다리면 안 되므로 미리 받아둔다).
+    var megaCache: [String: FormStats] = [:]
+    var gmaxCache: [String: FormStats] = [:]
+    /// Z기술 정의 (타입+분류별). 마찬가지로 미리 받아둔다.
+    var zMoveCache: [String: MoveDef] = [:]
+    /// 맥스 기술 정의 (거다이맥스 중 기술이 이걸로 바뀐다).
+    var maxMoveCache: [String: MoveDef] = [:]
 
     init(state: BattleState, chart: TypeChart, seed: UInt64) {
         self.state = state
@@ -93,9 +129,18 @@ struct BattleEngine {
 
     // MARK: 선봉 확정
 
+    /// 선봉을 정한다. 범위를 벗어난 인덱스를 **조용히 무시하면** activeIndex 가 0 에 남아
+    /// "고른 포켓몬이 아니라 맨 왼쪽이 나온다"가 된다. 그래서 클램프하고 흔적을 남긴다.
     mutating func setLead(_ side: BattleSide, index: Int) {
-        guard state.sides[side.rawValue].team.indices.contains(index) else { return }
-        state.sides[side.rawValue].activeIndex = index
+        let team = state.sides[side.rawValue].team
+        guard !team.isEmpty else { return }
+        if team.indices.contains(index) {
+            state.sides[side.rawValue].activeIndex = index
+            return
+        }
+        let clamped = max(0, min(index, team.count - 1))
+        state.sides[side.rawValue].activeIndex = clamped
+        say("[경고] 선봉 인덱스 \(index) 가 팀 범위(0..<\(team.count))를 벗어나 \(clamped) 로 보정됐습니다.")
     }
 
     mutating func beginBattle() {
@@ -110,8 +155,16 @@ struct BattleEngine {
     // MARK: 한 턴 처리
 
     /// 양쪽 행동을 받아 한 턴을 끝까지 해석한다.
+    /// 이번 턴 각 진영이 선언한 Z기술 (기술 자체를 바꿔 쓰므로 따로 들고 있는다)
+    private var zDeclared: Set<Int> = []
+
     mutating func resolveTurn(hostAction: BattleAction, guestAction: BattleAction) {
         guard case .awaitingMoves = state.phase else { return }
+
+        // 변신은 공격보다 먼저 일어난다 — 바뀐 스피드가 행동 순서에 반영되어야 한다.
+        zDeclared = []
+        applySpecial(hostAction.special, for: .host)
+        applySpecial(guestAction.special, for: .guest)
 
         let order = turnOrder(hostAction: hostAction, guestAction: guestAction)
 
@@ -120,7 +173,7 @@ struct BattleEngine {
             // 이미 쓰러진 포켓몬은 행동하지 않는다
             if state.side(side).active.isFainted { continue }
             let action = side == .host ? hostAction : guestAction
-            if case .useMove(let idx) = action {
+            if let idx = action.moveIndex {
                 performMove(attacker: side, moveIndex: idx)
             }
         }
@@ -149,7 +202,11 @@ struct BattleEngine {
         guard case .awaitingReplacement(var needs) = state.phase else { return }
         guard needs.contains(side.rawValue) else { return }
         let team = state.side(side).team
-        guard team.indices.contains(teamIndex), !team[teamIndex].isFainted else { return }
+        guard team.indices.contains(teamIndex) else {
+            say("[경고] 교체 인덱스 \(teamIndex) 가 팀 범위(0..<\(team.count))를 벗어났습니다.")
+            return
+        }
+        guard !team[teamIndex].isFainted else { return }
 
         state.sides[side.rawValue].activeIndex = teamIndex
         say("\(state.side(side).playerName): 가라, \(team[teamIndex].name)!")
@@ -167,7 +224,7 @@ struct BattleEngine {
 
     private mutating func turnOrder(hostAction: BattleAction, guestAction: BattleAction) -> [BattleSide] {
         func priority(_ a: BattleAction, _ s: BattleSide) -> Int {
-            if case .useMove(let i) = a {
+            if let i = a.moveIndex {
                 let mv = state.side(s).active.moves
                 if mv.indices.contains(i) { return mv[i].def.priority }
             }
@@ -180,6 +237,76 @@ struct BattleEngine {
         let gs = state.side(.guest).active.effective(.speed)
         if hs != gs { return hs > gs ? [.host, .guest] : [.guest, .host] }
         return Bool.random(using: &rng) ? [.host, .guest] : [.guest, .host]
+    }
+
+    // MARK: 특수 변신 (메가 / 거다이맥스 / Z기술)
+
+    /// 선언된 변신을 적용한다. **플레이어당 각 종류 1회**, 자격 있는 개체만.
+    private mutating func applySpecial(_ action: SpecialAction?, for side: BattleSide) {
+        guard let action else { return }
+        var s = state.sides[side.rawValue]
+        let idx = s.activeIndex
+        guard s.team.indices.contains(idx) else { return }
+
+        // 규칙에서 껐거나, 이미 이 배틀에서 썼으면 무시한다
+        switch action {
+        case .mega  where !state.rules.allowMega:   return
+        case .gmax  where !state.rules.allowGmax:   return
+        case .zMove where !state.rules.allowZMove:  return
+        default: break
+        }
+        guard !s.hasUsed(action) else {
+            say("[안내] \(s.playerName)는 이번 배틀에서 \(action.ko)을 이미 사용했습니다.")
+            return
+        }
+
+        var b = s.team[idx]
+
+        switch action {
+        case .mega(let form):
+            guard b.canMega, b.megaForms.contains(form), let stats = megaCache[form] else { return }
+            b.applyMega(form: stats, nature: Nature.named(natureOf(b)))
+            s.usedMega = true
+            say("\(s.playerName)의 \(b.name)이(가) \(b.formLabel ?? "메가")로 진화했다!")
+
+        case .gmax:
+            guard b.canGmax else { return }
+            b.applyGmax(form: b.gmaxForm.flatMap { gmaxCache[$0] },
+                        turns: FormTables.gmaxTurns,
+                        multiplier: FormTables.gmaxHPMultiplier)
+            s.usedGmax = true
+            say("\(s.playerName)의 \(b.name)이(가) 거다이맥스했다! (\(FormTables.gmaxTurns)턴)")
+
+        case .zMove:
+            guard b.canZMove else { return }
+            s.usedZMove = true
+            zDeclared.insert(side.rawValue)
+            say("\(s.playerName)의 \(b.name)이(가) Z파워를 해방했다!")
+        }
+
+        s.team[idx] = b
+        state.sides[side.rawValue] = s
+    }
+
+    /// 성격은 Battler 에 한글명으로만 남아 있어서 역매핑한다 (메가 스탯 재계산에 필요).
+    private func natureOf(_ b: Battler) -> String {
+        Nature.koNames.first { $0.value == b.natureName }?.key ?? "serious"
+    }
+
+    /// 거다이맥스 지속시간을 줄이고, 끝나면 되돌린다.
+    private mutating func tickGmax() {
+        for side in [BattleSide.host, .guest] {
+            let idx = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(idx) else { continue }
+            var b = state.sides[side.rawValue].team[idx]
+            guard b.isGmax else { continue }
+            b.gmaxTurnsLeft -= 1
+            if b.gmaxTurnsLeft <= 0 {
+                b.revertGmax()
+                say("\(b.name)의 거다이맥스가 끝났다!")
+            }
+            state.sides[side.rawValue].team[idx] = b
+        }
     }
 
     // MARK: 기술 사용
@@ -203,10 +330,16 @@ struct BattleEngine {
         }
 
         atk.moves[moveIndex].ppLeft -= 1
-        let move = atk.moves[moveIndex].def
+        let baseMove = atk.moves[moveIndex].def
         state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
 
-        say("\(atkName)의 \(move.display)!")
+        // Z기술 / 맥스기술 변환. 위력은 PokeAPI 가 주지 않으므로 원작 변환표를 쓴다.
+        let move = transformed(baseMove, attacker: attacker)
+        if move.name != baseMove.name {
+            say("\(atkName)의 \(baseMove.display) → \(move.display)!")
+        } else {
+            say("\(atkName)의 \(move.display)!")
+        }
 
         // 명중 판정
         let def = state.side(defender).active
@@ -215,9 +348,11 @@ struct BattleEngine {
             return
         }
 
-        // 변화기
-        if move.damageClass == .status || (move.power ?? 0) == 0 {
+        // 변화기 (고정 데미지 기술은 위력이 0 이어도 공격기다)
+        if move.damageClass == .status || !move.isDamaging {
             applyNonDamaging(move: move, attacker: attacker, defender: defender)
+            // 메멘토·힐링위시처럼 위력 없이 쓴 쪽이 쓰러지는 기술
+            if move.selfKO { applySelfKO(attacker) }
             return
         }
 
@@ -264,6 +399,54 @@ struct BattleEngine {
         }
 
         checkFaint(defender)
+
+        // 대폭발·자폭·목숨걸기 — 쓴 쪽이 쓰러진다.
+        // PokeAPI 의 meta 에는 이 정보가 없어서 예전엔 그냥 무시됐다.
+        if move.selfKO { applySelfKO(attacker) }
+    }
+
+    /// 이번 턴에 실제로 쓰이는 기술. Z기술 선언이나 거다이맥스 상태면 다른 기술로 바뀐다.
+    private func transformed(_ move: MoveDef, attacker: BattleSide) -> MoveDef {
+        let b = state.side(attacker).active
+
+        // 거다이맥스 중에는 모든 기술이 맥스 기술이 된다 (원작과 동일)
+        if b.isGmax {
+            if move.damageClass == .status {
+                if var guardMove = maxMoveCache[FormTables.maxGuard] {
+                    guardMove.pp = move.pp
+                    return guardMove
+                }
+                return move
+            }
+            guard let name = FormTables.maxMove[move.type],
+                  var mx = maxMoveCache[name] else { return move }
+            mx.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
+            mx.damageClass = move.damageClass      // 물리/특수는 원래 기술을 따른다
+            mx.accuracy = nil                      // 맥스 기술은 빗나가지 않는다
+            mx.specialDamage = .none
+            mx.selfKO = false                      // 거다이맥스 중 대폭발은 자폭하지 않는다
+            return mx
+        }
+
+        // Z기술 — 이번 턴 한 번만
+        guard zDeclared.contains(attacker.rawValue),
+              let zName = FormTables.zMoveName(for: move),
+              var z = zMoveCache[zName] else { return move }
+        z.power = FormTables.zPower(basePower: move.power ?? 0)
+        z.damageClass = move.damageClass
+        z.accuracy = nil                           // Z기술은 필중
+        z.specialDamage = .none
+        z.selfKO = false
+        return z
+    }
+
+    /// 쓴 쪽을 쓰러뜨린다 (대폭발 계열).
+    private mutating func applySelfKO(_ side: BattleSide) {
+        var b = state.side(side).active
+        guard !b.isFainted else { return }
+        b.currentHP = 0
+        state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+        checkFaint(side)
     }
 
     /// 잠듦·얼음·마비·풀죽음·혼란으로 행동이 막히는지
@@ -335,8 +518,28 @@ struct BattleEngine {
     private mutating func computeDamage(move: MoveDef, attacker: BattleSide, defender: BattleSide) -> DamageResult {
         let a = state.side(attacker).active
         let d = state.side(defender).active
-        let power = move.power ?? 0
         let physical = move.damageClass == .physical
+
+        // 위력 공식을 따르지 않는 기술들 — 타입 상성만 보고 고정값을 낸다
+        switch move.specialDamage {
+        case .none:
+            break
+        case .userCurrentHP, .userLevel, .fixed:
+            let typeMult = chart.multiplier(attack: move.type, defenders: d.types)
+            let raw: Int
+            switch move.specialDamage {
+            case .userCurrentHP: raw = a.currentHP
+            case .userLevel:     raw = a.level
+            case .fixed(let n):  raw = n
+            case .none:          raw = 0
+            }
+            return DamageResult(damage: typeMult == 0 ? 0 : max(1, raw),
+                                critical: false,
+                                typeMultiplier: typeMult,
+                                multiplier: typeMult)
+        }
+
+        let power = move.power ?? 0
 
         let critical = state.rules.criticalHits && rng.chance(move.critRateBonus > 0 ? 12 : 4)
 
@@ -481,7 +684,7 @@ struct BattleEngine {
     // MARK: 턴 종료
 
     private mutating func endOfTurn() {
-        guard state.rules.statusEffects else { checkBattleOver(); return }
+        guard state.rules.statusEffects else { tickGmax(); checkBattleOver(); return }
 
         for s in [BattleSide.host, .guest] {
             var b = state.side(s).active
@@ -505,6 +708,7 @@ struct BattleEngine {
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
+        tickGmax()
         checkBattleOver()
     }
 

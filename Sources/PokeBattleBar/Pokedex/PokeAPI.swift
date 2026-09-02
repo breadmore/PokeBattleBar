@@ -67,6 +67,13 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     var healingPercent: Int
     var flinchChance: Int
     var critRateBonus: Int
+    /// 쓴 쪽이 쓰러지는 기술 (대폭발·자폭·목숨걸기 등).
+    /// PokeAPI 의 구조화된 필드에는 이 정보가 **없다** — effect 텍스트에만 "User faints." 로 있다.
+    var selfKO: Bool
+    /// 위력 대신 별도 규칙으로 데미지를 정하는 기술
+    var specialDamage: SpecialDamage
+    /// PokeAPI 의 영문 short_effect — UI 툴팁과 미구현 판정에 쓴다
+    var shortEffect: String
 
     struct StatChange: Codable, Hashable, Sendable {
         var stat: Stat
@@ -74,6 +81,38 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     }
 
     var display: String { koName.isEmpty ? name : koName }
+
+    /// 데미지를 주는 기술인가 (위력이 있거나 특수 데미지 규칙이 있으면 공격기다)
+    var isDamaging: Bool {
+        if (power ?? 0) > 0 { return true }
+        if specialDamage != .none { return true }
+        return false
+    }
+}
+
+/// 메가 / 거다이맥스 폼의 종족값과 타입
+struct FormStats: Codable, Sendable {
+    var name: String
+    var types: [PType]
+    var baseStats: [Stat: Int]
+    func base(_ s: Stat) -> Int { baseStats[s] ?? 1 }
+
+    /// "charizard-mega-x" → "메가 X", "snorlax-gmax" → "거다이맥스"
+    var suffixLabel: String {
+        if name.hasSuffix("-gmax") { return "거다이맥스" }
+        if name.hasSuffix("-mega-x") { return "메가 X" }
+        if name.hasSuffix("-mega-y") { return "메가 Y" }
+        if name.contains("-mega") { return "메가" }
+        return name
+    }
+}
+
+/// 위력 공식을 따르지 않는 데미지 규칙
+enum SpecialDamage: Codable, Hashable, Sendable {
+    case none
+    case userCurrentHP        // 목숨걸기 — 쓴 쪽의 현재 HP 만큼
+    case userLevel            // 나이트헤드 / 지구던지기 — 레벨만큼
+    case fixed(Int)           // 용의분노 40 / 소닉붐 20
 }
 
 /// 종 정의 — 종족값·타입·배울 수 있는 기술 목록
@@ -84,6 +123,13 @@ struct SpeciesDef: Codable, Sendable {
     var types: [PType]
     var baseStats: [Stat: Int]
     var learnableMoves: [String]     // 기술 이름 (PokeAPI slug)
+    /// 메가진화 폼 이름 (리자몽처럼 X/Y 두 개일 수 있다). 없으면 메가진화 불가.
+    var megaForms: [String] = []
+    /// 거다이맥스 폼 이름. 없으면 거다이맥스 불가.
+    var gmaxForm: String? = nil
+
+    var canMega: Bool { !megaForms.isEmpty }
+    var canGmax: Bool { gmaxForm != nil }
 
     var display: String { koName.isEmpty ? name : koName }
     func base(_ s: Stat) -> Int { baseStats[s] ?? 1 }
@@ -98,6 +144,7 @@ actor PokeAPI {
     private let cacheDir: URL
     private var species: [Int: SpeciesDef] = [:]
     private var moves: [String: MoveDef] = [:]
+    private var forms: [String: FormStats] = [:]
     private var chart: TypeChart?
 
     init() {
@@ -176,16 +223,62 @@ actor PokeAPI {
         let koName = Self.localizedName(sp["names"], lang: "ko")
             ?? (poke["name"] as? String ?? "#\(id)")
 
+        // 메가 / 거다이맥스 폼은 species 의 varieties 에 별도 pokemon 으로 들어 있다
+        var megaForms: [String] = []
+        var gmaxForm: String?
+        if let vs = sp["varieties"] as? [[String: Any]] {
+            for v in vs {
+                guard let p = v["pokemon"] as? [String: Any],
+                      let n = p["name"] as? String else { continue }
+                if n.contains("-mega") { megaForms.append(n) }
+                if n.hasSuffix("-gmax") { gmaxForm = n }
+            }
+        }
+
         let def = SpeciesDef(
             id: id,
             name: poke["name"] as? String ?? "#\(id)",
             koName: koName,
             types: types.isEmpty ? [.normal] : types,
             baseStats: stats,
-            learnableMoves: learnable
+            learnableMoves: learnable,
+            megaForms: megaForms.sorted(),
+            gmaxForm: gmaxForm
         )
         species[id] = def
         return def
+    }
+
+    /// 폼(메가·거다이맥스) 의 종족값과 타입. `pokemon/{name}` 으로 받는다.
+    func form(named name: String) async throws -> FormStats {
+        if let f = forms[name] { return f }
+        let data = try await fetchRaw("pokemon/\(name)", cacheKey: "pokemon-\(name)")
+        let poke = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+
+        var types: [PType] = []
+        if let ts = poke["types"] as? [[String: Any]] {
+            let ordered = ts.sorted { ($0["slot"] as? Int ?? 0) < ($1["slot"] as? Int ?? 0) }
+            types = ordered.compactMap {
+                guard let t = $0["type"] as? [String: Any], let n = t["name"] as? String else { return nil }
+                return PType(rawValue: n)
+            }
+        }
+        var stats: [Stat: Int] = [:]
+        if let ss = poke["stats"] as? [[String: Any]] {
+            for entry in ss {
+                guard let st = entry["stat"] as? [String: Any],
+                      let n = st["name"] as? String,
+                      let s = Stat(apiName: n),
+                      let v = entry["base_stat"] as? Int else { continue }
+                stats[s] = v
+            }
+        }
+        // 폼 이름의 한글명은 species 쪽에 없으므로 접미사로 표시명을 만든다
+        let f = FormStats(name: name,
+                          types: types.isEmpty ? [.normal] : types,
+                          baseStats: stats)
+        forms[name] = f
+        return f
     }
 
     // MARK: 기술
@@ -212,8 +305,17 @@ actor PokeAPI {
             }
         }
 
+        // PokeAPI 는 자폭을 구조화해서 주지 않는다. 영문 effect 텍스트와 명시 목록을 함께 본다.
+        let shortEffect = Self.shortEffect(j["effect_entries"])
+        let selfKO = Self.selfKOMoves.contains(name)
+            || shortEffect.lowercased().contains("user faints")
+        let specialDamage = Self.specialDamage(for: name)
+
         let ailmentName = ((meta["ailment"] as? [String: Any])?["name"] as? String) ?? "none"
-        let ailment = Ailment(apiName: ailmentName)
+        var ailment = Ailment(apiName: ailmentName)
+        // PokeAPI 에는 "맹독" 상태가 따로 없다 — 맹독도 ailment 가 "poison" 으로 온다.
+        // 그대로 두면 턴마다 누적되는 맹독이 고정 1/8 짜리 일반 독으로 걸린다.
+        if Self.badlyPoisonMoves.contains(name) { ailment = .toxic }
         // PokeAPI 는 확정 효과를 chance 0 으로 표기한다 — 상태기는 확정으로 본다.
         var ailmentChance = meta["ailment_chance"] as? Int ?? 0
         if ailment != .none, ailmentChance == 0 {
@@ -242,7 +344,10 @@ actor PokeAPI {
             drainPercent: meta["drain"] as? Int ?? 0,
             healingPercent: meta["healing"] as? Int ?? 0,
             flinchChance: meta["flinch_chance"] as? Int ?? 0,
-            critRateBonus: meta["crit_rate"] as? Int ?? 0
+            critRateBonus: meta["crit_rate"] as? Int ?? 0,
+            selfKO: selfKO,
+            specialDamage: specialDamage,
+            shortEffect: shortEffect
         )
         moves[name] = def
         return def
@@ -275,6 +380,35 @@ actor PokeAPI {
     }
 
     // MARK: 유틸
+
+    /// 맹독(누적 증가) 을 거는 기술. PokeAPI 는 일반 독과 구분해주지 않는다.
+    static let badlyPoisonMoves: Set<String> = ["toxic", "poison-fang"]
+
+    /// 쓴 쪽이 쓰러지는 기술. effect 텍스트만으로는 놓치는 경우가 있어 목록을 함께 둔다.
+    static let selfKOMoves: Set<String> = [
+        "explosion", "self-destruct", "misty-explosion",
+        "final-gambit", "memento", "healing-wish", "lunar-dance"
+    ]
+
+    private static func specialDamage(for name: String) -> SpecialDamage {
+        switch name {
+        case "final-gambit":                 return .userCurrentHP
+        case "night-shade", "seismic-toss":  return .userLevel
+        case "dragon-rage":                  return .fixed(40)
+        case "sonic-boom":                   return .fixed(20)
+        default:                             return .none
+        }
+    }
+
+    private static func shortEffect(_ raw: Any?) -> String {
+        guard let arr = raw as? [[String: Any]] else { return "" }
+        for e in arr {
+            guard let l = e["language"] as? [String: Any],
+                  let ln = l["name"] as? String, ln == "en" else { continue }
+            if let t = e["short_effect"] as? String { return t }
+        }
+        return ""
+    }
 
     private static func localizedName(_ raw: Any?, lang: String) -> String? {
         guard let arr = raw as? [[String: Any]] else { return nil }

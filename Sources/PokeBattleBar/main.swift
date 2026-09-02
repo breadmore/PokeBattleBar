@@ -2,15 +2,41 @@ import Foundation
 
 let args = CommandLine.arguments
 
-if args.contains("--nettest") {
-    let sem = DispatchSemaphore(value: 0)
-    var passed = false
+if args.contains("--formtest") {
+    let verbose = args.contains("--verbose")
     Task {
-        passed = await NetTest.run()
-        sem.signal()
+        let passed = await FormTest.run(verbose: verbose)
+        exit(passed ? 0 : 1)
     }
-    sem.wait()
-    exit(passed ? 0 : 1)
+    RunLoop.main.run()
+}
+
+if args.contains("--movetest") {
+    let verbose = args.contains("--verbose")
+    Task {
+        let passed = await MoveEffectTest.run(verbose: verbose)
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--pickertest") {
+    // @MainActor 테스트는 세마포어로 기다리면 안 된다 —
+    // 메인 스레드가 잠기면 MainActor 작업이 실행될 수 없어 데드락이다.
+    // 런루프를 돌려주고 작업 안에서 종료한다.
+    Task { @MainActor in
+        let passed = await SelectionTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--nettest") {
+    Task {
+        let passed = await NetTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
 }
 
 if args.contains("--selftest") {
@@ -30,14 +56,11 @@ if args.contains("--selftest") {
     let lvl = intVal("--level", default: 50)
     let verbose = args.contains("--verbose")
 
-    let sem = DispatchSemaphore(value: 0)
-    var passed = false
     Task {
-        passed = await SelfTest.run(speciesA: a, speciesB: b, level: lvl, verbose: verbose)
-        sem.signal()
+        let passed = await SelfTest.run(speciesA: a, speciesB: b, level: lvl, verbose: verbose)
+        exit(passed ? 0 : 1)
     }
-    sem.wait()
-    exit(passed ? 0 : 1)
+    RunLoop.main.run()
 }
 
 PokeBattleBarApp.main()
