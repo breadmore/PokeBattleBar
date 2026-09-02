@@ -41,6 +41,13 @@ VZIP="$ROOT/build/PokeBattleBar-$VERSION.zip"
 mv "$ROOT/build/PokeBattleBar.zip" "$VZIP"
 SHA=$(shasum -a 256 "$VZIP" | cut -d' ' -f1)
 
+echo "==> 단일 설치 파일"
+./scripts/make-installer.sh >/dev/null
+VINST="$ROOT/build/PokeBattleBar-$VERSION-설치.command"
+mv "$ROOT/build/Install-PokeBattleBar.command" "$ROOT/build/PokeBattleBar-$VERSION-Install.command"
+rm -f "$ROOT/build/PokeBattleBar-설치.command"
+VINST="$ROOT/build/PokeBattleBar-$VERSION-Install.command"
+
 cat > "$ROOT/build/poke-battle-bar.rb" <<CASK
 # Homebrew cask 초안. 자기 tap 저장소의 Casks/ 아래에 두면
 # 동료들이 'brew upgrade --cask poke-battle-bar' 로 업데이트할 수 있다.
@@ -69,20 +76,26 @@ PokeBattleBar $VERSION  (프로토콜 v$PROTO)
 프로토콜 버전이 다르면 방 목록에 "버전 불일치"로 표시되고 접속이 막힙니다.
 그러니 팀원 전원이 함께 업데이트해주세요.
 
-설치 / 업데이트
-  1) PokeBattleBar-$VERSION.zip 압축을 풀고
-  2) 그 폴더에서 터미널을 열어 아래 한 줄 붙여넣기
+설치 / 업데이트 — 파일 하나 실행하면 끝
+  PokeBattleBar-$VERSION-Install.command 를 실행하세요.
+  기존 앱 종료, 설치, 격리 해제, 실행까지 전부 자동으로 처리합니다.
 
-  xattr -dr com.apple.quarantine PokeBattleBar.app && rm -rf /Applications/PokeBattleBar.app && cp -R PokeBattleBar.app /Applications/ && open /Applications/PokeBattleBar.app
+  방법 1) 더블클릭
+          "확인되지 않은 개발자" 경고가 뜨면 → 우클릭 > 열기
+  방법 2) 터미널을 열고 이 파일을 터미널 창으로 끌어다 놓고 엔터
+          ↑ 경고 없이 항상 됩니다
 
-  (기존 앱이 열려 있으면 먼저 종료해주세요)
+  ※ 사전 준비: PokeTokenBar 가 설치되어 포켓몬이 1마리 이상 있어야 합니다
+       brew install --cask poke-token-bar
 
-sha256: $SHA
+sha256 (zip): $SHA
 NOTES
 
 echo
 echo "==> 완료"
-echo "   배포본  : $VZIP  ($(du -h "$VZIP" | cut -f1))"
+echo "   ${BLD:-}설치 파일 : $VINST  ($(du -h "$VINST" | cut -f1))${RST:-}"
+echo "               ↑ 동료에게 이것만 보내면 됩니다"
+echo "   zip     : $VZIP  ($(du -h "$VZIP" | cut -f1))"
 echo "   sha256  : $SHA"
 echo "   cask    : $ROOT/build/poke-battle-bar.rb"
 echo "   릴리즈노트: $ROOT/build/RELEASE-NOTES.txt"
