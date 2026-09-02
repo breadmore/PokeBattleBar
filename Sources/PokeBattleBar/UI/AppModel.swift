@@ -17,6 +17,12 @@ enum Role { case none, host, guest }
 @MainActor
 @Observable
 final class AppModel {
+    /// 표시용 앱 버전 (번들에서 읽는다)
+    var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+    var protocolVersion: Int { PokeBattleProtocol.version }
+
     // 내 정보
     var playerName: String = (NSFullUserName().isEmpty ? "트레이너" : NSFullUserName())
     var roster: [RosterSlot] = []
@@ -209,6 +215,12 @@ final class AppModel {
         host.onGuestMessage = { [weak self] msg in
             Task { @MainActor in self?.hostHandle(msg) }
         }
+        host.onProtocolError = { [weak self] msg in
+            Task { @MainActor in
+                self?.errorMessage = msg
+                self?.status = "상대를 기다리는 중…"
+            }
+        }
         host.onGuestDisconnected = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
@@ -312,8 +324,14 @@ final class AppModel {
 
     /// 자동 매칭 — 비어 있는 첫 방에 바로 들어간다.
     func autoMatch() async {
-        guard let room = discovered.first(where: { !$0.occupied }) else {
-            errorMessage = "들어갈 수 있는 방이 없습니다. 방을 직접 만들어보세요."
+        guard let room = discovered.first(where: { !$0.occupied && $0.compatible }) else {
+            let incompatible = discovered.filter { !$0.compatible }
+            if !incompatible.isEmpty {
+                errorMessage = "열린 방(\(incompatible.count)개) 이 모두 버전이 다릅니다.\n"
+                    + "양쪽 PokeBattleBar 를 같은 버전으로 맞춰주세요."
+            } else {
+                errorMessage = "들어갈 수 있는 방이 없습니다. 방을 직접 만들어보세요."
+            }
             return
         }
         await join(room)
@@ -335,7 +353,22 @@ final class AppModel {
         status = "\(room.hostName) 의 방에 접속 중…"
         screen = .joiningRoom
 
+        // 접속 전에 버전을 먼저 본다 — 붙어봐도 통신이 안 되기 때문
+        guard room.compatible else {
+            errorMessage = room.protocolVersion > PokeBattleProtocol.version
+              ? "\(room.hostName) 님의 PokeBattleBar 가 더 최신입니다 (v\(room.protocolVersion) / 내 v\(PokeBattleProtocol.version)).\n내 앱을 업데이트해주세요."
+              : "\(room.hostName) 님의 PokeBattleBar 가 구버전입니다 (v\(room.protocolVersion) / 내 v\(PokeBattleProtocol.version)).\n상대에게 업데이트를 요청해주세요."
+            screen = .lobby
+            return
+        }
+
         let link = PeerLink(to: room.endpoint)
+        link.onProtocolError = { [weak self] msg in
+            Task { @MainActor in
+                self?.errorMessage = msg
+                self?.resetToLobby()
+            }
+        }
         guestLink = link
         let team = myTeam
         let name = playerName

@@ -20,6 +20,10 @@ enum NetTest {
         // 0) 프레이밍 단위 테스트 — 붙어서 온 프레임과 쪼개져 온 프레임을 모두 처리하는지
         ok = framingTest() && ok
 
+        // 0-b) 프로토콜 버전 불일치가 **명확한 오류**로 잡히는지.
+        //      이게 안 되면 한쪽만 업데이트했을 때 그냥 연결이 끊기고 이유를 알 수 없다.
+        ok = versionTest() && ok
+
         // 1) 실제 팀 준비 (직렬화 대상이 진짜 데이터여야 의미가 있다)
         guard let team = await buildTeam([87, 317]) else {
             print("✗ 팀 준비 실패")
@@ -57,6 +61,9 @@ enum NetTest {
         ok = check(found.teamCap == 2, "TXT 레코드 상한 전달") && ok
         ok = check(found.level == 50, "TXT 레코드 레벨 전달") && ok
         ok = check(found.occupied == false, "TXT 레코드 빈 방 표시") && ok
+        ok = check(found.protocolVersion == PokeBattleProtocol.version,
+                   "TXT 레코드 프로토콜 버전 전달 (v\(found.protocolVersion))") && ok
+        ok = check(found.compatible, "같은 버전은 호환으로 판정") && ok
 
         // 4) 게스트로 접속
         let link = PeerLink(to: found.endpoint)
@@ -141,6 +148,74 @@ enum NetTest {
         }
 
         print(ok ? "\n✓ 네트워크 검증 통과" : "\n✗ 네트워크 검증 실패")
+        return ok
+    }
+
+    // MARK: 프로토콜 버전
+
+    private static func versionTest() -> Bool {
+        var ok = true
+
+        // 다른 버전이 보낸 프레임을 손으로 만들어 넣는다
+        func frame(v: Int, json: String) -> Data {
+            let body = Data(#"{"v":\#(v),"msg":\#(json)}"#.utf8)
+            var out = Data()
+            var len = UInt32(body.count).bigEndian
+            withUnsafeBytes(of: &len) { out.append(contentsOf: $0) }
+            out.append(body)
+            return out
+        }
+
+        // 미래 버전
+        var buf = frame(v: PokeBattleProtocol.version + 1, json: #"{"leave":{}}"#)
+        do {
+            _ = try WireCodec.drain(&buf)
+            print("  ✗ 상위 버전 프레임이 오류 없이 통과했다")
+            ok = false
+        } catch let e as WireError where e.isVersionProblem {
+            print("  ✓ 상위 버전 거부: \(e.errorDescription ?? "")")
+        } catch {
+            print("  ✗ 상위 버전에서 엉뚱한 오류: \(error)")
+            ok = false
+        }
+
+        // 구버전
+        buf = frame(v: 1, json: #"{"leave":{}}"#)
+        do {
+            _ = try WireCodec.drain(&buf)
+            print("  ✗ 구버전 프레임이 오류 없이 통과했다")
+            ok = false
+        } catch let e as WireError where e.isVersionProblem {
+            print("  ✓ 구버전 거부: \(e.errorDescription ?? "")")
+        } catch {
+            print("  ✗ 구버전에서 엉뚱한 오류: \(error)")
+            ok = false
+        }
+
+        // 같은 버전은 통과해야 한다
+        do {
+            var good = try WireCodec.encode(.leave)
+            let got = try WireCodec.drain(&good)
+            ok = check(got.count == 1, "같은 버전은 정상 통과") && ok
+        } catch {
+            print("  ✗ 같은 버전인데 실패: \(error)")
+            ok = false
+        }
+
+        // 버전 확인이 본문 해석보다 **먼저** 일어나는지 —
+        // 본문이 완전히 깨져 있어도 버전 오류로 잡혀야 한다
+        buf = frame(v: 99, json: #"{"이건":"없는 메시지 형식"}"#)
+        do {
+            _ = try WireCodec.drain(&buf)
+            print("  ✗ 깨진 본문 + 다른 버전이 통과했다")
+            ok = false
+        } catch let e as WireError where e.isVersionProblem {
+            print("  ✓ 본문이 깨져 있어도 버전 오류로 먼저 잡힘")
+        } catch {
+            print("  ✗ 버전 확인이 본문 해석보다 늦다 — 원인 파악이 불가능해진다: \(error)")
+            ok = false
+        }
+
         return ok
     }
 

@@ -78,6 +78,8 @@ struct LobbyView: View {
                 Text("PokeBattleBar").font(.title2.bold())
                 Text("같은 네트워크의 동료와 도감 포켓몬으로 배틀")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("v\(model.appVersion) · 프로토콜 v\(model.protocolVersion)")
+                    .font(.system(size: 9)).foregroundStyle(.tertiary)
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
@@ -235,7 +237,8 @@ struct JoinSection: View {
 
             Button("자동 매칭") { Task { await model.autoMatch() } }
                 .buttonStyle(.borderedProminent)
-                .disabled(model.discovered.allSatisfy(\.occupied) || model.roster.isEmpty)
+                .disabled(!model.discovered.contains { !$0.occupied && $0.compatible }
+                          || model.roster.isEmpty)
 
             if model.discovered.isEmpty {
                 Text("같은 네트워크에서 열린 방이 없습니다.")
@@ -249,7 +252,12 @@ struct JoinSection: View {
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        if room.occupied {
+                        if let note = room.versionNote {
+                            VStack(alignment: .trailing, spacing: 1) {
+                                Text("버전 불일치").font(.caption2.bold()).foregroundStyle(.red)
+                                Text(note).font(.system(size: 9)).foregroundStyle(.secondary)
+                            }
+                        } else if room.occupied {
                             Text("대전중").font(.caption2).foregroundStyle(.orange)
                         } else {
                             Button("참가") { Task { await model.join(room) } }

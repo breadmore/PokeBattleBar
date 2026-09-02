@@ -30,7 +30,8 @@ rm -rf "$APP" "$ZIP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PokeBattleBar"
 
-VERSION="$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo 1.0.0)"
+# release.sh 가 넘겨주면 그 버전을, 아니면 git 태그를 쓴다
+VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo 1.0.0)}"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -131,6 +132,13 @@ PokeTokenBar 도감 포켓몬으로 같은 네트워크의 동료와 배틀하�
 ---------------------------------
 Install.command 를 더블클릭하세요.
 "확인되지 않은 개발자" 경고가 뜨면 방법 1 을 쓰세요.
+
+
+버전을 맞춰야 합니다 (중요)
+--------------------------
+배틀하려면 양쪽 PokeBattleBar 가 **같은 버전**이어야 합니다.
+다르면 방 목록에 "버전 불일치" 로 표시되고 접속이 막힙니다 (조용히 실패하지 않습니다).
+업데이트는 팀원이 함께 하는 게 좋습니다.
 
 
 처음 실행할 때 (중요)
