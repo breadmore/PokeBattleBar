@@ -5,14 +5,26 @@ import Foundation
 /// 여섯 마리가 모두 거다이맥스할 수는 없다.
 enum SpecialAction: Codable, Hashable, Sendable {
     case mega(form: String)     // 메가스톤 — 폼 이름 (리자몽은 X/Y 선택)
-    case gmax                   // 거다이맥스
+    case dynamax                // 다이맥스 — 누구나 가능
+    case gmax                   // 거다이맥스 — 전용 폼이 있는 종만
     case zMove                  // Z기술 (이번 공격 한 번만)
 
     var ko: String {
         switch self {
-        case .mega:  "메가진화"
-        case .gmax:  "거다이맥스"
-        case .zMove: "Z기술"
+        case .mega:    "메가진화"
+        case .dynamax: "다이맥스"
+        case .gmax:    "거다이맥스"
+        case .zMove:   "Z기술"
+        }
+    }
+
+    /// 다이맥스와 거다이맥스는 **원작에서 같은 자원을 공유한다.**
+    /// (거다이맥스는 자격이 있는 종이 다이맥스할 때의 특별한 형태다)
+    /// 따라서 둘 중 하나를 쓰면 그 배틀에서 다른 하나도 쓸 수 없다.
+    var sharesDynamaxSlot: Bool {
+        switch self {
+        case .dynamax, .gmax: true
+        case .mega, .zMove:   false
         }
     }
 }
@@ -83,26 +95,30 @@ enum FormTables {
         }
     }
 
-    /// 거다이맥스 지속 턴수와 HP 배율 (원작 기준)
-    static let gmaxTurns = 3
-    static let gmaxHPMultiplier = 1.5
+    /// 다이맥스 / 거다이맥스 지속 턴수와 HP 배율 (원작 기준)
+    static let dynamaxTurns = 3
+    static let dynamaxHPMultiplier = 1.5
 }
 
 /// UI 에서 다루기 쉬운 변신 종류 (폼 이름 없이 종류만)
 enum SpecialKind: String, CaseIterable, Sendable {
-    case mega, gmax, zMove
+    case mega, dynamax, gmax, zMove
     var ko: String {
         switch self {
-        case .mega:  "메가진화"
-        case .gmax:  "거다이맥스"
-        case .zMove: "Z기술"
+        case .mega:    "메가진화"
+        case .dynamax: "다이맥스"
+        case .gmax:    "거다이맥스"
+        case .zMove:   "Z기술"
         }
     }
     var icon: String {
         switch self {
-        case .mega:  "✦"
-        case .gmax:  "◈"
-        case .zMove: "⚡"
+        case .mega:    "✦"
+        case .dynamax: "◉"
+        case .gmax:    "◈"
+        case .zMove:   "⚡"
         }
     }
+    /// 다이맥스 자원을 공유하는 종류
+    var sharesDynamaxSlot: Bool { self == .dynamax || self == .gmax }
 }

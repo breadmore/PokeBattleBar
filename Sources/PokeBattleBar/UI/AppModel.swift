@@ -79,6 +79,8 @@ final class AppModel {
                 rosterSpecies[slot.speciesID] = try await PokeAPI.shared.species(slot.speciesID)
             }
             typeChart = try await PokeAPI.shared.typeChart()
+            status = "도구·특성 데이터를 받는 중…"
+            await loadLoadoutOptions()
             selectedSlotIDs = Set(roster.prefix(effectiveTeamSize).map(\.id))
             roomName = "\(playerName)의 방"
             status = ""
@@ -186,9 +188,53 @@ final class AppModel {
         for slot in teamSlots {
             guard let sp = rosterSpecies[slot.speciesID] else { continue }
             let moves = await MovesetStore.shared.moveset(for: slot, species: sp)
-            out.append(Battler.make(slot: slot, species: sp, moves: moves, level: rules.level))
+            let (item, ability) = await LoadoutStore.shared.resolve(for: slot, species: sp)
+            out.append(Battler.make(slot: slot, species: sp, moves: moves,
+                                    level: rules.level, heldItem: item, ability: ability))
         }
         return out
+    }
+
+    // MARK: 도구 / 특성 선택
+
+    private(set) var itemsForSpecies: [Int: [ItemDef]] = [:]
+    private(set) var abilitiesForSpecies: [Int: [AbilityDef]] = [:]
+    private(set) var loadouts: [String: LoadoutStore.Loadout] = [:]
+
+    /// 로비에서 도구·특성을 고를 수 있도록 목록을 미리 받아둔다.
+    private func loadLoadoutOptions() async {
+        await ItemCatalog.shared.loadAll()
+        for slot in roster {
+            guard let sp = rosterSpecies[slot.speciesID] else { continue }
+            if itemsForSpecies[slot.speciesID] == nil {
+                itemsForSpecies[slot.speciesID] = await ItemCatalog.shared.available(forSpecies: sp)
+            }
+            if abilitiesForSpecies[slot.speciesID] == nil {
+                abilitiesForSpecies[slot.speciesID] = await AbilityCatalog.shared.abilities(for: sp)
+            }
+            loadouts[slot.id] = await LoadoutStore.shared.loadout(for: slot)
+        }
+    }
+
+    func setItem(_ item: ItemDef?, for slot: RosterSlot) async {
+        await LoadoutStore.shared.setItem(item?.name, for: slot)
+        loadouts[slot.id] = await LoadoutStore.shared.loadout(for: slot)
+    }
+
+    func setAbility(_ ability: AbilityDef?, for slot: RosterSlot) async {
+        await LoadoutStore.shared.setAbility(ability?.name, for: slot)
+        loadouts[slot.id] = await LoadoutStore.shared.loadout(for: slot)
+    }
+
+    func currentItem(for slot: RosterSlot) -> ItemDef? {
+        guard let n = loadouts[slot.id]?.item else { return nil }
+        return itemsForSpecies[slot.speciesID]?.first { $0.name == n }
+    }
+
+    func currentAbility(for slot: RosterSlot) -> AbilityDef? {
+        let opts = abilitiesForSpecies[slot.speciesID] ?? []
+        if let n = loadouts[slot.id]?.ability, let a = opts.first(where: { $0.name == n }) { return a }
+        return opts.first { !$0.isHidden } ?? opts.first
     }
 
     func rerollMoves(for slot: RosterSlot) async {
@@ -479,9 +525,15 @@ final class AppModel {
     func canUse(_ kind: SpecialKind) -> Bool {
         guard let me = myState, let b = myState?.active else { return false }
         switch kind {
-        case .mega:  return rules.allowMega  && !me.usedMega  && b.canMega
-        case .gmax:  return rules.allowGmax  && !me.usedGmax  && b.canGmax
-        case .zMove: return rules.allowZMove && !me.usedZMove && b.canZMove
+        case .mega:
+            return rules.allowMega && !me.usedMega && b.canMega
+        case .dynamax:
+            return rules.allowDynamax && !me.usedDynamax && b.canDynamax
+        case .gmax:
+            return rules.allowDynamax && rules.allowGigantamax
+                && !me.usedDynamax && b.canGigantamax
+        case .zMove:
+            return rules.allowZMove && !me.usedZMove && b.canZMove
         }
     }
 
@@ -489,9 +541,9 @@ final class AppModel {
     func alreadyUsed(_ kind: SpecialKind) -> Bool {
         guard let me = myState else { return false }
         switch kind {
-        case .mega:  return me.usedMega
-        case .gmax:  return me.usedGmax
-        case .zMove: return me.usedZMove
+        case .mega:            return me.usedMega
+        case .dynamax, .gmax:  return me.usedDynamax
+        case .zMove:           return me.usedZMove
         }
     }
 
@@ -499,9 +551,10 @@ final class AppModel {
         guard let b = myState?.active else { return }
         let target: SpecialAction?
         switch kind {
-        case .mega:  target = b.megaForms.first.map { SpecialAction.mega(form: $0) }
-        case .gmax:  target = .gmax
-        case .zMove: target = .zMove
+        case .mega:    target = b.megaForms.first.map { SpecialAction.mega(form: $0) }
+        case .dynamax: target = .dynamax
+        case .gmax:    target = .gmax
+        case .zMove:   target = .zMove
         }
         guard let target else { return }
         // 같은 걸 다시 누르면 해제, 다른 걸 누르면 교체 (한 턴에 하나만)
@@ -522,10 +575,18 @@ final class AppModel {
 
     func kindOf(_ a: SpecialAction) -> SpecialKind {
         switch a {
-        case .mega:  .mega
-        case .gmax:  .gmax
-        case .zMove: .zMove
+        case .mega:    .mega
+        case .dynamax: .dynamax
+        case .gmax:    .gmax
+        case .zMove:   .zMove
         }
+    }
+
+    /// 로스터 목록에서 "이 포켓몬은 메가진화/거다이맥스가 된다" 를 표시하기 위한 조회.
+    /// 다이맥스는 종족 제한이 없으니 표시하지 않는다 (전부 되기 때문에 정보가 없다).
+    func eligibility(for slot: RosterSlot) -> (mega: Bool, gigantamax: Bool, megaFormCount: Int) {
+        guard let sp = rosterSpecies[slot.speciesID] else { return (false, false, 0) }
+        return (sp.canMega, sp.canGigantamax, sp.megaForms.count)
     }
 
     func megaFormLabel(_ form: String) -> String {
@@ -535,7 +596,7 @@ final class AppModel {
 
     private func sameKind(_ a: SpecialAction, _ b: SpecialAction) -> Bool {
         switch (a, b) {
-        case (.mega, .mega), (.gmax, .gmax), (.zMove, .zMove): return true
+        case (.mega, .mega), (.dynamax, .dynamax), (.gmax, .gmax), (.zMove, .zMove): return true
         default: return false
         }
     }
