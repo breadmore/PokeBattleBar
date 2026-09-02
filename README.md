@@ -8,29 +8,45 @@ PokeTokenBar 를 수정하지 않는 **별도 컴패니언 앱**이다.
 ## 동료에게 배포하기
 
 ```sh
-./scripts/bundle.sh          # build/PokeBattleBar.zip 생성 (유니버설, 약 900KB)
+./scripts/release.sh 1.1.0
 ```
 
-**`build/PokeBattleBar.zip` 이 파일 하나만** Slack/AirDrop 등으로 보내면 된다.
-안에 앱, `Install.command`, `READ-ME-FIRST.txt` 가 들어 있다.
+5개 검증 스위트를 **전부 통과해야만** 산출물이 나온다. 실패하면 배포가 중단된다.
+
+**`build/PokeBattleBar-1.1.0-Install.command` 이 파일 하나만** 보내면 된다 (약 1.6MB).
+앱이 파일 안에 들어 있어서 다운로드도 압축 해제도 필요 없다. 실행하면:
+
+1. macOS 버전과 PokeTokenBar 설치 여부를 확인한다 (포켓몬 몇 마리인지도 알려준다)
+2. 실행 중인 기존 앱을 종료한다
+3. 앱을 꺼내고 격리 속성을 제거한다
+4. `/Applications` 에 설치한다 (필요하면 sudo)
+5. 실행하고, 로컬 네트워크 권한 안내를 보여준다
+
+업데이트도 같은 파일을 새로 만들어 보내면 된다 — 기존 버전을 알아서 갈아끼운다
+(`설치됨: v1.1.0 → 설치할 버전: v1.2.0` 처럼 보여준다).
 
 받는 쪽 요구사항:
-- macOS 14 이상 (Apple Silicon / 인텔 둘 다 됨 — 유니버설 바이너리)
+- macOS 14 이상 (Apple Silicon / 인텔 둘 다 — 유니버설 바이너리)
 - **PokeTokenBar 설치 + 포켓몬 최소 1마리** (`brew install --cask poke-token-bar`)
   포켓몬 정보는 각자 맥의 상태 파일에만 있으므로 전원이 두 앱을 다 깔아야 한다.
 
+### 실행 방법 두 가지
+
+| | 방법 | 비고 |
+|---|---|---|
+| 1 | 더블클릭 | "확인되지 않은 개발자" 경고가 뜨면 우클릭 → 열기 |
+| 2 | 터미널 창에 파일을 끌어다 놓고 엔터 | **경고 없이 항상 됨** |
+
 ### Gatekeeper
 
-Apple 유료 개발자 서명이 없는 ad-hoc 서명이라, 전송된 앱은 격리(quarantine) 속성이 붙어
-더블클릭이 막힌다. `Install.command` 자체도 같이 격리되므로 더블클릭이 안 될 수 있다.
-그래서 `READ-ME-FIRST.txt` 는 **터미널 한 줄 붙여넣기**를 1순위로 안내한다:
+Apple 유료 개발자 서명이 없어서, 전송된 파일에는 격리(quarantine) 속성이 붙는다.
+설치 파일이 앱의 격리 속성은 알아서 떼주지만, **설치 파일 자체의 첫 실행**은
+macOS 가 경고를 띄운다. 터미널로 실행하면(방법 2) Gatekeeper 를 아예 거치지 않는다.
 
-```sh
-xattr -dr com.apple.quarantine PokeBattleBar.app && cp -R PokeBattleBar.app /Applications/ && open /Applications/PokeBattleBar.app
-```
+마찰을 완전히 없애려면 Apple Developer 계정(연 $99)으로 서명 + 공증(notarize) 해야 한다.
 
-마찰 없이 배포하려면 Apple Developer 계정(연 $99)으로 서명 + 공증(notarize)해야 한다.
-사내 배포라면 위 한 줄이 현실적이다.
+`build/poke-battle-bar.rb` 에 Homebrew cask 초안도 함께 생성된다 —
+tap 저장소를 쓸 생각이 있으면 URL 만 채우면 된다.
 
 ### 소스에서 직접 빌드 (격리 문제 없음)
 
@@ -62,6 +78,16 @@ open build/PokeBattleBar.app
 | 특수 변신 | 메가진화 / 거다이맥스 / Z기술. **각각 배틀당 1회**, 자격 있는 포켓몬만 |
 
 진행중(진화 미완성) 동반 포켓몬도 팀에 넣을 수 있지만 현재 단계의 종족값으로 싸운다 — 약하다.
+
+## 버전 호환성
+
+배틀하려면 **양쪽 프로토콜 버전이 같아야 한다.** 다르면 방 목록에 "버전 불일치" 로
+표시되고 자동 매칭에서 제외되며 참가가 막힌다 — 누가 구버전인지도 알려준다.
+
+메시지 구조를 바꿀 때는 `Net/Wire.swift` 의 `PokeBattleProtocol.version` 을 올린다.
+Swift 의 합성 Codable 은 프로퍼티 기본값을 쓰지 않으므로, **신규 필드가 하나만 늘어도**
+구버전이 보낸 JSON 은 디코딩이 실패한다. 버전 확인은 본문 해석보다 **먼저** 해야 한다
+(순서가 반대면 디코딩 실패가 먼저 터져 원인을 알 수 없다).
 
 ## 특수 변신 — 메가진화 / 거다이맥스 / Z기술
 
