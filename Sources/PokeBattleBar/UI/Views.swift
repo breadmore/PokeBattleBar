@@ -194,8 +194,8 @@ struct HostSection: View {
 
             Stepper("최대 사용 포켓몬: \(model.rules.maxTeamSize)마리",
                     value: $model.rules.maxTeamSize, in: 1...6)
-                .onChange(of: model.rules.maxTeamSize) { _, new in
-                    model.selectedSlotIDs = Set(model.roster.prefix(new).map(\.id))
+                .onChange(of: model.rules.maxTeamSize) { _, _ in
+                    model.trimSelectionToCap()   // 고른 걸 유지한 채 상한만 맞춘다
                 }
 
             Picker("레벨", selection: $model.rules.level) {
@@ -207,6 +207,12 @@ struct HostSection: View {
             Toggle("상태이상 사용", isOn: $model.rules.statusEffects)
             Toggle("능력치 랭크 변화 사용", isOn: $model.rules.statStages)
             Toggle("급소 사용", isOn: $model.rules.criticalHits)
+
+            Divider()
+            Text("특수 변신 (각각 배틀당 1회)").font(.caption.bold()).foregroundStyle(.secondary)
+            Toggle("메가진화 허용", isOn: $model.rules.allowMega)
+            Toggle("거다이맥스 허용", isOn: $model.rules.allowGmax)
+            Toggle("Z기술 허용", isOn: $model.rules.allowZMove)
 
             Button("방 열기") { Task { await model.startHosting() } }
                 .buttonStyle(.borderedProminent)
@@ -286,27 +292,16 @@ struct LeadView: View {
             Text("교체는 없습니다 — 쓰러지면 다음 포켓몬을 그때 고릅니다.")
                 .font(.caption).foregroundStyle(.secondary)
 
-            if let team = model.myState?.team {
+            // 호스트는 배틀 상태의 내 팀, 게스트는 **실제로 보낸 팀**을 보여준다.
+            // 둘 다 상대가 가진 배열과 순서가 같으므로 탭한 인덱스가 그대로 통한다.
+            let team = model.myState?.team ?? model.sentTeam
+            if team.isEmpty {
+                ProgressView()
+            } else {
                 HStack(spacing: 14) {
-                    ForEach(Array(team.enumerated()), id: \.element.id) { idx, b in
+                    ForEach(Array(team.enumerated()), id: \.offset) { idx, b in
                         BattlerCard(battler: b, selected: model.chosenLead == idx)
                             .onTapGesture { if !model.waitingForOpponent { model.submitLead(idx) } }
-                    }
-                }
-            } else {
-                // 게스트는 호스트가 상태를 보내주기 전이라 내 로컬 팀으로 표시
-                HStack(spacing: 14) {
-                    ForEach(Array(model.teamSlots.enumerated()), id: \.element.id) { idx, slot in
-                        VStack(spacing: 4) {
-                            SpriteView(speciesID: slot.speciesID, shiny: slot.isShiny, size: 76)
-                            Text(model.rosterSpecies[slot.speciesID]?.display ?? "#\(slot.speciesID)")
-                                .font(.caption.bold())
-                        }
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 10)
-                            .fill(model.chosenLead == idx ? Color.accentColor.opacity(0.18)
-                                                          : Color(nsColor: .controlBackgroundColor)))
-                        .onTapGesture { if !model.waitingForOpponent { model.submitLead(idx) } }
                     }
                 }
             }
@@ -410,7 +405,7 @@ struct BattleView: View {
                 .font(.caption.bold()).foregroundStyle(.secondary)
             ActiveBattlerView(b: s.active, mirrored: isFoe)
             HStack(spacing: 3) {
-                ForEach(Array(s.team.enumerated()), id: \.element.id) { _, m in
+                ForEach(Array(s.team.enumerated()), id: \.offset) { _, m in
                     Circle()
                         .fill(m.isFainted ? Color.gray.opacity(0.35) : Color.green)
                         .frame(width: 8, height: 8)
@@ -428,7 +423,14 @@ struct BattleView: View {
                 if model.waitingForOpponent {
                     waiting
                 } else {
-                    MoveGrid(battler: me.active) { model.submitMove($0) }
+                    VStack(spacing: 0) {
+                        SpecialBar(model: model)
+                        MoveGrid(battler: me.active,
+                                 foeTypes: model.foeState?.active.types ?? [],
+                                 chart: model.typeChart,
+                                 pendingSpecial: model.pendingSpecial,
+                                 zMoveCache: model.zPreview) { model.submitMove($0) }
+                    }
                 }
             case .awaitingReplacement:
                 if model.needsMyReplacement {
@@ -475,6 +477,12 @@ struct ActiveBattlerView: View {
                         .background(Capsule().fill(.orange.opacity(0.35)))
                 }
             }
+            if let label = b.formLabel {
+                Text(label + (b.isGmax ? " \(b.gmaxTurnsLeft)턴" : ""))
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(.orange.opacity(0.4)))
+            }
             let ups = b.stages.filter { $0.value != 0 }
             if !ups.isEmpty {
                 Text(ups.map { "\($0.key.ko) \($0.value > 0 ? "+" : "")\($0.value)" }
@@ -485,32 +493,96 @@ struct ActiveBattlerView: View {
     }
 }
 
+/// 메가진화 / 거다이맥스 / Z기술 선언 바.
+/// **각각 배틀당 1회** — 6마리가 다 거다이맥스할 수는 없다.
+struct SpecialBar: View {
+    let model: AppModel
+
+    var body: some View {
+        let anyRelevant = SpecialKind.allCases.contains { model.canUse($0) || model.alreadyUsed($0) }
+        if anyRelevant {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    ForEach(SpecialKind.allCases, id: \.self) { kind in
+                        SpecialButton(model: model, kind: kind)
+                    }
+                    Spacer()
+                    if let p = model.pendingSpecial {
+                        Text("\(p.ko) 선언됨 — 기술을 고르면 발동")
+                            .font(.caption2.bold()).foregroundStyle(.orange)
+                    }
+                }
+                // 메가 폼이 둘인 포켓몬(리자몽 등)은 어느 쪽인지 고른다
+                if model.canUse(.mega), let forms = model.myState?.active.megaForms, forms.count > 1 {
+                    HStack(spacing: 6) {
+                        Text("메가 폼:").font(.caption2).foregroundStyle(.secondary)
+                        ForEach(forms, id: \.self) { f in
+                            Button(model.megaFormLabel(f)) { model.selectMegaForm(f) }
+                                .font(.caption2)
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+        }
+    }
+}
+
+struct SpecialButton: View {
+    let model: AppModel
+    let kind: SpecialKind
+
+    var body: some View {
+        let usable = model.canUse(kind)
+        let used = model.alreadyUsed(kind)
+        let selected = model.pendingSpecial.map { model.kindOf($0) == kind } ?? false
+
+        Button {
+            model.toggleSpecial(kind)
+        } label: {
+            HStack(spacing: 3) {
+                Text(kind.icon)
+                Text(kind.ko).font(.caption.bold())
+                if used { Text("사용함").font(.system(size: 9)) }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+        }
+        .buttonStyle(.bordered)
+        .tint(selected ? .orange : .secondary)
+        .disabled(!usable)
+        .opacity(usable ? 1 : 0.45)
+        .help(used ? "이번 배틀에서 이미 사용했습니다"
+                   : (usable ? "이번 턴에 \(kind.ko)을 선언합니다" : "이 포켓몬은 \(kind.ko)을 쓸 수 없습니다"))
+    }
+}
+
 struct MoveGrid: View {
     let battler: Battler
+    let foeTypes: [PType]
+    let chart: TypeChart?
+    var pendingSpecial: SpecialAction? = nil
+    var zMoveCache: [String: MoveDef] = [:]
     let onPick: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("기술 선택").font(.caption.bold()).foregroundStyle(.secondary)
+            HStack {
+                Text("기술 선택").font(.caption.bold()).foregroundStyle(.secondary)
+                Spacer()
+                Text("상대 타입: \(foeTypes.map(\.ko).joined(separator: "/"))")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                ForEach(Array(battler.moves.enumerated()), id: \.element.id) { idx, slot in
+                ForEach(Array(battler.moves.enumerated()), id: \.offset) { idx, slot in
                     Button { onPick(idx) } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(slot.def.display).font(.callout.bold())
-                            HStack(spacing: 6) {
-                                Text(slot.def.type.ko)
-                                    .padding(.horizontal, 4)
-                                    .background(Capsule().fill(.tertiary))
-                                Text(slot.def.damageClass == .status ? "변화"
-                                     : (slot.def.damageClass == .physical ? "물리" : "특수"))
-                                if let p = slot.def.power, p > 0 { Text("위력 \(p)") }
-                                Text("PP \(slot.ppLeft)/\(slot.def.pp)")
-                            }
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
+                        MoveButtonLabel(
+                            slot: preview(slot),
+                            eff: Effectiveness.compute(move: preview(slot).def, attacker: battler,
+                                                       defenderTypes: foeTypes, chart: chart),
+                            transformNote: transformNote(slot)
+                        )
                     }
                     .buttonStyle(.bordered)
                     .disabled(!slot.usable)
@@ -518,6 +590,97 @@ struct MoveGrid: View {
             }
         }
         .padding(12)
+    }
+
+    /// Z기술을 선언했거나 거다이맥스 중이면, 실제로 나갈 기술로 미리 바꿔 보여준다.
+    /// 그래서 상성 배지와 실질 위력도 변환 후 기준으로 계산된다.
+    private func preview(_ slot: Battler.MoveSlot) -> Battler.MoveSlot {
+        guard let t = transformedDef(slot.def) else { return slot }
+        return Battler.MoveSlot(def: t, ppLeft: slot.ppLeft)
+    }
+
+    private func transformNote(_ slot: Battler.MoveSlot) -> String? {
+        guard transformedDef(slot.def) != nil else { return nil }
+        if battler.isGmax { return "맥스" }
+        if case .zMove = pendingSpecial { return "Z" }
+        return nil
+    }
+
+    private func transformedDef(_ move: MoveDef) -> MoveDef? {
+        if battler.isGmax {
+            guard let n = FormTables.maxMove[move.type], var mx = zMoveCache[n] else { return nil }
+            mx.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
+            mx.damageClass = move.damageClass
+            return mx
+        }
+        guard case .zMove = pendingSpecial,
+              let zn = FormTables.zMoveName(for: move),
+              var z = zMoveCache[zn] else { return nil }
+        z.power = FormTables.zPower(basePower: move.power ?? 0)
+        z.damageClass = move.damageClass
+        return z
+    }
+}
+
+struct MoveButtonLabel: View {
+    let slot: Battler.MoveSlot
+    let eff: Effectiveness
+    var transformNote: String? = nil
+
+    private var isStatus: Bool { slot.def.damageClass == .status || !slot.def.isDamaging }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Text(slot.def.display).font(.callout.bold())
+                if let t = transformNote {
+                    Text(t).font(.system(size: 9, weight: .black))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Capsule().fill(.orange.opacity(0.35)))
+                }
+                if slot.def.selfKO {
+                    Text("자폭").font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Capsule().fill(.red.opacity(0.28)))
+                }
+                Spacer(minLength: 0)
+                // 상성 배지 — 등배면 표시하지 않는다
+                if !isStatus, let l = eff.label {
+                    Text(l).font(.system(size: 11, weight: .heavy))
+                        .foregroundStyle(eff.color)
+                }
+            }
+
+            HStack(spacing: 6) {
+                Text(slot.def.type.ko)
+                    .padding(.horizontal, 4)
+                    .background(Capsule().fill(.tertiary))
+                Text(isStatus ? "변화" : (slot.def.damageClass == .physical ? "물리" : "특수"))
+                if let p = slot.def.power, p > 0 { Text("위력 \(p)") }
+                Text("PP \(slot.ppLeft)/\(slot.def.pp)")
+            }
+            .font(.system(size: 9))
+            .foregroundStyle(.secondary)
+
+            // 실질 위력 / 판정 — 여기가 "몇 배인지" 실제로 읽히는 줄
+            if !isStatus {
+                HStack(spacing: 5) {
+                    if let ep = eff.effectivePower {
+                        Text("실질 \(ep)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(eff.color)
+                        if eff.stab { Text("일치+50%").font(.system(size: 9)).foregroundStyle(.secondary) }
+                    } else if let note = eff.specialNote {
+                        Text(note).font(.system(size: 10, weight: .semibold)).foregroundStyle(.purple)
+                    }
+                    if let v = eff.verdict {
+                        Text(v).font(.system(size: 9)).foregroundStyle(eff.color)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
     }
 }
 
@@ -529,7 +692,7 @@ struct ReplacementPicker: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("다음 포켓몬을 고르세요").font(.caption.bold()).foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                ForEach(Array(team.enumerated()), id: \.element.id) { idx, b in
+                ForEach(Array(team.enumerated()), id: \.offset) { idx, b in
                     Button { onPick(idx) } label: {
                         BattlerCard(battler: b)
                     }

@@ -41,7 +41,8 @@ final class AppModel {
     var chosenLead: Int?
     var waitingForOpponent = false
 
-    private var chart: TypeChart?
+    /// 뷰에서 기술별 상성 배율을 계산하려면 상성표가 필요하다
+    private(set) var typeChart: TypeChart?
     private var myTeam: [Battler] = []
 
     private let host = RoomHost()
@@ -71,8 +72,8 @@ final class AppModel {
             for slot in roster {
                 rosterSpecies[slot.speciesID] = try await PokeAPI.shared.species(slot.speciesID)
             }
-            chart = try await PokeAPI.shared.typeChart()
-            selectedSlotIDs = Set(roster.prefix(rules.maxTeamSize).map(\.id))
+            typeChart = try await PokeAPI.shared.typeChart()
+            selectedSlotIDs = Set(roster.prefix(effectiveTeamSize).map(\.id))
             roomName = "\(playerName)의 방"
             status = ""
             screen = .lobby
@@ -80,6 +81,51 @@ final class AppModel {
             errorMessage = describe(error)
             screen = .lobby
         }
+    }
+
+    /// 배틀 중에는 네트워크를 기다릴 수 없으므로, 필요한 폼·Z기술·맥스기술을 미리 받아둔다.
+    private var megaCache: [String: FormStats] = [:]
+    private var gmaxCache: [String: FormStats] = [:]
+    private var zMoveCache: [String: MoveDef] = [:]
+    private var maxMoveCache: [String: MoveDef] = [:]
+
+    private func preloadForms(for team: [Battler]) async {
+        for b in team {
+            for f in b.megaForms where megaCache[f] == nil {
+                megaCache[f] = try? await PokeAPI.shared.form(named: f)
+            }
+            if let g = b.gmaxForm, gmaxCache[g] == nil {
+                gmaxCache[g] = try? await PokeAPI.shared.form(named: g)
+            }
+        }
+    }
+
+    /// Z기술·맥스기술 정의는 타입별로 고정이라 한 번만 받아두면 된다.
+    private func preloadTransformMoves() async {
+        guard zMoveCache.isEmpty || maxMoveCache.isEmpty else { return }
+        for (_, base) in FormTables.zMoveBase {
+            for suffix in ["--physical", "--special"] {
+                let n = base + suffix
+                if zMoveCache[n] == nil, let m = try? await PokeAPI.shared.move(n) {
+                    zMoveCache[n] = m
+                }
+            }
+        }
+        for (_, n) in FormTables.maxMove {
+            if maxMoveCache[n] == nil, let m = try? await PokeAPI.shared.move(n) {
+                maxMoveCache[n] = m
+            }
+        }
+        if let g = try? await PokeAPI.shared.move(FormTables.maxGuard) {
+            maxMoveCache[FormTables.maxGuard] = g
+        }
+    }
+
+    private func installCaches(into e: inout BattleEngine) {
+        e.megaCache = megaCache
+        e.gmaxCache = gmaxCache
+        e.zMoveCache = zMoveCache
+        e.maxMoveCache = maxMoveCache
     }
 
     private func describe(_ e: Error) -> String {
@@ -91,21 +137,42 @@ final class AppModel {
 
     // MARK: 팀 구성
 
-    /// 내가 실제로 데려가는 마리 수 — 보유분과 방 상한 중 작은 쪽.
+    /// 내가 데려갈 수 있는 최대 마리 수 — 보유분과 방 상한 중 작은 쪽.
     var effectiveTeamSize: Int { min(roster.count, rules.maxTeamSize) }
 
+    /// 데려갈 포켓몬. **사용자가 고른 것을 항상 존중한다.**
+    /// 예전에는 선택 개수가 정원과 정확히 같지 않으면 선택을 버리고 왼쪽부터 채웠는데,
+    /// 그게 "내가 고른 포켓몬이 안 나오고 맨 왼쪽이 나온다"의 원인이었다.
     var teamSlots: [RosterSlot] {
         let picked = roster.filter { selectedSlotIDs.contains($0.id) }
-        if picked.count == effectiveTeamSize { return picked }
-        return Array(roster.prefix(effectiveTeamSize))
+        if picked.isEmpty { return Array(roster.prefix(effectiveTeamSize)) }
+        return Array(picked.prefix(rules.maxTeamSize))
     }
+
+    /// 상대에게 **실제로 보낸** 팀. 선봉 선택 화면은 반드시 이걸 보여줘야 한다 —
+    /// teamSlots 를 다시 계산해서 보여주면 rules 가 갱신된 뒤 길이가 어긋나고,
+    /// 범위를 벗어난 인덱스가 엔진에서 무시되어 activeIndex 가 0 에 남는다.
+    var sentTeam: [Battler] { myTeam }
 
     func toggleSelection(_ slot: RosterSlot) {
         if selectedSlotIDs.contains(slot.id) {
-            selectedSlotIDs.remove(slot.id)
+            // 마지막 한 마리는 뺄 수 없다 (팀이 비면 배틀이 안 된다)
+            if selectedSlotIDs.count > 1 { selectedSlotIDs.remove(slot.id) }
         } else if selectedSlotIDs.count < rules.maxTeamSize {
             selectedSlotIDs.insert(slot.id)
         }
+    }
+
+    /// 방 상한이 줄어들면 선택을 **덮어쓰지 말고 다듬는다** (고른 걸 최대한 유지).
+    func trimSelectionToCap() {
+        guard selectedSlotIDs.count > rules.maxTeamSize else {
+            if selectedSlotIDs.isEmpty {
+                selectedSlotIDs = Set(roster.prefix(effectiveTeamSize).map(\.id))
+            }
+            return
+        }
+        let keep = roster.filter { selectedSlotIDs.contains($0.id) }.prefix(rules.maxTeamSize)
+        selectedSlotIDs = Set(keep.map(\.id))
     }
 
     private func buildTeam() async -> [Battler] {
@@ -135,6 +202,9 @@ final class AppModel {
         mySide = .host
         myTeam = await buildTeam()
         guard !myTeam.isEmpty else { errorMessage = "팀을 만들 수 없습니다."; return }
+        status = "특수 변신 데이터를 준비하는 중…"
+        await preloadForms(for: myTeam)
+        await preloadTransformMoves()
 
         host.onGuestMessage = { [weak self] msg in
             Task { @MainActor in self?.hostHandle(msg) }
@@ -180,12 +250,22 @@ final class AppModel {
                     SideState(playerName: name, team: guestTeam, activeIndex: 0)
                 ]
             )
-            guard let chart else {
+            guard let chart = typeChart else {
                 host.send(.joinRejected(reason: "호스트가 상성표를 아직 불러오지 못했습니다"))
                 return
             }
-            engine = BattleEngine(state: st, chart: chart, seed: UInt64.random(in: 1...UInt64.max))
-            battle = engine?.state
+            var e = BattleEngine(state: st, chart: chart, seed: UInt64.random(in: 1...UInt64.max))
+            installCaches(into: &e)
+            engine = e
+            battle = e.state
+            // 상대 팀의 메가/거다이맥스 폼도 필요하다 — 받아서 엔진에 다시 심는다
+            Task { @MainActor in
+                await self.preloadForms(for: guestTeam)
+                if var e2 = self.engine {
+                    self.installCaches(into: &e2)
+                    self.engine = e2
+                }
+            }
             host.send(.joinAccepted(rules: rules, hostName: playerName, yourSide: BattleSide.guest.rawValue))
             hostLead = nil; guestLead = nil
             chosenLead = nil
@@ -244,9 +324,12 @@ final class AppModel {
         mySide = .guest
         rules.maxTeamSize = room.teamCap
         rules.level = room.level
-        selectedSlotIDs = Set(roster.prefix(rules.maxTeamSize).map(\.id))
+        trimSelectionToCap()          // 로비에서 고른 것을 유지한다 (덮어쓰지 않는다)
         myTeam = await buildTeam()
         guard !myTeam.isEmpty else { errorMessage = "팀을 만들 수 없습니다."; return }
+        status = "특수 변신 데이터를 준비하는 중…"
+        await preloadForms(for: myTeam)
+        await preloadTransformMoves()
 
         opponentName = room.hostName
         status = "\(room.hostName) 의 방에 접속 중…"
@@ -285,7 +368,11 @@ final class AppModel {
     private func guestHandle(_ msg: Wire) {
         switch msg {
         case .joinAccepted(let r, let hostName, let side):
+            // 팀은 이미 보냈다. 상한이 더 작아졌으면 호스트가 앞에서 자르므로 우리도 맞춘다.
             rules = r
+            if myTeam.count > r.maxTeamSize {
+                myTeam = Array(myTeam.prefix(r.maxTeamSize))
+            }
             opponentName = hostName
             mySide = BattleSide(rawValue: side) ?? .guest
             chosenLead = nil
@@ -335,15 +422,88 @@ final class AppModel {
         applyPhaseToUI(e.state)
     }
 
+    /// 이번 턴에 함께 선언할 특수 변신. UI 에서 토글한다.
+    var pendingSpecial: SpecialAction?
+
     func submitMove(_ index: Int) {
         guard let b = battle, case .awaitingMoves = b.phase else { return }
+        let special = pendingSpecial
+        pendingSpecial = nil
         waitingForOpponent = true
         status = "상대의 기술 선택을 기다리는 중…"
         if role == .host {
-            hostPending = .useMove(index: index)
+            hostPending = .useMove(index: index, special: special)
             maybeResolveTurn()
         } else {
-            guestLink?.send(.action(.useMove(index: index)))
+            guestLink?.send(.action(.useMove(index: index, special: special)))
+        }
+    }
+
+    // MARK: 특수 변신 가능 여부 (UI 에서 버튼 표시에 쓴다)
+
+    /// 지금 나와 있는 포켓몬이 이 변신을 쓸 수 있는가.
+    /// 규칙에서 켜져 있고 + 내가 이번 배틀에서 아직 안 썼고 + 그 개체가 자격이 있어야 한다.
+    func canUse(_ kind: SpecialKind) -> Bool {
+        guard let me = myState, let b = myState?.active else { return false }
+        switch kind {
+        case .mega:  return rules.allowMega  && !me.usedMega  && b.canMega
+        case .gmax:  return rules.allowGmax  && !me.usedGmax  && b.canGmax
+        case .zMove: return rules.allowZMove && !me.usedZMove && b.canZMove
+        }
+    }
+
+    /// 이미 써버린 변신인지 (UI 에서 "사용함" 표시)
+    func alreadyUsed(_ kind: SpecialKind) -> Bool {
+        guard let me = myState else { return false }
+        switch kind {
+        case .mega:  return me.usedMega
+        case .gmax:  return me.usedGmax
+        case .zMove: return me.usedZMove
+        }
+    }
+
+    func toggleSpecial(_ kind: SpecialKind) {
+        guard let b = myState?.active else { return }
+        let target: SpecialAction?
+        switch kind {
+        case .mega:  target = b.megaForms.first.map { SpecialAction.mega(form: $0) }
+        case .gmax:  target = .gmax
+        case .zMove: target = .zMove
+        }
+        guard let target else { return }
+        // 같은 걸 다시 누르면 해제, 다른 걸 누르면 교체 (한 턴에 하나만)
+        if let cur = pendingSpecial, sameKind(cur, target) {
+            pendingSpecial = nil
+        } else {
+            pendingSpecial = target
+        }
+    }
+
+    /// 리자몽처럼 메가 폼이 둘인 경우 특정 폼을 지정한다.
+    func selectMegaForm(_ form: String) {
+        pendingSpecial = .mega(form: form)
+    }
+
+    /// 뷰가 Z/맥스 변환을 미리 보여주려면 정의가 필요하다
+    var zPreview: [String: MoveDef] { zMoveCache.merging(maxMoveCache) { a, _ in a } }
+
+    func kindOf(_ a: SpecialAction) -> SpecialKind {
+        switch a {
+        case .mega:  .mega
+        case .gmax:  .gmax
+        case .zMove: .zMove
+        }
+    }
+
+    func megaFormLabel(_ form: String) -> String {
+        megaCache[form]?.suffixLabel ?? (form.hasSuffix("-x") ? "메가 X"
+                                        : form.hasSuffix("-y") ? "메가 Y" : "메가")
+    }
+
+    private func sameKind(_ a: SpecialAction, _ b: SpecialAction) -> Bool {
+        switch (a, b) {
+        case (.mega, .mega), (.gmax, .gmax), (.zMove, .zMove): return true
+        default: return false
         }
     }
 
