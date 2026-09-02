@@ -12,6 +12,14 @@ struct DiscoveredRoom: Identifiable, Sendable {
     var level: Int
     var occupied: Bool
     var endpoint: NWEndpoint
+    /// 방장의 프로토콜 버전. 다르면 접속해도 통신이 안 되므로 목록에서 미리 막는다.
+    var protocolVersion: Int
+
+    var compatible: Bool { protocolVersion == PokeBattleProtocol.version }
+    var versionNote: String? {
+        guard !compatible else { return nil }
+        return protocolVersion > PokeBattleProtocol.version ? "내 앱이 구버전" : "상대가 구버전"
+    }
 }
 
 /// 방을 광고하고 게스트 한 명을 받는다.
@@ -34,6 +42,8 @@ final class RoomHost: @unchecked Sendable {
     var onGuestMessage: (@Sendable (Wire) -> Void)?
     var onGuestDisconnected: (@Sendable () -> Void)?
     var onError: (@Sendable (String) -> Void)?
+    /// 게스트가 다른 프로토콜 버전으로 붙었을 때
+    var onProtocolError: (@Sendable (String) -> Void)?
 
     private var roomName = ""
     private var hostName = ""
@@ -71,6 +81,7 @@ final class RoomHost: @unchecked Sendable {
                     return
                 }
                 let link = PeerLink(connection: conn)
+                link.onProtocolError = { [weak self] msg in self?.onProtocolError?(msg) }
                 self.setGuest(link)
                 self.advertise(occupied: true)
                 link.start(
@@ -106,6 +117,7 @@ final class RoomHost: @unchecked Sendable {
         t["cap"] = String(rules.maxTeamSize)
         t["lvl"] = String(rules.level)
         t["busy"] = occupied ? "1" : "0"
+        t["pv"] = String(PokeBattleProtocol.version)
         return t
     }
 
@@ -165,14 +177,18 @@ final class RoomBrowser: @unchecked Sendable {
             let rooms: [DiscoveredRoom] = results.compactMap { r in
                 guard case .service(let name, _, _, _) = r.endpoint else { return nil }
                 var hostName = name, cap = 6, lvl = 50, busy = false
+                // pv 가 없으면 버전 정보를 싣지 않던 최초 배포판(v1) 이다
+                var pv = 1
                 if case .bonjour(let txt) = r.metadata {
                     hostName = txt["host"] ?? name
                     cap = Int(txt["cap"] ?? "6") ?? 6
                     lvl = Int(txt["lvl"] ?? "50") ?? 50
                     busy = (txt["busy"] ?? "0") == "1"
+                    pv = Int(txt["pv"] ?? "1") ?? 1
                 }
                 return DiscoveredRoom(name: name, hostName: hostName, teamCap: cap,
-                                      level: lvl, occupied: busy, endpoint: r.endpoint)
+                                      level: lvl, occupied: busy, endpoint: r.endpoint,
+                                      protocolVersion: pv)
             }
             self?.onRooms?(rooms.sorted { $0.name < $1.name })
         }

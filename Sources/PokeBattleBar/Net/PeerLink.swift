@@ -9,6 +9,9 @@ final class PeerLink: @unchecked Sendable {
 
     private var messageHandler: (@Sendable (Wire) -> Void)?
     private var stateHandler: (@Sendable (NWConnection.State) -> Void)?
+    /// 프레임 해석 실패 (특히 프로토콜 버전 불일치) 를 위로 올린다.
+    /// 이걸 안 하면 그냥 연결이 끊겨서 사용자는 이유를 알 수 없다.
+    var onProtocolError: (@Sendable (String) -> Void)?
 
     var endpointDescription: String { "\(connection.endpoint)" }
 
@@ -70,7 +73,10 @@ final class PeerLink: @unchecked Sendable {
                         self.messageHandler?(msg)
                     }
                 } catch {
-                    NSLog("PokeBattleBar: 프레임 해석 실패 \(error)")
+                    let msg = (error as? WireError)?.errorDescription
+                        ?? "통신 형식을 해석할 수 없습니다: \(error.localizedDescription)"
+                    NSLog("PokeBattleBar: 프레임 해석 실패 — \(msg)")
+                    self.onProtocolError?(msg)
                     self.connection.cancel()
                     return
                 }
