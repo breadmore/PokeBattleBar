@@ -46,6 +46,9 @@ struct BattleRules: Codable, Hashable, Sendable {
     var abilities: Bool = true
     /// 날씨 · 필드 사용
     var weather: Bool = true
+    /// 교체 허용. 기본은 꺼짐 (쓰러져야 다음 포켓몬이 나온다).
+    /// 켜면 조임·스텔스록 같은 효과가 교체에도 그대로 작동한다.
+    var allowSwitching: Bool = false
 
     static let `default` = BattleRules()
 }
@@ -66,6 +69,8 @@ struct SideState: Codable, Sendable, Equatable {
     /// 다이맥스와 거다이맥스가 함께 쓰는 슬롯 (원작에서 같은 자원)
     var usedDynamax: Bool = false
     var usedZMove: Bool = false
+    /// 이 진영에 설치된 장애물. 등장하는 포켓몬이 피해를 받는다.
+    var hazards: Set<Hazard> = []
 
     func hasUsed(_ a: SpecialAction) -> Bool {
         switch a {
@@ -115,11 +120,19 @@ enum BattleAction: Codable, Sendable, Equatable {
     /// (원작처럼 기술 선택과 같은 시점에 선언한다).
     case useMove(index: Int, special: SpecialAction? = nil)
     case replace(teamIndex: Int)
+    /// 자발적 교체 (rules.allowSwitching 이 켜진 경우에만).
+    /// 조임 상태면 막히고, 교체로 나온 포켓몬은 장애물 피해를 받는다.
+    case switchTo(teamIndex: Int)
 
     var moveIndex: Int? {
         if case .useMove(let i, _) = self { return i }
         return nil
     }
+    var switchIndex: Int? {
+        if case .switchTo(let i) = self { return i }
+        return nil
+    }
+    var isSwitch: Bool { switchIndex != nil }
     var special: SpecialAction? {
         if case .useMove(_, let s) = self { return s }
         return nil
@@ -176,6 +189,73 @@ struct BattleEngine {
         for s in [BattleSide.host, .guest] { fireEntryAbility(s) }
     }
 
+    /// 자발적 교체. 조임 상태면 실패한다.
+    private mutating func performSwitch(_ side: BattleSide, teamIndex: Int) {
+        guard state.rules.allowSwitching else { return }
+        let team = state.side(side).team
+        let cur = state.side(side).activeIndex
+        guard team.indices.contains(teamIndex), teamIndex != cur,
+              !team[teamIndex].isFainted else { return }
+
+        let active = team[cur]
+        if active.isTrapped {
+            say("\(active.name)는 묶여 있어 교체할 수 없다!")
+            return
+        }
+
+        // 물러나는 포켓몬의 일시 상태를 초기화한다 (원작과 동일)
+        var out = active
+        out.stages = [:]
+        out.accuracyStage = 0
+        out.evasionStage = 0
+        out.confusionTurns = 0
+        out.mustFlinch = false
+        out.lockedMoveIndex = nil
+        out.lastMoveIndex = nil
+        out.tormented = false
+        out.isProtecting = false
+        out.protectStreak = 0
+        if out.isDynamaxed { out.revertDynamax() }
+        state.sides[side.rawValue].team[cur] = out
+
+        state.sides[side.rawValue].activeIndex = teamIndex
+        say("\(state.side(side).playerName)는 \(out.name)을(를) 넣고 \(team[teamIndex].name)을(를) 냈다!")
+
+        applyHazards(to: side)
+        if state.side(side).active.isFainted {
+            checkBattleOver()
+            if case .finished = state.phase { return }
+            state.phase = .awaitingReplacement([side.rawValue])
+            return
+        }
+        fireEntryAbility(side)
+    }
+
+    /// 등장 시 장애물 피해. 교체룰이 들어오면 교체에도 그대로 적용된다.
+    private mutating func applyHazards(to side: BattleSide) {
+        let hazards = state.side(side).hazards
+        guard !hazards.isEmpty else { return }
+        let idx = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(idx) else { return }
+        var b = state.sides[side.rawValue].team[idx]
+        guard !b.isFainted else { return }
+        if state.rules.abilities, isMagicGuard(b) { return }
+
+        for h in Hazard.allCases where hazards.contains(h) {
+            let mult = chart.multiplier(attack: h.type, defenders: b.types)
+            guard mult > 0 else { continue }
+            let dmg = h.damage(maxHP: b.maxHP, multiplier: mult)
+            b.currentHP = max(0, b.currentHP - dmg)
+            say("\(KO.t(b.name)) \(h.ko)에 피해를 입었다!")
+            if b.currentHP == 0 { break }
+        }
+        state.sides[side.rawValue].team[idx] = b
+        if b.isFainted {
+            let marker = "\(KO.t(b.name)) 쓰러졌다!"
+            if state.log.last != marker { say(marker) }
+        }
+    }
+
     /// 등장 시 발동하는 특성 (위협)
     private mutating func fireEntryAbility(_ side: BattleSide) {
         guard state.rules.abilities else { return }
@@ -217,6 +297,27 @@ struct BattleEngine {
 
     mutating func resolveTurn(hostAction: BattleAction, guestAction: BattleAction) {
         guard case .awaitingMoves = state.phase else { return }
+
+        // 이번 턴 방어 상태를 초기화한다 (방어는 그 턴에만 유효하다)
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            if state.side(side).team.indices.contains(i) {
+                state.sides[side.rawValue].team[i].isProtecting = false
+            }
+        }
+
+        // 교체는 기술보다 먼저 처리한다 (원작 규칙).
+        // 스피드가 빠른 쪽부터 교체한다.
+        if state.rules.allowSwitching {
+            let switchOrder = state.side(.host).active.effective(.speed)
+                            >= state.side(.guest).active.effective(.speed)
+                            ? [BattleSide.host, .guest] : [.guest, .host]
+            for side in switchOrder {
+                let action = side == .host ? hostAction : guestAction
+                if let idx = action.switchIndex { performSwitch(side, teamIndex: idx) }
+            }
+            if case .finished = state.phase { return }
+        }
 
         // 변신은 공격보다 먼저 일어난다 — 바뀐 스피드가 행동 순서에 반영되어야 한다.
         zDeclared = []
@@ -267,6 +368,14 @@ struct BattleEngine {
 
         state.sides[side.rawValue].activeIndex = teamIndex
         say("\(state.side(side).playerName): 가라, \(team[teamIndex].name)!")
+        applyHazards(to: side)
+        guard !state.side(side).active.isFainted else {
+            // 장애물로 쓰러졌으면 또 골라야 한다
+            checkBattleOver()
+            if case .finished = state.phase { return }
+            state.phase = .awaitingReplacement([side.rawValue])
+            return
+        }
         fireEntryAbility(side)
 
         needs.removeAll { $0 == side.rawValue }
@@ -284,7 +393,11 @@ struct BattleEngine {
         func priority(_ a: BattleAction, _ s: BattleSide) -> Int {
             if let i = a.moveIndex {
                 let mv = state.side(s).active.moves
-                if mv.indices.contains(i) { return mv[i].def.priority }
+                if mv.indices.contains(i) {
+                    // 방어 계열은 우선도 +4 (원작)
+                    if MoveFlags.isProtect(mv[i].def.name) { return 4 }
+                    return mv[i].def.priority
+                }
             }
             return 0
         }
@@ -444,6 +557,12 @@ struct BattleEngine {
             return
         }
 
+        // 아무것도않기 — 같은 기술을 연속으로 쓸 수 없다
+        if atk.tormented, atk.lastMoveIndex == moveIndex {
+            say("\(atkName)는 같은 기술을 연속으로 쓸 수 없다!")
+            return
+        }
+
         // 구애 계열로 고정된 기술이 아니면 쓸 수 없다
         if state.rules.itemEffects, let locked = atk.lockedMoveIndex, locked != moveIndex,
            atk.moves.indices.contains(locked), atk.moves[locked].usable {
@@ -476,6 +595,48 @@ struct BattleEngine {
             say("\(atkName)의 \(move.display)!")
         }
 
+        // 직전 기술 기록 (아무것도않기 판정용)
+        do {
+            var a2 = state.side(attacker).active
+            a2.lastMoveIndex = moveIndex
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+        }
+
+        // 방어 계열 — 이번 턴 자신을 보호한다. 연속으로 쓰면 성공률이 떨어진다.
+        if MoveFlags.isProtect(move.name) {
+            var a2 = state.side(attacker).active
+            let successPercent = max(13, 100 >> a2.protectStreak)
+            if rng.chance(successPercent) {
+                a2.isProtecting = true
+                a2.protectStreak = min(3, a2.protectStreak + 1)
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                say("\(atkName)는 몸을 지킬 준비를 했다!")
+            } else {
+                a2.protectStreak = 0
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                say("\(atkName)의 \(move.display)! …하지만 실패했다!")
+            }
+            return
+        }
+        // 방어 기술이 아니면 연속 카운터를 초기화한다
+        if state.side(attacker).active.protectStreak > 0 {
+            var a2 = state.side(attacker).active
+            a2.protectStreak = 0
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+        }
+
+        // 상대가 방어 중이면 막힌다 — 다이맥스일격/연격만 관통한다
+        let bypassesProtect: Bool = {
+            guard move.name.hasPrefix("gmax-"),
+                  let g = state.side(attacker).active.gmaxMove else { return false }
+            if case .bypassProtect = g.effect { return true }
+            return false
+        }()
+        if state.side(defender).active.isProtecting, !bypassesProtect {
+            say("\(state.side(defender).active.name)는 공격을 막아냈다!")
+            return
+        }
+
         // 방음 — 소리 기술 무효
         if state.rules.abilities, MoveFlags.isSound(move.name),
            case .soundImmunity = state.side(defender).active.abilityKind {
@@ -492,11 +653,30 @@ struct BattleEngine {
         let def = state.side(defender).active
         if !accuracyCheck(move: move, attacker: atk, defender: def) {
             say("\(atkName)의 공격은 빗나갔다!")
+            // 대폭발 계열은 빗나가도 쓴 쪽이 쓰러진다 (5세대 이후 원작 규칙 —
+            // 자폭이 공격 판정보다 먼저 일어나기 때문이다)
+            if move.selfKO { applySelfKO(attacker) }
             return
         }
 
         // 변화기 (고정 데미지 기술은 위력이 0 이어도 공격기다)
         if move.damageClass == .status || !move.isDamaging {
+            // **타입 면역은 변화기에도 적용된다** (원작 규칙).
+            // 전기자석파는 땅 타입에게, 최면술은 악 타입에게 통하지 않는다.
+            // 날씨·필드 기술은 상대를 노리지 않으므로 대상에서 제외한다.
+            if move.targetsOpponent {
+                let d = state.side(defender).active
+                var mult = chart.multiplier(attack: move.type, defenders: d.types)
+                // 부유 등 특성 면역도 함께 본다
+                if state.rules.abilities, case .typeImmunity(let t) = d.abilityKind, move.type == t {
+                    mult = 0
+                }
+                if mult == 0 {
+                    say("\(d.name)에게는 효과가 없는 것 같다…")
+                    if move.selfKO { applySelfKO(attacker) }
+                    return
+                }
+            }
             applyNonDamaging(move: move, attacker: attacker, defender: defender)
             // 메멘토·힐링위시처럼 위력 없이 쓴 쪽이 쓰러지는 기술
             if move.selfKO { applySelfKO(attacker) }
@@ -515,6 +695,8 @@ struct BattleEngine {
             lastMult = r.typeMultiplier
             if r.multiplier == 0 {
                 say("\(state.side(defender).active.name)에게는 효과가 없는 것 같다…")
+                // 상대가 무효 타입이어도 자폭은 일어난다
+                if move.selfKO { applySelfKO(attacker) }
                 return
             }
             didCrit = didCrit || r.critical
@@ -619,8 +801,18 @@ struct BattleEngine {
         }
 
         // Z기술 — 이번 턴 한 번만
-        guard zDeclared.contains(attacker.rawValue),
-              let zName = FormTables.zMoveName(for: move),
+        guard zDeclared.contains(attacker.rawValue) else { return move }
+        // 전용 Z크리스탈은 타입 제한 없이 자기 공격기를 Z기술로 만든다
+        if b.hasSignatureZ, move.damageClass != .status, move.isDamaging {
+            var sz = move
+            sz.koName = (b.heldItem?.display ?? "전용 Z") + " Z기술"
+            sz.power = FormTables.zPower(basePower: move.power ?? 0)
+            sz.accuracy = nil
+            sz.specialDamage = .none
+            sz.selfKO = false
+            return sz
+        }
+        guard let zName = FormTables.zMoveName(for: move),
               var z = zMoveCache[zName] else { return move }
         z.power = FormTables.zPower(basePower: move.power ?? 0)
         z.damageClass = move.damageClass
@@ -737,6 +929,49 @@ struct BattleEngine {
             f.ability = nil
             state.sides[defender.rawValue].team[dIdx] = f
             say("상대의 특성이 무시됐다!")
+
+        case .damageOverTimeAndTrap(let immune, let turns):
+            state.gmaxDoT[defender.rawValue] = GMaxDoT(immuneType: immune, turnsLeft: turns)
+            var f = state.sides[defender.rawValue].team[dIdx]
+            f.trappedTurns = max(f.trappedTurns, turns)
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("\(g.ko)가 상대를 휘감았다! (\(turns)턴)")
+
+        case .hazard(let h):
+            // 상대 진영에 설치 — 상대의 다음 포켓몬이 등장할 때 피해를 받는다
+            state.sides[defender.rawValue].hazards.insert(h)
+            say("상대 진영에 \(h.ko)가 깔렸다!")
+
+        case .clearOwnHazards:
+            let had = state.sides[attacker.rawValue].hazards
+            guard !had.isEmpty else {
+                say("\(g.ko)! 하지만 치울 것이 없었다.")
+                break
+            }
+            state.sides[attacker.rawValue].hazards.removeAll()
+            say("\(g.ko)로 \(had.map(\.ko).sorted().joined(separator: "·"))를 날려버렸다!")
+
+        case .gravity(let turns):
+            state.field.setGravity(turns)
+            say("중력이 강해졌다! (\(turns)턴)")
+
+        case .trap(let turns):
+            var f = state.sides[defender.rawValue].team[dIdx]
+            guard !f.isFainted else { break }
+            f.trappedTurns = max(f.trappedTurns, turns)
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("\(f.name)는 도망칠 수 없게 되었다! (\(turns)턴)")
+
+        case .torment:
+            var f = state.sides[defender.rawValue].team[dIdx]
+            guard !f.isFainted, !f.tormented else { break }
+            f.tormented = true
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("\(f.name)는 같은 기술을 연속으로 쓸 수 없게 되었다!")
+
+        case .bypassProtect:
+            // 방어 관통은 데미지 판정 시점에 이미 적용된다 (여기서는 로그만)
+            say("\(g.ko)는 방어를 뚫는다!")
         }
     }
 
@@ -840,6 +1075,10 @@ struct BattleEngine {
         let mod = Battler.accEvaMultiplier(attacker.accuracyStage)
                 / Battler.accEvaMultiplier(defender.evasionStage)
         var final = Int((Double(acc) * mod).rounded())
+        // 중력 — 명중률 5/3 배
+        if state.rules.weather, state.field.hasGravity {
+            final = Int(Double(final) * 5.0 / 3.0)
+        }
         // 모래숨기·눈숨기 — 해당 날씨에서 회피율 상승
         if state.rules.weather, state.field.hasWeather,
            case .weatherEvasion(let w) = defender.abilityKind, w == state.field.weather {
@@ -954,9 +1193,15 @@ struct BattleEngine {
             && { if case .ignoreAbility = a.abilityKind { return true }; return false }()
         let foeAbility: AbilityKind = ignoreFoeAbility ? .none : d.abilityKind
 
-        // 특성: 부유 등 타입 무효
-        if state.rules.abilities, case .typeImmunity(let t) = foeAbility, move.type == t {
+        // 특성: 부유 등 타입 무효 — 단 중력 중에는 무효가 사라진다
+        let gravityOn = state.rules.weather && state.field.hasGravity
+        if state.rules.abilities, case .typeImmunity(let t) = foeAbility, move.type == t, !gravityOn {
             typeMult = 0
+        }
+        // 중력 중에는 땅 기술이 비행 타입에게도 통한다
+        if gravityOn, move.type == .ground, d.types.contains(.flying) {
+            let without = d.types.filter { $0 != .flying }
+            typeMult = without.isEmpty ? 1.0 : chart.multiplier(attack: .ground, defenders: without)
         }
         // 타입 흡수 계열 (저수·축전·타오르는불꽃·건조피부)
         if state.rules.abilities, case .levitateLike(let t, let mult) = foeAbility, move.type == t {
@@ -1324,6 +1569,18 @@ struct BattleEngine {
         let ended = state.field.tick()
         if let w = ended.endedWeather { say("\(w.ko)이(가) 그쳤다!") }
         if let t = ended.endedTerrain { say("\(t.ko)가 사라졌다!") }
+        if ended.gravityEnded { say("중력이 원래대로 돌아왔다!") }
+
+        // 조임 지속시간 감소
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            var b = state.sides[side.rawValue].team[i]
+            guard b.trappedTurns > 0 else { continue }
+            b.trappedTurns -= 1
+            if b.trappedTurns == 0 { say("\(KO.t(b.name)) 자유로워졌다!") }
+            state.sides[side.rawValue].team[i] = b
+        }
     }
 
     /// G-Max 지속 피해 (다이맥스채찍·다이맥스파이어 등)

@@ -57,6 +57,9 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     var pp: Int
     var priority: Int
     var targetsSelf: Bool       // stat_changes 를 자신에게 적용하는지
+    /// PokeAPI 의 target 원문. 타입 면역을 변화기에 적용할 때
+    /// "상대를 노리는 기술" 과 "필드에 걸리는 기술" 을 구분해야 한다.
+    var target: String = "selected-pokemon"
     var ailment: Ailment
     var ailmentChance: Int      // 0 = 부가효과 없음 / 100 = 확정
     var statChanges: [StatChange]
@@ -81,6 +84,18 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     }
 
     var display: String { koName.isEmpty ? name : koName }
+
+    /// 상대 포켓몬을 직접 노리는 기술인가.
+    /// 날씨·필드 기술(쾌청=불꽃, 일렉트릭필드=전기) 은 상대를 노리지 않으므로
+    /// 타입 면역으로 막혀선 안 된다.
+    var targetsOpponent: Bool {
+        switch target {
+        case "selected-pokemon", "random-opponent", "all-opponents", "all-other-pokemon":
+            return true
+        default:
+            return false
+        }
+    }
 
     /// 데미지를 주는 기술인가 (위력이 있거나 특수 데미지 규칙이 있으면 공격기다)
     var isDamaging: Bool {
@@ -359,6 +374,7 @@ actor PokeAPI {
             pp: j["pp"] as? Int ?? 10,
             priority: j["priority"] as? Int ?? 0,
             targetsSelf: targetName == "user" || targetName == "users-field" || targetName == "user-and-allies",
+            target: targetName,
             ailment: ailment,
             ailmentChance: ailmentChance,
             statChanges: changes,

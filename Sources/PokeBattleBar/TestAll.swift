@@ -1,0 +1,85 @@
+import Foundation
+
+/// `PokeBattleBar --testall [--battles N] [--verbose]`
+/// 모든 검증 스위트를 순서대로 돌리고 요약표를 출력한다.
+/// 하나라도 실패하면 종료코드 1 — 릴리즈 스크립트가 이걸 보고 배포를 막는다.
+enum TestAll {
+    struct Suite {
+        var flag: String
+        var name: String
+        var what: String
+        var run: () async -> Bool
+    }
+
+    static func run(battles: Int, verbose: Bool) async -> Bool {
+        let suites: [Suite] = [
+            .init(flag: "--selftest", name: "엔진 기본", what: "스탯 공식·상성표·전투 종료·조사") {
+                await SelfTest.run(speciesA: [87, 317, 6, 9, 3, 65],
+                                   speciesB: [143, 130, 149, 94, 68, 131],
+                                   level: 50, verbose: verbose)
+            },
+            .init(flag: "--movetest", name: "기술 효과", what: "반동·흡수·상태이상·랭크·고정데미지·자폭") {
+                await MoveEffectTest.run(verbose: verbose)
+            },
+            .init(flag: "--formtest", name: "특수 변신", what: "메가·다이맥스·거다이맥스·Z 횟수 규칙") {
+                await FormTest.run(verbose: verbose)
+            },
+            .init(flag: "--pickertest", name: "포켓몬 선택", what: "부분 선택·선봉·교체 인덱스") {
+                await MainActor.run { () -> Task<Bool, Never> in
+                    Task { await SelectionTest.run() }
+                }.value
+            },
+            .init(flag: "--itemtest", name: "도구 데이터", what: "메가스톤 파싱·Z크리스탈 18타입·효과 매핑") {
+                await ItemTest.run()
+            },
+            .init(flag: "--loadouttest", name: "도구·특성 효과", what: "실제 배틀 계산 반영 30항목") {
+                await LoadoutTest.run(verbose: verbose)
+            },
+            .init(flag: "--extendedtest", name: "날씨·접촉·G-Max", what: "PokeAPI 에 없어 직접 넣은 것들") {
+                await ExtendedTest.run()
+            },
+            .init(flag: "--edgetest", name: "엣지 케이스", what: "포켓몬 엔진에서 자주 틀리는 지점") {
+                await EdgeCaseTest.run(verbose: verbose)
+            },
+            .init(flag: "--bugsweep", name: "불변식 스윕", what: "무작위 배틀 \(battles)회, 매 턴 규칙 검사") {
+                await BugSweep.run(battles: battles, verbose: verbose)
+            },
+            .init(flag: "--nettest", name: "네트워크", what: "Bonjour·프레이밍·직렬화·버전") {
+                await NetTest.run()
+            },
+        ]
+
+        var results: [(Suite, Bool, Double)] = []
+        for (i, s) in suites.enumerated() {
+            print(String(repeating: "═", count: 62))
+            print("[\(i + 1)/\(suites.count)] \(s.name)  \(s.flag)")
+            print("        \(s.what)")
+            print(String(repeating: "═", count: 62))
+            let t0 = Date()
+            let ok = await s.run()
+            results.append((s, ok, Date().timeIntervalSince(t0)))
+            print()
+        }
+
+        // 요약
+        print(String(repeating: "═", count: 62))
+        print("요약")
+        print(String(repeating: "═", count: 62))
+        let nameWidth = results.map(\.0.name.count).max() ?? 12
+        for (s, ok, dt) in results {
+            let pad = String(repeating: " ", count: max(0, nameWidth - s.name.count))
+            print("  \(ok ? "✓" : "✗")  \(s.name)\(pad)  \(s.flag.padding(toLength: 16, withPad: " ", startingAt: 0))"
+                  + String(format: "%6.1f초", dt))
+        }
+        let passed = results.filter(\.1).count
+        let total = results.count
+        let elapsed = results.reduce(0.0) { $0 + $1.2 }
+        print()
+        print("  \(passed)/\(total) 통과   총 \(String(format: "%.1f", elapsed))초")
+        if passed < total {
+            print("\n  실패: " + results.filter { !$0.1 }.map(\.0.flag).joined(separator: " "))
+        }
+        print(String(repeating: "═", count: 62))
+        return passed == total
+    }
+}

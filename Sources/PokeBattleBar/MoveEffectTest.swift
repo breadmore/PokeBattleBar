@@ -55,8 +55,14 @@ enum MoveEffectTest {
             after.def.status == .sleep && after.def.sleepTurns > 0
         } && ok; checked += 1
 
-        ok = await assert("confuse-ray", "혼란 부여", chart, verbose) { _, after, _ in
+        // 이상한빛은 고스트 타입 — 노말(잠만보)에게는 무효다. 상성을 받는 상대로 확인한다.
+        ok = await assert("confuse-ray", "혼란 부여", chart, verbose,
+                          defenderSpecies: 6) { _, after, _ in     // 리자몽
             after.def.confusionTurns > 0
+        } && ok; checked += 1
+        ok = await assert("confuse-ray", "고스트 변화기는 노말에게 무효", chart, verbose,
+                          defenderSpecies: 143) { _, after, _ in
+            after.def.confusionTurns == 0
         } && ok; checked += 1
 
         // MARK: 상태이상 타입 면역

@@ -2,6 +2,51 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--testall") {
+    func intVal(_ flag: String, default def: Int) -> Int {
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count, let v = Int(args[i + 1]) else { return def }
+        return v
+    }
+    let n = intVal("--battles", default: 40)
+    let verbose = args.contains("--verbose")
+    Task {
+        let passed = await TestAll.run(battles: n, verbose: verbose)
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--roster") {
+    Task {
+        let ok = await RosterDump.run()
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--edgetest") {
+    let verbose = args.contains("--verbose")
+    Task {
+        let passed = await EdgeCaseTest.run(verbose: verbose)
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--bugsweep") {
+    func intVal(_ flag: String, default def: Int) -> Int {
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count, let v = Int(args[i + 1]) else { return def }
+        return v
+    }
+    let n = intVal("--battles", default: 40)
+    let verbose = args.contains("--verbose")
+    Task {
+        let passed = await BugSweep.run(battles: n, verbose: verbose)
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--extendedtest") {
     Task {
         let passed = await ExtendedTest.run()

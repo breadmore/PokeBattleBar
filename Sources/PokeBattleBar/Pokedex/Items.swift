@@ -82,6 +82,22 @@ actor ItemCatalog {
         "darkinium": .dark,     "steelium": .steel,     "fairium": .fairy
     ]
 
+    /// 전용 Z크리스탈 → 그 종만 쓸 수 있다.
+    /// PokeAPI 는 어느 종의 것인지 구조화해서 주지 않아 표로 둔다.
+    static let signatureZ: [String: Int] = [
+        "pikanium": 25,      // 피카츄 — 캐터스트로피카
+        "pikashunium": 25,   // 피카츄(모자) — 1000만볼트
+        "aloraichium": 26,   // 알로라 라이츄 — 라이츄서핑
+        "eevium": 133,       // 이브이 — 나인에볼브스트
+        "snorlium": 143,     // 잠만보 — 절대엎어치기
+        "mewnium": 151,      // 뮤 — 게노시스슈퍼노바
+        "decidium": 724,     // 모크나이퍼 — 슈터스타애로
+        "incinium": 727,     // 어흥염 — 불꽃의헤비급라리아트
+        "primarium": 730,    // 누리레느 — 오케스트라
+        "marshadium": 802,   // 마샤도 — 확산일격
+        "tapunium": 785      // 카푸꼬꼬꼭 — 수호신의일격
+    ]
+
     private static let plates: [String: PType] = [
         "flame-plate": .fire,    "splash-plate": .water,   "zap-plate": .electric,
         "meadow-plate": .grass,  "icicle-plate": .ice,     "fist-plate": .fighting,
@@ -157,7 +173,8 @@ actor ItemCatalog {
             let base = slug.replacingOccurrences(of: "-z--held", with: "")
                            .replacingOccurrences(of: "-z", with: "")
             if let t = zPrefix[base] { return .zCrystalType(t) }
-            return .zCrystalSignature(species: 0)     // 전용 Z — 종 판정은 하지 않는다
+            if let sid = signatureZ[base] { return .zCrystalSignature(species: sid) }
+            return .none
         }
         if let t = plates[slug] { return .typePlate(t, 1.2) }
 
@@ -229,8 +246,8 @@ actor ItemCatalog {
             switch d.kind {
             case .megaStone(let form):
                 return sp.megaForms.contains(form)
-            case .zCrystalSignature:
-                return false                       // 전용 Z 는 종 매핑이 없어 제외
+            case .zCrystalSignature(let sid):
+                return sid == sp.id                // 전용 Z 는 그 종에게만
             case .maxMushroom:
                 return sp.canGigantamax            // 거다이맥스 폼이 없으면 의미 없다
             case .none:
