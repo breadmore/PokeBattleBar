@@ -51,6 +51,13 @@ enum BugSweep {
                         guard let pick = alive.randomElement(using: &rng) else { continue }
                         e.applyReplacement(side, teamIndex: pick)
                     }
+                    // 직전 턴 스텝이 남아 있으면 UI 가 그것을 다시 재생한다 —
+                    // 방금 쓰러진 포켓몬이 한 번 더 쓰러지는 연출이 된다
+                    if !e.state.steps.isEmpty {
+                        violations[Violation(rule: "교체 뒤에 직전 턴 재생 스텝이 남았다",
+                                             detail: "steps=\(e.state.steps.count)"),
+                                   default: 0] += 1
+                    }
                 case .awaitingPivot(let pending):
                     for raw in pending {
                         guard let side = BattleSide(rawValue: raw) else { continue }
@@ -58,6 +65,11 @@ enum BugSweep {
                             .filter { $0 != e.state.side(side).activeIndex }
                         guard let pick = alive.randomElement(using: &rng) else { continue }
                         e.applyPivot(side, teamIndex: pick)
+                    }
+                    if !e.state.steps.isEmpty {
+                        violations[Violation(rule: "피벗 뒤에 직전 턴 재생 스텝이 남았다",
+                                             detail: "steps=\(e.state.steps.count)"),
+                                   default: 0] += 1
                     }
                 case .chooseLead:
                     e.setLead(.host, index: 0); e.setLead(.guest, index: 0); e.beginBattle()
@@ -127,7 +139,9 @@ enum BugSweep {
         "배틀은 유한 턴 안에 끝난다",
         "피벗(유턴) 단계는 활성이 살아 있고 벤치에 낼 포켓몬이 있을 때만",
         "묶기 턴수는 0 이상 6 이하",
-        "쓰러진 포켓몬은 절대 되살아나지 않는다"
+        "쓰러진 포켓몬은 절대 되살아나지 않는다",
+        "교체 뒤에 직전 턴 재생 스텝이 남았다",
+        "피벗 뒤에 직전 턴 재생 스텝이 남았다"
     ]
 
     // MARK: 불변식 검사

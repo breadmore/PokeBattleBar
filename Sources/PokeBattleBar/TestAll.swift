@@ -18,6 +18,9 @@ enum TestAll {
                                    speciesB: [143, 130, 149, 94, 68, 131],
                                    level: 50, verbose: verbose)
             },
+            .init(flag: "--profiletest", name: "테스트 프로필", what: "두 인스턴스 격리·지정 팀 파싱") {
+                await TestProfileTest.run()
+            },
             .init(flag: "--movetest", name: "기술 효과", what: "반동·흡수·상태이상·랭크·고정데미지·자폭") {
                 await MoveEffectTest.run(verbose: verbose)
             },

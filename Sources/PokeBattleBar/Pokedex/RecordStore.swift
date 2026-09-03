@@ -43,7 +43,8 @@ actor RecordStore {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/PokeBattleBar")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appending(path: "record.json")
+        // 테스트 인스턴스는 별도 파일을 쓴다 — 같은 파일에 두 앱이 쓰면 기록이 덮인다
+        fileURL = dir.appending(path: TestProfile.recordFileName)
         if let d = try? Data(contentsOf: fileURL),
            let r = try? JSONDecoder().decode(Record.self, from: d) {
             record = r

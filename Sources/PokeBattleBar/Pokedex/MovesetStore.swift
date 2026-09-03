@@ -18,7 +18,8 @@ actor MovesetStore {
             .homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/PokeBattleBar")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appending(path: "movesets.json")
+        // 테스트로 두 개 띄웠을 때 서로의 설정을 덮지 않게 한다
+        fileURL = dir.appending(path: TestProfile.fileName("movesets.json"))
         if let d = try? Data(contentsOf: fileURL),
            let m = try? JSONDecoder().decode([String: [String]].self, from: d) {
             assigned = m

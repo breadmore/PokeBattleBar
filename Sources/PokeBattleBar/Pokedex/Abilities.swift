@@ -156,6 +156,11 @@ actor AbilityCatalog {
 
     /// 구조화된 효과 표. 여기에 있는 것만 배틀 계산에 반영된다.
     static func kind(for slug: String) -> AbilityKind {
+        // 배틀 중 폼이 바뀌는 특성은 FormChange 가 처리한다.
+        // 목록을 여기서 따로 적으면 규칙이 없는 특성까지 구현됐다고
+        // 표시하게 되므로 반드시 그쪽 목록(autoAbilityNames)을 본다.
+        if FormChange.isAutoAbility(slug) { return .autoFormChange }
+
         switch slug {
         // 궁지 강화
         case "blaze":      return .pinchBoost(.fire, 1.5)
@@ -267,12 +272,6 @@ actor AbilityCatalog {
         case "shield-dust": return .shieldDust
 
         // --- 확장 (3차) ---
-        // 배틀 중 자동 폼 변화 — 처리는 FormChange 가 한다
-        case "forecast", "flower-gift", "zen-mode", "schooling", "disguise",
-             "hunger-switch", "power-construct", "shields-down", "stance-change",
-             "battle-bond", "ice-face":
-            return .autoFormChange
-
         case "gluttony":       return .gluttony
         case "unnerve", "as-one-spectrier": return .unnerve
         case "liquid-ooze":    return .liquidOoze
