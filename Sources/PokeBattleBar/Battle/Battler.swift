@@ -36,7 +36,27 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     /// 저주 — 매 턴 최대 HP 의 1/4 을 잃는다
     var cursed: Bool = false
 
+    // MARK: 앙코르 · 하품 · 비축 · 누적 위력
+    //
+    // 전부 데이터에 구조화돼 있지 않아 상태를 직접 들고 처리한다.
+
+    /// 앙코르 — 이 기술만 쓰게 되는 남은 턴수
+    var encoreTurns: Int = 0
+    var encoreMoveIndex: Int?
+    /// 하품 — 이 턴수가 0 이 되면 잠든다
+    var drowsyTurns: Int = 0
+    /// 비축 횟수 (뱉어내기·통째로꿀꺽의 위력·회복량을 정한다). 최대 3.
+    var stockpile: Int = 0
+    /// 같은 기술을 연속으로 쓴 횟수 (연속자르기·데구르르·에코보이스가 세진다)
+    var consecutiveMoveIndex: Int?
+    var consecutiveCount: Int = 0
+    /// 전자부유 — 땅 기술을 받지 않는 남은 턴수
+    var magnetRiseTurns: Int = 0
+    /// 검은눈빛 등으로 도망갈 수 없는 상태 (교체 불가)
+    var cannotFlee: Bool = false
+
     var isCharging: Bool { chargingMoveIndex != nil }
+    var isEncored: Bool { encoreTurns > 0 && encoreMoveIndex != nil }
 
     /// 모으는 중인 기술 이름 (연출에서 어디로 숨었는지 정하는 데 쓴다)
     var chargingMoveName: String? {

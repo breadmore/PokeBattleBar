@@ -156,7 +156,14 @@ ok "설치 완료: /Applications/PokeBattleBar.app"
 
 # --- 실행 ---
 say ""
-open "/Applications/PokeBattleBar.app" 2>/dev/null && ok "실행했습니다" \
+# 앱 안의 업데이트 버튼으로 왔을 때, 옛 앱이 아직 살아 있으면 새 것이 뜨지 않는다.
+# 한 번 더 확실히 끄고 띄운다.
+pkill -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" 2>/dev/null || true
+for i in 1 2 3 4 5 6; do
+  pgrep -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" >/dev/null 2>&1 || break
+  sleep 0.5
+done
+open -n "/Applications/PokeBattleBar.app" 2>/dev/null && ok "실행했습니다" \
   || warn "자동 실행에 실패했습니다. Launchpad 에서 PokeBattleBar 를 열어주세요."
 
 say ""

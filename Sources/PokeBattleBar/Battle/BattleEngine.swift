@@ -528,6 +528,14 @@ struct BattleEngine {
         out.trapMoveName = nil
         out.substituteHP = nil
         out.cursed = false
+        out.encoreTurns = 0
+        out.encoreMoveIndex = nil
+        out.drowsyTurns = 0
+        out.stockpile = 0
+        out.consecutiveMoveIndex = nil
+        out.consecutiveCount = 0
+        out.magnetRiseTurns = 0
+        out.cannotFlee = false
         out.chargingMoveIndex = nil
         out.chargeHidden = false
         out.mustRechargeTurns = 0
@@ -943,11 +951,25 @@ struct BattleEngine {
             return
         }
 
-        // 구애 계열로 고정된 기술이 아니면 쓸 수 없다
+        // 구애 계열로 고정됐으면 **그 기술로 바꿔서 쓴다.**
+        //
+        // 예전에는 안내만 하고 턴을 날렸다. 원작은 애초에 다른 기술을 고를 수
+        // 없게 막으므로 턴이 날아가는 일이 없다 — 화면에서도 막고(UI),
+        // 그래도 다른 인덱스가 들어오면(구버전 상대 등) 여기서 바로잡는다.
+        var moveIndex = moveIndex
+
+        // 앙코르 — 지정된 기술만 나간다. 구애와 같은 이유로 턴을 날리지 않는다.
+        if atk.isEncored, let forced = atk.encoreMoveIndex,
+           forced != moveIndex, atk.moves.indices.contains(forced), atk.moves[forced].usable {
+            say("\(atkName)는 앙코르 때문에 \(atk.moves[forced].def.display)밖에 쓸 수 없다!")
+            moveIndex = forced
+        }
+
         if state.rules.itemEffects, let locked = atk.lockedMoveIndex, locked != moveIndex,
            atk.moves.indices.contains(locked), atk.moves[locked].usable {
-            say("\(atkName)는 \(atk.heldItem?.display ?? "구애 도구") 때문에 \(atk.moves[locked].def.display)밖에 쓸 수 없다!")
-            return
+            say("\(atkName)는 \(atk.heldItem?.display ?? "구애 도구") 때문에 "
+                + "\(atk.moves[locked].def.display)밖에 쓸 수 없다!")
+            moveIndex = locked
         }
         // 돌격조끼: 변화기를 쓸 수 없다
         if state.rules.itemEffects, case .assaultVest = atk.itemKind,
@@ -1000,10 +1022,16 @@ struct BattleEngine {
             say("\(atkName)의 \(move.display)!")
         }
 
-        // 직전 기술 기록 (아무것도않기 판정용)
+        // 직전 기술 기록 (아무것도않기 판정용) + 연속 사용 횟수
         do {
             var a2 = state.side(attacker).active
             a2.lastMoveIndex = moveIndex
+            if a2.consecutiveMoveIndex == moveIndex {
+                a2.consecutiveCount = min(4, a2.consecutiveCount + 1)
+            } else {
+                a2.consecutiveMoveIndex = moveIndex
+                a2.consecutiveCount = 0
+            }
             state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
         }
 
@@ -1716,6 +1744,9 @@ struct BattleEngine {
         // 땅속·공중·물속에 숨어 있으면 맞지 않는다.
         // (원작에는 땅속을 맞히는 지진처럼 예외가 있지만 여기서는 단순화한다)
         if defender.chargeHidden { return false }
+        // 전자부유 중에는 땅 기술이 맞지 않는다 (부유 특성과 같은 취급)
+        if defender.magnetRiseTurns > 0, move.type == .ground,
+           move.damageClass != .status { return false }
         // 노가드 — 양쪽 중 하나라도 있으면 반드시 명중
         if state.rules.abilities {
             if case .noGuard = attacker.abilityKind { return true }
@@ -1803,7 +1834,22 @@ struct BattleEngine {
                                 multiplier: typeMult)
         }
 
-        let power = move.power ?? 0
+        var power = move.power ?? 0
+
+        // 연속으로 쓰면 세지는 기술 — 데이터에 없어 직접 처리한다.
+        // 연속자르기·데구르르는 두 배씩, 에코보이스·울음소리는 더해진다.
+        switch move.name {
+        case "fury-cutter", "rollout", "ice-ball":
+            // 1턴 40 → 80 → 160 → 320 (상한)
+            power = min(power * (1 << min(3, a.consecutiveCount)), power * 8)
+        case "echoed-voice":
+            // 40 → 80 → 120 → 160 → 200 (상한)
+            power = min(power * (1 + min(4, a.consecutiveCount)), power * 5)
+        case "spit-up":
+            // 비축한 만큼 (100 / 200 / 300). 비축이 없으면 실패한다.
+            power = 100 * max(0, a.stockpile)
+        default: break
+        }
 
         // 급소율: 기본 1/24(≈4%), 기술 보너스나 다이맥스태클로 올라간다
         var critPercent = 4
@@ -2353,6 +2399,35 @@ struct BattleEngine {
                 b.currentHP = max(0, b.currentHP - d)
                 say("\(KO.t(b.name)) 저주 때문에 데미지를 받았다!")
             }
+
+            // 하품 — 턴수가 다 되면 잠든다
+            if b.drowsyTurns > 0, b.currentHP > 0 {
+                b.drowsyTurns -= 1
+                if b.drowsyTurns == 0 {
+                    if b.status == .none, state.rules.statusEffects {
+                        b.status = .sleep
+                        b.sleepTurns = Int.random(in: 2...4, using: &rng)
+                        say("\(KO.t(b.name)) 잠들어 버렸다!")
+                    }
+                }
+            }
+
+            // 앙코르 — 남은 턴을 줄이고 끝나면 풀어준다
+            if b.encoreTurns > 0 {
+                b.encoreTurns -= 1
+                if b.encoreTurns == 0 {
+                    b.encoreMoveIndex = nil
+                    say("\(b.name)의 앙코르가 풀렸다!")
+                }
+            }
+
+            // 전자부유 — 남은 턴을 줄인다
+            if b.magnetRiseTurns > 0 {
+                b.magnetRiseTurns -= 1
+                if b.magnetRiseTurns == 0 {
+                    say("\(b.name)의 전자부유가 끝났다!")
+                }
+            }
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
@@ -2682,6 +2757,94 @@ extension BattleEngine {
             d.types.append(add)
             commit(d, defender)
             say("\(d.name)에게 \(add.ko) 타입이 추가되었다!")
+            return true
+
+        // 앙코르 — 상대가 마지막에 쓴 기술만 3턴 동안 쓰게 만든다
+        case "encore":
+            guard let li = d.lastMoveIndex, d.moves.indices.contains(li),
+                  d.moves[li].usable, !d.isEncored else {
+                say("\(aName)의 앙코르! …하지만 실패했다!")
+                return true
+            }
+            d.encoreTurns = 3
+            d.encoreMoveIndex = li
+            commit(d, defender)
+            say("\(d.name)는 앙코르로 \(d.moves[li].def.display)밖에 쓸 수 없게 되었다! (3턴)")
+            return true
+
+        // 하품 — 다음 턴이 끝날 때 잠든다
+        case "yawn":
+            guard state.rules.statusEffects else {
+                say("\(aName)의 하품! …하지만 상태이상이 꺼져 있다!")
+                return true
+            }
+            guard d.status == .none, d.drowsyTurns == 0 else {
+                say("\(aName)의 하품! …하지만 실패했다!")
+                return true
+            }
+            d.drowsyTurns = 2       // 이번 턴 끝 + 다음 턴 끝 => 다음 턴 끝에 잠든다
+            commit(d, defender)
+            say("\(d.name)는 졸음이 몰려왔다!")
+            return true
+
+        // 뱉어내기 — 비축이 없으면 쓸 수 없다. 쓰면 비축을 비운다.
+        // (위력은 데미지 계산에서 비축 단계로 정한다)
+        case "spit-up":
+            guard a.stockpile > 0 else {
+                say("\(aName)의 뱉어내기! …하지만 실패했다!")
+                return true
+            }
+            return false   // 데미지 계산은 평소 경로로 보낸다
+
+        // 비축 — 쌓아두면 뱉어내기·통째로꿀꺽이 세진다 (최대 3)
+        case "stockpile":
+            guard a.stockpile < 3 else {
+                say("\(aName)의 비축! …더 이상 쌓을 수 없다!")
+                return true
+            }
+            a.stockpile += 1
+            bump(&a, .defense, +1); bump(&a, .spDefense, +1)
+            commit(a, attacker)
+            say("\(aName)는 힘을 비축했다! (\(a.stockpile)단계)")
+            return true
+
+        // 통째로꿀꺽 — 비축한 만큼 회복하고 비축을 비운다
+        case "swallow":
+            guard a.stockpile > 0 else {
+                say("\(aName)의 통째로꿀꺽! …하지만 실패했다!")
+                return true
+            }
+            let fraction: Double = a.stockpile == 1 ? 0.25 : (a.stockpile == 2 ? 0.5 : 1.0)
+            let heal = max(1, Int(Double(a.maxHP) * fraction))
+            let before = a.currentHP
+            a.currentHP = min(a.maxHP, a.currentHP + heal)
+            let gained = a.currentHP - before
+            a.stockpile = 0
+            commit(a, attacker)
+            say("\(aName)는 비축한 것을 삼켜 체력을 회복했다! (+\(gained))")
+            return true
+
+        // 전자부유 — 5턴 동안 땅 기술을 받지 않는다
+        case "magnet-rise":
+            guard a.magnetRiseTurns == 0 else {
+                say("\(aName)의 전자부유! …하지만 실패했다!")
+                return true
+            }
+            // 쓴 턴의 종료 처리에서 한 번 깎이므로 6 을 준다 → 이후 5턴 유효
+            a.magnetRiseTurns = 6
+            commit(a, attacker)
+            say("\(aName)는 전자기의 힘으로 떠올랐다! (5턴)")
+            return true
+
+        // 검은눈빛 / 블랙아이즈 — 도망갈 수 없게 만든다
+        case "mean-look", "block", "spider-web":
+            guard !d.cannotFlee else {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            d.cannotFlee = true
+            commit(d, defender)
+            say("\(d.name)는 도망갈 수 없게 되었다!")
             return true
 
         // 미러타입 — 상대와 같은 타입이 된다

@@ -1342,17 +1342,47 @@ final class AppModel {
             return
         }
 
-        updateStatus = "설치를 시작합니다…"
-        // 전송 과정에서 실행 권한이 벗겨지므로 bash 로 실행한다 (설치 파일 안내와 같다)
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [dest.path]
-        do {
-            try p.run()
-        } catch {
-            updateStatus = "실행 실패 — 받은 파일을 직접 실행해주세요: \(dest.path)"
-            NSWorkspace.shared.selectFile(dest.path, inFileViewerRootedAtPath: "")
+        // **터미널에서 보이게 실행한다.**
+        //
+        // 예전에는 Process 로 조용히 돌렸다. 그러면 (1) 진행 상황이 안 보이고
+        // (2) 관리자 암호를 물어보면 응답할 방법이 없어 멈추고 (3) 설치가
+        // 끝나도 앱이 재시작되지 않아 **바뀐 게 없어 보인다.**
+        // 실제로 번들은 새 버전으로 바뀌었는데 화면은 옛 앱이었다.
+        updateStatus = "터미널에서 설치를 진행합니다…"
+
+        // 받은 파일은 격리 속성이 붙어 Gatekeeper 경고가 난다. 우리가 받은
+        // 것이므로 떼어낸다. 실행 권한도 준다 (더블클릭·open 으로 돌리려면 필요).
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                               ofItemAtPath: dest.path)
+        let strip = Process()
+        strip.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        strip.arguments = ["-d", "com.apple.quarantine", dest.path]
+        try? strip.run()
+        strip.waitUntilExit()
+
+        // .command 는 터미널이 열어 실행한다 — 사용자가 다 볼 수 있다
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        let terminal = URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
+        NSWorkspace.shared.open([dest], withApplicationAt: terminal,
+                                configuration: cfg) { [weak self] _, err in
+            Task { @MainActor in
+                guard let self else { return }
+                if let err {
+                    self.updateStatus = "터미널을 열지 못했습니다 — 받은 파일을 직접 실행해주세요"
+                    NSWorkspace.shared.selectFile(dest.path, inFileViewerRootedAtPath: "")
+                    _ = err
+                } else {
+                    self.updateStatus = "터미널에서 진행 중입니다. 끝나면 앱이 다시 열립니다."
+                }
+            }
         }
+    }
+
+    /// 이미 최신인지 다시 확인한다 (업데이트 후 버튼을 치우기 위해)
+    func recheckUpdate() async {
+        availableUpdate = nil
+        await checkForUpdate()
     }
 
     // MARK: 상단 탭 / Dock
