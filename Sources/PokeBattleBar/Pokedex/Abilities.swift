@@ -31,7 +31,34 @@ enum AbilityKind: Codable, Hashable, Sendable {
     case scrappy                                // 배짱 — 노말/격투가 고스트에 통함
     case unaware                                // 천진 — 상대 능력치 변화 무시
     case sereneGrace(Double)                    // 하늘의은총 — 부가효과 확률 배수
-    case shieldDust                             // 매직코트? 아니 — 색가루: 부가효과 받지 않음
+    case shieldDust                             // 색가루 — 부가효과 받지 않음
+
+    // 날씨 (Field.swift 도입으로 구현 가능해졌다)
+    case weatherOnEntry(Weather)                // 가뭄/잔비/모래날림/눈퍼뜨리기
+    case weatherSpeedBoost(Weather, Double)     // 엽록소/쓱쓱/모래헤치기/눈치우기
+    case weatherStatBoost(Weather, Stat, Double)// 태양의힘/플라워기프트
+    case weatherHeal(Weather, Int)              // 아이스바디/우비 — 날씨에 회복
+    case weatherEvasion(Weather)                // 모래숨기/눈숨기
+    case weatherImmuneChip                      // 모래헤치기 등 — 모래 피해 무효
+    case dryskin                                // 건조피부 — 물 흡수, 불꽃 약점
+
+    // 접촉 (MoveFlags 도입으로 구현 가능해졌다)
+    case contactStatus(Ailment, percent: Int)   // 정전기/불꽃몸/포자
+    case contactDamage(Int)                     // 거친피부/철가시 — 1/N 반사
+    case moveFlagBoost(MoveFlagKind, Double)    // 철주먹/옹골찬턱
+    case soundImmunity                          // 방음
+    case powderImmunity                         // 방진
+
+    // 기타
+    case ignoreAbility                          // 틀깨기
+    case criticalImmunity                       // 전투무장/조가비갑옷
+    case multiscale(Double)                     // 멀티스케일 — 풀피에서 피해 감소
+    case levitateLike(PType, Double)            // 저수/축전/타오르는불꽃 — 흡수
+}
+
+/// 기술 플래그 종류 (철주먹·옹골찬턱용)
+enum MoveFlagKind: String, Codable, Hashable, Sendable {
+    case punch, bite, sound, powder, contact
 }
 
 struct AbilityDef: Codable, Hashable, Sendable, Identifiable {
@@ -103,7 +130,65 @@ actor AbilityCatalog {
         case "scrappy":    return .scrappy
         case "unaware":    return .unaware
         case "serene-grace": return .sereneGrace(2.0)
-        case "shield-dust": return .shieldDust
+        case "shield-dust", "overcoat": return .shieldDust
+
+        // 날씨를 부르는 특성
+        case "drought", "orichalcum-pulse":  return .weatherOnEntry(.sun)
+        case "drizzle":                      return .weatherOnEntry(.rain)
+        case "sand-stream", "sand-spit":     return .weatherOnEntry(.sandstorm)
+        case "snow-warning":                 return .weatherOnEntry(.snow)
+
+        // 날씨에서 스피드 2배
+        case "chlorophyll":  return .weatherSpeedBoost(.sun, 2.0)
+        case "swift-swim":   return .weatherSpeedBoost(.rain, 2.0)
+        case "sand-rush":    return .weatherSpeedBoost(.sandstorm, 2.0)
+        case "slush-rush":   return .weatherSpeedBoost(.snow, 2.0)
+
+        // 날씨에서 능력치
+        case "solar-power":  return .weatherStatBoost(.sun, .spAttack, 1.5)
+        case "sand-force":   return .weatherStatBoost(.sandstorm, .attack, 1.3)
+
+        // 날씨에서 회복
+        case "ice-body":     return .weatherHeal(.snow, 16)
+        case "rain-dish":    return .weatherHeal(.rain, 16)
+
+        // 날씨에서 회피
+        case "sand-veil":    return .weatherEvasion(.sandstorm)
+        case "snow-cloak":   return .weatherEvasion(.snow)
+
+        case "magic-guard":  return .magicGuard
+        case "dry-skin":     return .dryskin
+
+        // 접촉 시 상태이상
+        case "static":       return .contactStatus(.paralysis, percent: 30)
+        case "flame-body":   return .contactStatus(.burn, percent: 30)
+        case "poison-point": return .contactStatus(.poison, percent: 30)
+        case "effect-spore": return .contactStatus(.sleep, percent: 30)
+        case "cute-charm":   return .contactStatus(.confusion, percent: 30)
+
+        // 접촉 시 반사 피해
+        case "rough-skin", "iron-barbs": return .contactDamage(8)
+
+        // 기술 종류 강화
+        case "iron-fist":    return .moveFlagBoost(.punch, 1.2)
+        case "strong-jaw":   return .moveFlagBoost(.bite, 1.5)
+        case "punk-rock":    return .moveFlagBoost(.sound, 1.3)
+        case "tough-claws":  return .moveFlagBoost(.contact, 1.3)
+
+        case "soundproof":   return .soundImmunity
+
+        case "mold-breaker", "teravolt", "turboblaze": return .ignoreAbility
+        case "battle-armor", "shell-armor":            return .criticalImmunity
+        case "multiscale", "shadow-shield":            return .multiscale(0.5)
+
+        // 타입 흡수
+        case "water-absorb", "dry-skin-water": return .levitateLike(.water, 0.25)
+        case "volt-absorb":                    return .levitateLike(.electric, 0.25)
+        case "flash-fire":                     return .levitateLike(.fire, 0.0)
+        case "sap-sipper":                     return .levitateLike(.grass, 0.0)
+        case "motor-drive", "lightning-rod":   return .levitateLike(.electric, 0.0)
+        case "storm-drain", "water-compaction-no": return .levitateLike(.water, 0.0)
+
         default:           return .none
         }
     }

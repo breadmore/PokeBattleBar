@@ -25,7 +25,7 @@ echo "==> 검증 먼저"
 swift build -c release >/dev/null
 BIN="$(swift build -c release --show-bin-path)/PokeBattleBar"
 FAILED=0
-for t in --selftest --movetest --formtest --pickertest --itemtest --loadouttest --nettest; do
+for t in --selftest --movetest --formtest --pickertest --itemtest --loadouttest --extendedtest --nettest; do
   printf "    %-14s " "$t"
   if "$BIN" "$t" >/dev/null 2>&1; then echo "✓"; else echo "✗"; FAILED=1; fi
 done
