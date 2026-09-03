@@ -22,6 +22,11 @@ enum MoveAudit {
         "conversion", "conversion2",
         // 2턴 / 반동은 플래그로 일반화해 처리하고 솔라빔·땅속·파괴광선으로 검증한다
         "solarbeam", "dig", "hyperbeam",
+        // 앙코르 묶음
+        "encore", "yawn", "stockpile", "swallow", "spitup",
+        "magnetrise", "meanlook", "block", "spiderweb",
+        // 연속으로 쓰면 세지는 기술
+        "furycutter", "rollout", "iceball", "echoedvoice",
     ]
 
     /// 데이터로 일반화해 처리하는 기술 — 이름별 구현이 아니라 **한 경로**가 담당한다.

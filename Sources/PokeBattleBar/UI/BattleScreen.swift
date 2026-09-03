@@ -141,6 +141,44 @@ struct GBHPPanel: View {
 
     @State private var shownHP = -1
 
+    /// 화면에 띄울 표식 — 능력치 랭크 변화와 걸려 있는 것들
+    private var badges: [(text: String, color: Color)] {
+        var out: [(String, Color)] = []
+
+        // 능력치 랭크 — 0 이 아닌 것만
+        let order: [(Stat, String)] = [(.attack, "공"), (.defense, "방"),
+                                       (.spAttack, "특공"), (.spDefense, "특방"),
+                                       (.speed, "스피드")]
+        for (stat, label) in order {
+            let n = b.stages[stat] ?? 0
+            guard n != 0 else { continue }
+            out.append(("\(label)\(n > 0 ? "+" : "")\(n)",
+                        n > 0 ? GB.hpGreen : GB.hilite))
+        }
+        if b.accuracyStage != 0 {
+            out.append(("명중\(b.accuracyStage > 0 ? "+" : "")\(b.accuracyStage)",
+                        b.accuracyStage > 0 ? GB.hpGreen : GB.hilite))
+        }
+        if b.evasionStage != 0 {
+            out.append(("회피\(b.evasionStage > 0 ? "+" : "")\(b.evasionStage)",
+                        b.evasionStage > 0 ? GB.hpGreen : GB.hilite))
+        }
+
+        // 걸려 있는 것들
+        if b.cursed { out.append(("저주", GB.typeColor(.ghost))) }
+        if let sub = b.substituteHP, sub > 0 { out.append(("인형 \(sub)", GB.typeColor(.normal))) }
+        if b.confusionTurns > 0 { out.append(("혼란", GB.typeColor(.psychic))) }
+        if b.trappedTurns > 0 {
+            out.append((b.trapMoveName ?? "조임", GB.typeColor(.water)))
+        }
+        if b.isCharging { out.append(("모으는 중", GB.typeColor(.electric))) }
+        if b.mustRechargeTurns > 0 { out.append(("반동", GB.inkSoft)) }
+        if b.lockedMoveIndex != nil { out.append(("구애 고정", GB.typeColor(.dark))) }
+        if b.isDynamaxed { out.append(("다이맥스 \(b.dynamaxTurnsLeft)턴", GB.typeColor(.fairy))) }
+        if b.isMega { out.append(("메가", GB.typeColor(.dragon))) }
+        return out
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -190,9 +228,28 @@ struct GBHPPanel: View {
                     }
                 }
             }
+
+            // 능력치 랭크와 걸린 것들.
+            //
+            // **이게 없으면 아무 일도 안 일어난 것처럼 보인다** — 잠만보 저주는
+            // 공격·방어를 올리고 스피드를 내리는데, 화면에 안 나오니 효과가
+            // 없다고 오해했다.
+            let marks = badges
+            if !marks.isEmpty {
+                HStack(spacing: 3) {
+                    ForEach(marks, id: \.text) { m in
+                        Text(m.text)
+                            .font(.system(size: 8, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3.5).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 2.5).fill(m.color))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
         }
         .padding(.horizontal, 11).padding(.vertical, 8)
-        .frame(width: 232)
+        .frame(width: 248)
         .background(
             GBPlateShape(corner: isFoe ? .bottomLeading : .topTrailing)
                 .fill(GB.plate)
@@ -362,6 +419,8 @@ struct GBMoveRow: View {
     let eff: Effectiveness?
     let selected: Bool
     let transformNote: String?
+    /// 구애 도구로 막힌 기술 — 누를 수 없다
+    var blocked: Bool = false
     let action: () -> Void
 
     var body: some View {
@@ -400,8 +459,9 @@ struct GBMoveRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(!slot.usable)
-        .opacity(slot.usable ? 1 : 0.4)
+        .disabled(!slot.usable || blocked)
+        .opacity(slot.usable && !blocked ? 1 : 0.35)
+        .help(blocked ? "구애 도구로 다른 기술에 고정되어 있습니다" : "")
     }
 
     private func effColor(_ e: Effectiveness) -> Color {
@@ -423,6 +483,18 @@ struct GBChoicePanel: View {
     @State private var hovered: Int?
 
     private var foeTypes: [PType] { model.foeState?.active.types ?? [] }
+
+    /// 구애 도구로 고정된 기술 인덱스 (있으면 나머지는 고를 수 없다)
+    private var choiceLocked: Int? {
+        guard model.rules.itemEffects, let i = me.active.lockedMoveIndex,
+              me.active.moves.indices.contains(i), me.active.moves[i].usable else { return nil }
+        return i
+    }
+
+    private func blockedByChoice(_ idx: Int) -> Bool {
+        guard let locked = choiceLocked else { return false }
+        return idx != locked
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 18) {
@@ -458,7 +530,10 @@ struct GBChoicePanel: View {
                                                            defenderTypes: foeTypes,
                                                            chart: model.typeChart),
                                 selected: hovered == idx,
-                                transformNote: note(for: slot)
+                                transformNote: note(for: slot),
+                                // 구애 도구로 고정됐으면 그 기술만 고를 수 있다 —
+                                // 막지 않으면 다른 것을 눌러 턴을 날린다
+                                blocked: blockedByChoice(idx)
                             ) {
                                 model.submitMove(idx)
                             }
@@ -477,6 +552,11 @@ struct GBChoicePanel: View {
 
     /// 고른(또는 올려둔) 기술의 설명 한 줄
     private var detailLine: String? {
+        if let locked = choiceLocked {
+            let name = me.active.moves[locked].def.display
+            let item = me.active.heldItem?.display ?? "구애 도구"
+            return "\(item) 때문에 \(name)밖에 쓸 수 없습니다."
+        }
         guard let i = hovered, me.active.moves.indices.contains(i) else {
             if let p = model.pendingSpecial {
                 return "\(p.ko) 선언됨 — 기술을 고르면 함께 발동합니다"

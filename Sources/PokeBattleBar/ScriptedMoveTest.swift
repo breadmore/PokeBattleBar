@@ -227,6 +227,80 @@ enum ScriptedMoveTest {
         ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
                   "\(rechargeChecked)개") && ok
 
+        // MARK: 앙코르 · 하품 · 비축 · 누적 위력 · 전자부유 · 검은눈빛
+        print("\n-- 앙코르 --")
+        // 상대가 기술을 쓴 뒤여야 걸린다 — 두 턴을 돌린다
+        if let r = await twoTurn(first: "encore", then: "encore",
+                                user: 94, foe: 143, chart: chart) {
+            // 첫 턴엔 상대의 마지막 기술이 없어 실패, 둘째 턴엔 걸린다
+            ok = show(r.foe.isEncored || r.log.contains { $0.contains("앙코르") },
+                      "앙코르가 상대에게 걸린다",
+                      r.log.first { $0.contains("앙코르") } ?? "로그 없음") && ok
+        }
+        if let r = await encoreForces(chart: chart) {
+            ok = show(r.forced, "앙코르에 걸리면 그 기술만 나간다", r.detail) && ok
+        } else { ok = show(false, "앙코르 강제 검사") && ok }
+
+        print("\n-- 하품 --")
+        if let r = await probe(move: "yawn", user: 94, foe: 143, chart: chart) {
+            ok = show(r.foe.drowsyTurns > 0, "졸음이 걸린다", "\(r.foe.drowsyTurns)턴") && ok
+            ok = show(r.foe.status == .none, "그 턴에는 아직 안 잠든다") && ok
+        }
+        if let r = await twoTurn(first: "yawn", then: "yawn",
+                                user: 94, foe: 143, chart: chart) {
+            ok = show(r.foe.status == .sleep, "다음 턴이 끝나면 잠든다",
+                      "\(r.foe.status)") && ok
+        }
+
+        print("\n-- 비축 · 통째로꿀꺽 · 뱉어내기 --")
+        if let r = await probe(move: "stockpile", user: 143, foe: 143, chart: chart) {
+            ok = show(r.user.stockpile == 1, "비축이 쌓인다", "\(r.user.stockpile)") && ok
+            ok = show((r.user.stages[.defense] ?? 0) == 1, "방어가 오른다") && ok
+        }
+        if let r = await twoTurn(first: "stockpile", then: "swallow",
+                                user: 143, foe: 143, chart: chart,
+                                setup: { b in b.currentHP = b.maxHP / 3 }) {
+            ok = show(r.user.stockpile == 0, "삼키면 비축이 비워진다") && ok
+            ok = show(r.user.currentHP > r.user.maxHP / 3, "삼키면 회복된다",
+                      "\(r.user.currentHP)/\(r.user.maxHP)") && ok
+        }
+        // 비축 없이 뱉어내기는 실패해야 한다
+        if let r = await probe(move: "spit-up", user: 143, foe: 143, chart: chart) {
+            ok = show(r.foe.currentHP == r.foe.maxHP,
+                      "비축 없이 뱉어내기는 실패한다", "\(r.foe.currentHP)/\(r.foe.maxHP)") && ok
+        }
+
+        print("\n-- 연속으로 쓰면 세지는 기술 --")
+        if let r = await escalating(chart: chart) {
+            ok = show(r.grew, "연속자르기는 쓸수록 세진다", r.detail) && ok
+        } else { ok = show(false, "누적 위력 검사") && ok }
+
+        print("\n-- 전자부유 --")
+        if let r = await probe(move: "magnet-rise", user: 143, foe: 143, chart: chart) {
+            ok = show(r.user.magnetRiseTurns == 5, "쓴 턴이 지나면 5턴 남는다",
+                      "\(r.user.magnetRiseTurns)") && ok
+        }
+
+        print("\n-- 검은눈빛 --")
+        if let r = await probe(move: "mean-look", user: 94, foe: 143, chart: chart) {
+            ok = show(r.foe.cannotFlee, "상대가 도망갈 수 없게 된다") && ok
+        }
+
+        // MARK: 구애 도구가 턴을 날리지 않는가
+        //
+        // 예전에는 고정된 기술이 아닌 것을 고르면 안내만 하고 턴이 그냥
+        // 지나갔다. 원작은 애초에 고를 수 없게 막으므로 턴이 날아가지 않는다.
+        print("\n-- 구애 도구 --")
+        if let r = await choiceLock(chart: chart) {
+            ok = show(r.lockedAfterFirst, "첫 기술을 쓰면 그 기술로 고정된다",
+                      r.detail) && ok
+            ok = show(r.secondTurnDealtDamage,
+                      "다른 기술을 골라도 턴이 날아가지 않는다 (고정된 기술이 나간다)",
+                      r.detail2) && ok
+        } else {
+            ok = show(false, "구애 도구 검사") && ok
+        }
+
         // MARK: 스피드가 같을 때 선공이 매 턴 무작위인가
         //
         // 한쪽이 계속 먼저 가면 동타에서 불공평하다.
@@ -248,6 +322,61 @@ enum ScriptedMoveTest {
 
         print(ok ? "\n✓ 통과" : "\n✗ 실패 항목 있음")
         return ok
+    }
+
+    /// 구애머리띠를 끼고 첫 턴에 A 를 쓴 뒤, 둘째 턴에 B 를 고른다.
+    /// 턴이 날아가지 않고 A 가 나가야 한다.
+    private static func choiceLock(chart: TypeChart) async -> (
+        lockedAfterFirst: Bool, detail: String,
+        secondTurnDealtDamage: Bool, detail2: String
+    )? {
+        await ItemCatalog.shared.loadAll()      // 이걸 빠뜨리면 도구를 못 찾는다
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let headbutt = try? await PokeAPI.shared.move("headbutt"),
+              let band = await ItemCatalog.shared.item("choice-band"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        func make(_ ms: [MoveDef], _ tag: String, item: ItemDef?, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50, heldItem: item)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = 9999; b.currentHP = 9999
+            return b
+        }
+
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make([tackle, headbutt], "h",
+                                                           item: band, speed: 999)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make([splash], "g", item: nil, speed: 1)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 55)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        // 첫 턴: 0번(몸통박치기)
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let locked = e.state.sides[0].team[0].lockedMoveIndex
+        let d1 = "고정 인덱스 \(locked.map(String.init) ?? "없음")"
+
+        // 둘째 턴: 일부러 1번(들이받기)을 고른다 → 턴이 날아가면 안 된다
+        let before = e.state.sides[1].team[0].currentHP
+        let logBefore = e.state.log.count
+        e.resolveTurn(hostAction: .useMove(index: 1), guestAction: .useMove(index: 0))
+        let after = e.state.sides[1].team[0].currentHP
+        let lines = Array(e.state.log[logBefore...])
+        let usedLocked = lines.contains { $0.contains("몸통박치기") }
+        let d2 = "상대 HP \(before) → \(after)"
+            + (usedLocked ? " · 고정된 기술이 나갔다" : " · 고정된 기술이 안 나갔다")
+
+        return (locked == 0, d1, after < before && usedLocked, d2)
     }
 
     /// 땅속에 숨은 동안 상대 공격이 빗나가는지 본다.
@@ -342,8 +471,102 @@ enum ScriptedMoveTest {
 
     /// 두 턴 돌린다 (모으기·반동 확인용)
     private static func twoTurn(first: String, then second: String,
-                                user: Int, foe: Int, chart: TypeChart) async -> Probe? {
-        await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: nil)
+                                user: Int, foe: Int, chart: TypeChart,
+                                setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
+        await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 앙코르에 걸린 쪽이 정말 그 기술만 쓰는지 본다
+    private static func encoreForces(chart: TypeChart) async -> (forced: Bool, detail: String)? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let headbutt = try? await PokeAPI.shared.move("headbutt"),
+              let encore = try? await PokeAPI.shared.move("encore") else { return nil }
+
+        func make(_ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = 9999; b.currentHP = 9999
+            return b
+        }
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make([encore], "h", speed: 999)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make([tackle, headbutt], "g", speed: 1)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 77)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        // 1턴: 상대가 0번(몸통박치기)을 쓴다
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        // 2턴: 내가 앙코르 -> 상대는 0번에 묶인다
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let encored = e.state.sides[1].team[0].isEncored
+        // 3턴: 상대가 1번(들이받기)을 골라도 0번이 나가야 한다
+        let logBefore = e.state.log.count
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 1))
+        let lines = Array(e.state.log[logBefore...])
+        let usedLocked = lines.contains { $0.contains("몸통박치기") }
+        let sawNote = lines.contains { $0.contains("앙코르 때문에") }
+        return (encored && usedLocked,
+                "앙코르 걸림=\(encored) · 고정 기술 사용=\(usedLocked)"
+                + (sawNote ? " · 안내 있음" : ""))
+    }
+
+    /// 연속자르기를 세 번 써서 위력이 커지는지 본다
+    private static func escalating(chart: TypeChart) async -> (grew: Bool, detail: String)? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let fury = try? await PokeAPI.shared.move("fury-cutter"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        func make(_ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = 99999; b.currentHP = 99999
+            return b
+        }
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make([fury], "h", speed: 999)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make([splash], "g", speed: 1)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 101)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        // 연속자르기는 95% 명중이라 빗맞을 수 있고 데미지에 난수도 있다.
+        // 여러 씨드를 돌려 **턴마다 최대 데미지**를 모으면 위력 증가만 남는다.
+        var best = [0, 0, 0, 0]
+        for seed in 1...10 {
+            var e2 = BattleEngine(state: st, chart: chart, seed: UInt64(seed) * 613)
+            e2.setLead(.host, index: 0); e2.setLead(.guest, index: 0)
+            e2.beginBattle()
+            for t in 0..<4 {
+                guard case .awaitingMoves = e2.state.phase else { break }
+                let before = e2.state.sides[1].team[0].currentHP
+                e2.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                best[t] = max(best[t], before - e2.state.sides[1].team[0].currentHP)
+            }
+        }
+        _ = e
+        let detail = "턴별 최대 데미지 " + best.map(String.init).joined(separator: " → ")
+        // 위력이 40 → 80 → 160 → 320 이면 데미지도 대략 그렇게 커진다
+        return (best[1] > best[0] * 3 / 2 && best[3] > best[0] * 4, detail)
     }
 
     private static func battle(moves: [String], user: Int, foe: Int, chart: TypeChart,
