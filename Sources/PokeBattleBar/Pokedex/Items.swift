@@ -24,6 +24,19 @@ enum ItemKind: Codable, Hashable, Sendable {
     case assaultVest                            // 특방 1.5배, 변화기 사용 불가
     case selfStatusOrb(Ailment)                 // 화염구슬/독구슬 — 턴 종료 시 자신에게
     case quickClaw(numerator: Int, denominator: Int)  // 확률 선공 (원작 3/16)
+
+    // --- 나무열매 ---
+    /// HP 가 일정 비율 이하로 떨어지면 회복 (자뭉·오랭열매).
+    /// `fraction` 은 최대HP 분모, `flat` 은 고정 회복량.
+    case berryHeal(triggerHalf: Bool, fraction: Int?, flat: Int?, confuseIfDislike: Bool)
+    /// 상태이상을 낫게 하는 열매 (리샘·유루·꼬시개 등). nil 이면 모든 상태이상.
+    case berryCure(Ailment?)
+    /// 효과가 굉장한 특정 타입 기술의 피해를 반감 (플카·오카 등 19종)
+    case berryTypeResist(PType)
+    /// HP 1/4 이하에서 능력치가 오르는 열매 (치리·룡카 등)
+    case berryPinchBoost(Stat)
+    /// PP 가 떨어진 기술의 PP 를 회복 (과사열매)
+    case berryRestorePP(Int)
 }
 
 /// 도구 정의. 이름·한글명·효과 텍스트는 PokeAPI 에서 실제로 받아온다.
@@ -36,6 +49,14 @@ struct ItemDef: Codable, Hashable, Sendable, Identifiable {
     var kind: ItemKind
 
     var display: String { koName.isEmpty ? name : koName }
+
+    /// 나무열매인가 (먹으면 소비되고, 긴장감에 막히고, 먹보로 빨리 발동한다)
+    var isBerry: Bool {
+        switch kind {
+        case .berryHeal, .berryCure, .berryTypeResist, .berryPinchBoost, .berryRestorePP: true
+        default: false
+        }
+    }
 
     /// 변신 자격을 주는 도구인가
     var isTransformItem: Bool {
@@ -51,6 +72,8 @@ struct ItemDef: Codable, Hashable, Sendable, Identifiable {
         case .megaStone:                        "메가스톤"
         case .zCrystalType, .zCrystalSignature: "Z크리스탈"
         case .dynamaxBand, .maxMushroom:        "다이맥스"
+        case .berryHeal, .berryCure, .berryTypeResist, .berryPinchBoost, .berryRestorePP:
+                                                "나무열매"
         case .none:                             "기타"
         default:                                "배틀 도구"
         }
@@ -69,7 +92,55 @@ actor ItemCatalog {
         "leftovers", "life-orb", "focus-sash", "expert-belt",
         "muscle-band", "wise-glasses", "choice-band", "choice-specs", "choice-scarf",
         "eviolite", "assault-vest", "flame-orb", "toxic-orb", "quick-claw",
-        "dynamax-band", "max-mushrooms"
+        "dynamax-band", "max-mushrooms",
+        // 나무열매 — 도구처럼 끼워 쓴다
+        "sitrus-berry", "oran-berry", "lum-berry", "chesto-berry", "cheri-berry",
+        "aspear-berry", "rawst-berry", "pecha-berry", "persim-berry", "leppa-berry",
+        "figy-berry", "wiki-berry", "mago-berry", "aguav-berry", "iapapa-berry",
+        "liechi-berry", "ganlon-berry", "petaya-berry", "apicot-berry", "salac-berry",
+        "occa-berry", "passho-berry", "wacan-berry", "rindo-berry", "yache-berry",
+        "chople-berry", "kebia-berry", "shuca-berry", "coba-berry", "payapa-berry",
+        "tanga-berry", "charti-berry", "kasib-berry", "haban-berry", "colbur-berry",
+        "babiri-berry", "roseli-berry", "chilan-berry"
+    ]
+
+    /// 타입 방어 열매 → 그 타입. 효과가 굉장한 기술을 반감시킨다.
+    static let resistBerries: [String: PType] = [
+        "occa-berry": .fire,      "passho-berry": .water,   "wacan-berry": .electric,
+        "rindo-berry": .grass,    "yache-berry": .ice,      "chople-berry": .fighting,
+        "kebia-berry": .poison,   "shuca-berry": .ground,   "coba-berry": .flying,
+        "payapa-berry": .psychic, "tanga-berry": .bug,      "charti-berry": .rock,
+        "kasib-berry": .ghost,    "haban-berry": .dragon,   "colbur-berry": .dark,
+        "babiri-berry": .steel,   "roseli-berry": .fairy,   "chilan-berry": .normal
+    ]
+
+    /// 궁지에서 능력이 오르는 열매
+    static let pinchBerries: [String: Stat] = [
+        "liechi-berry": .attack,   "ganlon-berry": .defense,
+        "petaya-berry": .spAttack, "apicot-berry": .spDefense,
+        "salac-berry": .speed
+    ]
+
+    /// 상태이상을 낫게 하는 열매
+    static let cureBerries: [String: Ailment?] = [
+        "lum-berry": nil,               // 모든 상태이상 + 혼란
+        "chesto-berry": .sleep,
+        "cheri-berry": .paralysis,
+        "aspear-berry": .freeze,
+        "rawst-berry": .burn,
+        "pecha-berry": .poison,
+        "persim-berry": .confusion
+    ]
+
+    /// HP 회복 열매. (절반에서 발동, 분모, 고정량, 취향 혼란)
+    static let healBerries: [String: (Int?, Int?, Bool)] = [
+        "sitrus-berry": (4, nil, false),
+        "oran-berry":   (nil, 10, false),
+        "figy-berry":   (8, nil, true),
+        "wiki-berry":   (8, nil, true),
+        "mago-berry":   (8, nil, true),
+        "aguav-berry":  (8, nil, true),
+        "iapapa-berry": (8, nil, true)
     ]
 
     /// 타입 Z크리스탈 접두사 → 타입. 불규칙한 것들이 있어 표로 둔다.
@@ -177,6 +248,15 @@ actor ItemCatalog {
             return .none
         }
         if let t = plates[slug] { return .typePlate(t, 1.2) }
+
+        if let t = resistBerries[slug] { return .berryTypeResist(t) }
+        if let st = pinchBerries[slug] { return .berryPinchBoost(st) }
+        if let ail = cureBerries[slug] { return .berryCure(ail) }
+        if cureBerries.keys.contains(slug) { return .berryCure(nil) }
+        if let (frac, flat, dislike) = healBerries[slug] {
+            return .berryHeal(triggerHalf: true, fraction: frac, flat: flat, confuseIfDislike: dislike)
+        }
+        if slug == "leppa-berry" { return .berryRestorePP(10) }
 
         switch slug {
         case "dynamax-band":  return .dynamaxBand

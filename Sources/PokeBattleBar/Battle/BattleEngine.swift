@@ -236,6 +236,7 @@ struct BattleEngine {
         out.isProtecting = false
         out.protectStreak = 0
         if out.isDynamaxed { out.revertDynamax() }
+        applySwitchOutAbility(&out)
         state.sides[side.rawValue].team[cur] = out
 
         state.sides[side.rawValue].activeIndex = teamIndex
@@ -285,6 +286,40 @@ struct BattleEngine {
         guard !b.entryAbilityFired, !b.isFainted else { return }
         b.entryAbilityFired = true
         state.sides[side.rawValue].team[idx] = b
+
+        // 트레이스 — 상대 특성을 복사한다
+        if case .trace = b.abilityKind {
+            let fIdx = state.side(side.other).activeIndex
+            if state.side(side.other).team.indices.contains(fIdx),
+               let foeAb = state.side(side.other).team[fIdx].ability,
+               foeAb.isImplemented {
+                var me = state.sides[side.rawValue].team[idx]
+                me.ability = foeAb
+                state.sides[side.rawValue].team[idx] = me
+                say("\(me.name)는 트레이스로 \(foeAb.display)을(를) 복사했다!")
+                // 복사한 특성이 등장 효과라면 그것도 발동시킨다
+                me.entryAbilityFired = false
+                state.sides[side.rawValue].team[idx] = me
+                fireEntryAbility(side)
+                return
+            }
+        }
+
+        // 다운로드 — 상대의 약한 방어 쪽을 노려 능력이 오른다
+        if case .download = b.abilityKind {
+            let fIdx = state.side(side.other).activeIndex
+            if state.side(side.other).team.indices.contains(fIdx) {
+                let f = state.side(side.other).team[fIdx]
+                let stat: Stat = f.effective(.defense) <= f.effective(.spDefense) ? .attack : .spAttack
+                var me = state.sides[side.rawValue].team[idx]
+                let cur = me.stages[stat] ?? 0
+                if cur < 6 {
+                    me.stages[stat] = min(6, cur + 1)
+                    state.sides[side.rawValue].team[idx] = me
+                    say("\(me.name)의 다운로드! \(KO.s(stat.ko)) 올라갔다!")
+                }
+            }
+        }
 
         // 날씨를 부르는 특성 (가뭄·잔비·모래날림·눈퍼뜨리기)
         if state.rules.weather, case .weatherOnEntry(let w) = b.abilityKind {
@@ -395,6 +430,25 @@ struct BattleEngine {
         state.phase = .awaitingMoves
     }
 
+    /// 물러나는 포켓몬에게 붙는 특성 (자연회복·재생력)
+    private mutating func applySwitchOutAbility(_ b: inout Battler) {
+        guard state.rules.abilities else { return }
+        switch b.abilityKind {
+        case .cureOnSwitch:
+            if b.status != .none {
+                say("\(KO.t(b.name)) 자연회복으로 상태이상이 나았다!")
+                b.status = .none; b.sleepTurns = 0; b.toxicCounter = 0
+            }
+        case .healOnEntry:
+            if b.currentHP > 0, b.currentHP < b.maxHP {
+                b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / 3))
+                say("\(KO.t(b.name)) 재생력으로 체력을 회복했다!")
+            }
+        default:
+            break
+        }
+    }
+
     /// 유턴 계열로 물러나 다른 포켓몬을 낸다. 쓰러진 게 아니므로 상태만 초기화한다.
     mutating func applyPivot(_ side: BattleSide, teamIndex: Int) {
         guard case .awaitingPivot(var pending) = state.phase,
@@ -418,6 +472,7 @@ struct BattleEngine {
         out.trappedTurns = 0
         out.trapMoveName = nil
         if out.isDynamaxed { out.revertDynamax() }
+        applySwitchOutAbility(&out)
         state.sides[side.rawValue].team[cur] = out
         state.gmaxDoT[side.rawValue] = nil
 
@@ -553,6 +608,34 @@ struct BattleEngine {
         }
         var hp = priority(hostAction, .host), gp = priority(guestAction, .guest)
 
+        // 특성 우선도 (짓궂은마음·질풍날개·굼뜸)
+        if state.rules.abilities {
+            func abilityPriority(_ side: BattleSide, _ a: BattleAction) -> Int {
+                guard let i = a.moveIndex else { return 0 }
+                let b = state.side(side).active
+                guard b.moves.indices.contains(i) else { return 0 }
+                let mv = b.moves[i].def
+                guard case .priorityBoost(let cls, let n) = b.abilityKind else { return 0 }
+                if let cls, mv.damageClass != cls { return 0 }
+                if cls == nil, case .priorityBoost = b.abilityKind {
+                    // 질풍날개는 비행 기술만, 트리아지는 회복기만 — 세부 조건은 타입으로 본다
+                    if b.ability?.name == "gale-wings", mv.type != .flying { return 0 }
+                    if b.ability?.name == "triage", mv.healingPercent <= 0 { return 0 }
+                }
+                return n
+            }
+            hp += abilityPriority(.host, hostAction)
+            gp += abilityPriority(.guest, guestAction)
+
+            // 선단 — 확률로 선공
+            if case .quickDraw(let p) = state.side(.host).active.abilityKind, rng.chance(p) {
+                say("\(state.side(.host).active.name)의 선단이 발동했다!"); hp += 1
+            }
+            if case .quickDraw(let p) = state.side(.guest).active.abilityKind, rng.chance(p) {
+                say("\(state.side(.guest).active.name)의 선단이 발동했다!"); gp += 1
+            }
+        }
+
         // 선제공격손톱 — 확률로 우선도를 한 칸 올린다 (원작 3/16)
         if state.rules.itemEffects {
             if case .quickClaw(let n, let d) = state.side(.host).active.itemKind,
@@ -576,6 +659,12 @@ struct BattleEngine {
             if state.rules.weather, state.field.hasWeather,
                case .weatherSpeedBoost(let w, let m) = b.abilityKind,
                w == state.field.weather { v *= m }
+            if state.rules.abilities {
+                // 속보 — 상태이상일 때 스피드 상승
+                if case .statusSpeedBoost(let m) = b.abilityKind, b.status != .none { v *= m }
+                // 곡예 — 도구를 다 쓰면 스피드 2배
+                if case .unburden = b.abilityKind, b.itemConsumed { v *= 2.0 }
+            }
             return max(1, Int(v))
         }
         let hs = speed(.host)
@@ -709,6 +798,12 @@ struct BattleEngine {
             return
         }
 
+        // 저주받은바디로 봉인된 기술은 쓸 수 없다
+        if atk.disabledTurns > 0, atk.disabledMoveIndex == moveIndex {
+            say("\(atkName)의 \(atk.moves[moveIndex].def.display)은(는) 봉인되어 있다!")
+            return
+        }
+
         // 아무것도않기 — 같은 기술을 연속으로 쓸 수 없다
         if atk.tormented, atk.lastMoveIndex == moveIndex {
             say("\(atkName)는 같은 기술을 연속으로 쓸 수 없다!")
@@ -735,7 +830,12 @@ struct BattleEngine {
             return
         }
 
-        atk.moves[moveIndex].ppLeft -= 1
+        // 프레셔 — 상대가 PP 를 두 배로 소모한다
+        var ppCost = 1
+        if state.rules.abilities, case .pressure = state.side(defender).active.abilityKind {
+            ppCost = 2
+        }
+        atk.moves[moveIndex].ppLeft = max(0, atk.moves[moveIndex].ppLeft - ppCost)
         var baseMove = atk.moves[moveIndex].def
         state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
 
@@ -797,6 +897,13 @@ struct BattleEngine {
         }()
         if state.side(defender).active.isProtecting, !bypassesProtect {
             say("\(state.side(defender).active.name)는 공격을 막아냈다!")
+            return
+        }
+
+        // 축축함 — 자폭 기술을 막는다
+        if state.rules.abilities, move.selfKO,
+           case .damp = state.side(defender).active.abilityKind {
+            say("\(state.side(defender).active.name)의 축축함! \(atkName)는 기술을 쓸 수 없다!")
             return
         }
 
@@ -873,7 +980,13 @@ struct BattleEngine {
         // 흡수 / 반동
         if move.drainPercent != 0, totalDealt > 0 {
             var a = state.side(attacker).active
-            let delta = totalDealt * move.drainPercent / 100
+            var delta = totalDealt * move.drainPercent / 100
+            // 해감액 — 흡수하려 하면 오히려 같은 양의 피해를 받는다
+            if state.rules.abilities, delta > 0,
+               case .liquidOoze = state.side(defender).active.abilityKind {
+                say("\(KO.t(a.name)) 해감액을 흡수해 피해를 입었다!")
+                delta = -delta
+            }
             if delta > 0 {
                 a.currentHP = min(a.maxHP, a.currentHP + delta)
                 say("\(KO.t(a.name)) 체력을 회복했다!")
@@ -895,7 +1008,47 @@ struct BattleEngine {
             applySecondary(move: move, attacker: attacker, defender: defender)
         }
 
+        // 타입 방어 열매를 실제로 소비한다
+        if pendingResistBerry {
+            var d0 = state.side(defender).active
+            if let it = d0.heldItem, it.isBerry, !d0.itemConsumed {
+                d0.itemConsumed = true
+                state.sides[defender.rawValue].team[state.side(defender).activeIndex] = d0
+                say("\(d0.name)는 \(it.display)로 피해를 줄였다!")
+            }
+            pendingResistBerry = false
+        }
+
+        // 피해를 입은 뒤 조건이 맞으면 열매를 먹는다
+        tryEatBerry(defender)
+        tryEatBerry(attacker)
+
+        let defenderFaintedNow = state.side(defender).active.isFainted
         checkFaint(defender)
+
+        // 자기과신 — 쓰러뜨리면 능력치가 오른다
+        if state.rules.abilities, defenderFaintedNow,
+           case .boostOnKO(let stat, let n) = state.side(attacker).active.abilityKind {
+            var a = state.side(attacker).active
+            let cur = a.stages[stat] ?? 0
+            if cur < 6, !a.isFainted {
+                a.stages[stat] = min(6, cur + n)
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+                say("\(a.name)의 \(a.ability?.display ?? "특성")! \(KO.s(stat.ko)) 올라갔다!")
+            }
+        }
+
+        // 유폭 — 쓰러질 때 접촉한 상대에게 피해
+        if state.rules.abilities, defenderFaintedNow, MoveFlags.isContact(move.name),
+           case .aftermath(let denom) = state.side(defender).active.abilityKind {
+            var a = state.side(attacker).active
+            if !a.isFainted, !isMagicGuard(a) {
+                a.currentHP = max(0, a.currentHP - max(1, a.maxHP / denom))
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+                say("\(KO.t(a.name)) 유폭에 휘말렸다!")
+                checkFaint(attacker)
+            }
+        }
 
         // 생명의구슬 반동 — 데미지를 준 경우에만
         if state.rules.itemEffects, totalDealt > 0, case .lifeOrb = atk.itemKind,
@@ -923,6 +1076,12 @@ struct BattleEngine {
         // 유턴 계열 — 공격이 통했으면 자신이 물러난다
         if move.isPivot, !state.side(attacker).active.isFainted {
             state.pendingPivot.insert(attacker.rawValue)
+        }
+
+        // 저주받은바디 — 접촉이 아니어도 맞으면 발동한다
+        if state.rules.abilities, totalDealt > 0,
+           case .cursedBody = state.side(defender).active.abilityKind {
+            applyContactAbility(attacker: attacker, defender: defender)
         }
 
         // 접촉 기술에 대한 반격 특성 (정전기·불꽃몸·거친피부 등)
@@ -1011,6 +1170,17 @@ struct BattleEngine {
         case .contactStatus(let ail, let percent):
             guard rng.chance(percent) else { return }
             inflictDirect(ail, on: attacker, source: d.ability?.display ?? "특성")
+
+        case .cursedBody(let percent):
+            guard rng.chance(percent) else { return }
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted, a.disabledTurns == 0, let last = a.lastMoveIndex else { return }
+            a.disabledMoveIndex = last
+            a.disabledTurns = 4
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            if a.moves.indices.contains(last) {
+                say("\(a.name)의 \(a.moves[last].def.display)이(가) 봉인됐다!")
+            }
 
         case .contactDamage(let denom):
             var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
@@ -1182,6 +1352,94 @@ struct BattleEngine {
         state.sides[side.rawValue].team[idx] = t
     }
 
+    // MARK: 나무열매
+    //
+    // 원작처럼 조건이 맞으면 스스로 먹고 사라진다.
+    // 먹보는 발동 기준을 1/2 로 앞당기고, 긴장감은 상대가 먹지 못하게 막는다.
+
+    /// 상대에게 긴장감이 있으면 열매를 먹을 수 없다
+    private func berryBlocked(for side: BattleSide) -> Bool {
+        guard state.rules.abilities else { return false }
+        let foe = state.side(side.other).active
+        return foe.ability?.name == "unnerve" && !foe.isFainted
+    }
+
+    /// HP 기준 열매의 발동선. 먹보면 1/4 대신 1/2 에서 먹는다.
+    private func berryThreshold(_ b: Battler, defaultHalf: Bool) -> Double {
+        let gluttony = state.rules.abilities && b.ability?.name == "gluttony"
+        if defaultHalf { return 0.5 }
+        return gluttony ? 0.5 : 0.25
+    }
+
+    /// 조건이 맞으면 열매를 먹는다. 먹었으면 true.
+    @discardableResult
+    private mutating func tryEatBerry(_ side: BattleSide) -> Bool {
+        guard state.rules.itemEffects else { return false }
+        let idx = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(idx) else { return false }
+        var b = state.sides[side.rawValue].team[idx]
+        guard let item = b.heldItem, item.isBerry, !b.itemConsumed, !b.isFainted else { return false }
+        guard !berryBlocked(for: side) else { return false }
+
+        let ratio = Double(b.currentHP) / Double(max(1, b.maxHP))
+        var ate = false
+
+        switch item.kind {
+        case .berryHeal(let half, let fraction, let flat, let dislike):
+            guard ratio <= berryThreshold(b, defaultHalf: half), b.currentHP < b.maxHP else { break }
+            let amount = flat ?? max(1, b.maxHP / (fraction ?? 4))
+            b.currentHP = min(b.maxHP, b.currentHP + amount)
+            say("\(KO.t(b.name)) \(item.display)로 체력을 회복했다!")
+            // 취향에 안 맞는 열매는 혼란을 부른다 (원작 무화열매 계열)
+            if dislike, b.confusionTurns == 0, rng.chance(50) {
+                b.confusionTurns = Int.random(in: 2...5, using: &rng)
+                say("\(KO.t(b.name)) 맛이 입에 맞지 않아 혼란에 빠졌다!")
+            }
+            ate = true
+
+        case .berryCure(let target):
+            if let target {
+                if target == .confusion, b.confusionTurns > 0 {
+                    b.confusionTurns = 0
+                    say("\(KO.t(b.name)) \(item.display)로 혼란이 나았다!")
+                    ate = true
+                } else if b.status == target {
+                    b.status = .none; b.sleepTurns = 0; b.toxicCounter = 0
+                    say("\(KO.t(b.name)) \(item.display)로 \(target.ko) 상태가 나았다!")
+                    ate = true
+                }
+            } else if b.status != .none || b.confusionTurns > 0 {
+                b.status = .none; b.sleepTurns = 0; b.toxicCounter = 0; b.confusionTurns = 0
+                say("\(KO.t(b.name)) \(item.display)로 상태이상이 나았다!")
+                ate = true
+            }
+
+        case .berryPinchBoost(let stat):
+            guard ratio <= berryThreshold(b, defaultHalf: false) else { break }
+            let cur = b.stages[stat] ?? 0
+            guard cur < 6 else { break }
+            b.stages[stat] = min(6, cur + 1)
+            say("\(KO.t(b.name)) \(item.display)로 \(KO.s(stat.ko)) 올라갔다!")
+            ate = true
+
+        case .berryRestorePP(let amount):
+            guard let i = b.moves.firstIndex(where: { $0.ppLeft == 0 }) else { break }
+            b.moves[i].ppLeft = min(b.moves[i].def.pp, amount)
+            say("\(KO.t(b.name)) \(item.display)로 \(b.moves[i].def.display)의 PP를 회복했다!")
+            ate = true
+
+        case .berryTypeResist:
+            break   // 피해 계산 시점에 소비된다
+
+        default:
+            break
+        }
+
+        if ate { b.itemConsumed = true }
+        state.sides[side.rawValue].team[idx] = b
+        return ate
+    }
+
     private func isMagicGuard(_ b: Battler) -> Bool {
         if case .magicGuard = b.abilityKind { return true }
         return false
@@ -1208,6 +1466,14 @@ struct BattleEngine {
     private mutating func checkPreMoveBlock(_ b: inout Battler, side: BattleSide) -> String? {
         if b.mustFlinch {
             b.mustFlinch = false
+            if state.rules.abilities {
+                if case .flinchImmunity = b.abilityKind { return nil }
+                // 불굴의마음 — 풀죽으면 오히려 스피드가 오른다
+                if case .boostOnFlinch(let stat, let n) = b.abilityKind {
+                    let cur = b.stages[stat] ?? 0
+                    if cur < 6 { b.stages[stat] = min(6, cur + n) }
+                }
+            }
             return "\(KO.t(b.name)) 풀이 죽어 움직일 수 없다!"
         }
         guard state.rules.statusEffects else { return nil }
@@ -1215,7 +1481,10 @@ struct BattleEngine {
         switch b.status {
         case .sleep:
             if b.sleepTurns > 0 {
-                b.sleepTurns -= 1
+                // 일찍기상 — 잠듦이 두 배로 빨리 풀린다
+                var dec = 1
+                if state.rules.abilities, case .earlyBird = b.abilityKind { dec = 2 }
+                b.sleepTurns = max(0, b.sleepTurns - dec)
                 if b.sleepTurns == 0 {
                     b.status = .none
                     return "\(KO.t(b.name)) 잠에서 깨어났다!"
@@ -1254,7 +1523,12 @@ struct BattleEngine {
         guard let acc = move.accuracy else { return true }   // nil = 필중
         let mod = Battler.accEvaMultiplier(attacker.accuracyStage)
                 / Battler.accEvaMultiplier(defender.evasionStage)
-        var final = Int((Double(acc) * mod).rounded())
+        var accMult = 1.0
+        if state.rules.abilities {
+            if case .accuracyMultiplier(let m) = attacker.abilityKind { accMult *= m }
+            if case .hustle = attacker.abilityKind, move.damageClass == .physical { accMult *= 0.8 }
+        }
+        var final = Int((Double(acc) * mod * accMult).rounded())
         // 중력 — 명중률 5/3 배
         if state.rules.weather, state.field.hasGravity {
             final = Int(Double(final) * 5.0 / 3.0)
@@ -1284,10 +1558,30 @@ struct BattleEngine {
 
     struct DamageResult { var damage: Int; var critical: Bool; var typeMultiplier: Double; var multiplier: Double }
 
+    /// 이번 계산에서 타입 방어 열매가 쓰였는지 (계산 함수가 상태를 바꾸지 않게 분리)
+    private var pendingResistBerry = false
+
+    /// 긴장감 판정 (계산 중에는 side 를 모르므로 특성으로만 본다)
+    private func berryBlockedStatic(defender: Battler, attacker: Battler) -> Bool {
+        state.rules.abilities && attacker.ability?.name == "unnerve"
+    }
+
     private mutating func computeDamage(move: MoveDef, attacker: BattleSide, defender: BattleSide) -> DamageResult {
         let a = state.side(attacker).active
         let d = state.side(defender).active
         let physical = move.damageClass == .physical
+
+        // 무게 기반 위력 — PokeAPI 가 이 네 기술의 위력을 주지 않으므로(power=null)
+        // 원작 표로 채운다. **위력이 아직 비어 있을 때만** 들어가야 재귀에 빠지지 않는다.
+        if (move.power ?? 0) == 0,
+           let wp = Self.weightBasedPower(move: move.name,
+                                          attackerWeight: a.effectiveWeight,
+                                          targetWeight: d.effectiveWeight) {
+            var m2 = move
+            m2.power = wp
+            m2.specialDamage = .none
+            return computeDamage(move: m2, attacker: attacker, defender: defender)
+        }
 
         // 위력 공식을 따르지 않는 기술들 — 타입 상성만 보고 고정값을 낸다
         switch move.specialDamage {
@@ -1387,6 +1681,10 @@ struct BattleEngine {
         if state.rules.abilities, case .levitateLike(let t, let mult) = foeAbility, move.type == t {
             typeMult *= mult
         }
+        // 초식·전기엔진·번개유도 — 무효화하고 능력이 오른다
+        if state.rules.abilities, case .absorbAndBoost(let t, _, _) = foeAbility, move.type == t {
+            typeMult = 0
+        }
         if state.rules.abilities, case .dryskin = foeAbility {
             if move.type == .water { typeMult = 0 }
             if move.type == .fire { typeMult *= 1.25 }
@@ -1446,6 +1744,11 @@ struct BattleEngine {
             if case .superEffectiveResist(let m) = foeAbility, typeMult >= 2 { extra *= m }
             // 멀티스케일 — 풀피에서 받는 피해 감소
             if case .multiscale(let m) = foeAbility, d.currentHP == d.maxHP { extra *= m }
+            // 불가사의부적 — 효과가 굉장한 기술만 통한다
+            if case .wonderGuard = foeAbility, typeMult < 2 { typeMult = 0 }
+            // 메가런처·칼날몸 — 특정 기술군 강화
+            if case .moveTypeBoost(let names, let m) = a.abilityKind,
+               names.contains(move.name) { extra *= m }
         }
 
         // 날씨 — 불꽃/물 기술 배율
@@ -1468,6 +1771,17 @@ struct BattleEngine {
             }
         }
 
+        // 타입 방어 열매 — 효과가 굉장한 기술을 반감시킨다 (여기서 소비 표시만 하고
+        // 실제 소비는 applyDamage 뒤 consumeResistBerry 에서 한다)
+        var berryHalved = false
+        if state.rules.itemEffects, typeMult >= 2,
+           case .berryTypeResist(let bt) = d.itemKind, bt == move.type,
+           !berryBlockedStatic(defender: d, attacker: a) {
+            extra *= 0.5
+            berryHalved = true
+        }
+        pendingResistBerry = berryHalved
+
         let total = typeMult * stabMult * critMult * rand * extra
         dmg = floor(dmg * total)
 
@@ -1484,6 +1798,12 @@ struct BattleEngine {
             if case .attackMultiplier(let x) = b.abilityKind, stat == .attack { m *= x }
             if case .statusAtkBoost(let s, let x) = b.abilityKind,
                s == stat, b.status != .none, b.status != .sleep, b.status != .freeze { m *= x }
+            if case .statMultiplier(let s, let x) = b.abilityKind, s == stat { m *= x }
+            // 의욕 — 공격 1.5배 (명중은 accuracyCheck 에서 깎는다)
+            if case .hustle = b.abilityKind, stat == .attack { m *= 1.5 }
+            // 무기력 — HP 절반 이하면 공격·특공 반감
+            if case .defeatist = b.abilityKind, b.currentHP * 2 <= b.maxHP,
+               stat == .attack || stat == .spAttack { m *= 0.5 }
         }
         if state.rules.itemEffects {
             if case .choice(let s) = b.itemKind, s == stat, s != .speed { m *= 1.5 }
@@ -1510,6 +1830,35 @@ struct BattleEngine {
         (m.ailment != .none && m.ailmentChance > 0 && m.ailmentChance < 100)
             || (!m.statChanges.isEmpty && m.statChangeChance < 100)
             || m.flinchChance > 0
+    }
+
+    /// 무게로 위력이 정해지는 기술 (원작 표).
+    /// 저울짓기·풀묶기는 **상대 무게**, 헤비봄버·기관차는 **무게 비율**을 본다.
+    static func weightBasedPower(move: String, attackerWeight: Int, targetWeight: Int) -> Int? {
+        switch move {
+        case "low-kick", "grass-knot":
+            let kg = Double(targetWeight) / 10.0
+            switch kg {
+            case ..<10:   return 20
+            case ..<25:   return 40
+            case ..<50:   return 60
+            case ..<100:  return 80
+            case ..<200:  return 100
+            default:      return 120
+            }
+        case "heavy-slam", "heat-crash":
+            guard targetWeight > 0 else { return 120 }
+            let ratio = Double(attackerWeight) / Double(targetWeight)
+            switch ratio {
+            case 5...:    return 120
+            case 4..<5:   return 100
+            case 3..<4:   return 80
+            case 2..<3:   return 60
+            default:      return 40
+            }
+        default:
+            return nil
+        }
     }
 
     /// 실제로 깎인 양을 돌려준다 (흡수 계산에 필요).
@@ -1615,6 +1964,12 @@ struct BattleEngine {
             say("\(KO.t(t.name)) 혼란에 빠졌다!")
         } else {
             guard t.status == .none else { return false }
+            // 리프가드 — 특정 날씨에서는 상태이상에 걸리지 않는다
+            if state.rules.abilities, state.rules.weather, state.field.hasWeather,
+               case .noStatusInWeather(let w) = t.abilityKind, w == state.field.weather {
+                say("\(t.name)는 \(t.ability?.display ?? "특성") 때문에 상태이상이 되지 않는다!")
+                return false
+            }
             // 특성 면역 (면역·수의베일·불면·유연 등)
             if state.rules.abilities, case .statusImmunity(let imm) = t.abilityKind,
                imm == move.ailment || (imm == .poison && move.ailment == .toxic) {
@@ -1632,6 +1987,23 @@ struct BattleEngine {
             if move.ailment == .sleep { t.sleepTurns = Int.random(in: 2...4, using: &rng) }
             if move.ailment == .toxic { t.toxicCounter = 1 }
             say("\(KO.t(t.name)) \(move.ailment.ko) 상태가 되었다!")
+
+            // 싱크로 — 받은 상태이상을 건 쪽에게도 돌려준다
+            if state.rules.abilities, case .synchronize = t.abilityKind,
+               target != attacker,
+               move.ailment == .burn || move.ailment == .poison
+                || move.ailment == .toxic || move.ailment == .paralysis {
+                let src = target.other
+                let sIdx = state.side(src).activeIndex
+                if state.side(src).team.indices.contains(sIdx),
+                   state.sides[src.rawValue].team[sIdx].status == .none,
+                   !state.sides[src.rawValue].team[sIdx].isFainted {
+                    say("\(t.name)의 싱크로!")
+                    state.sides[target.rawValue].team[state.side(target).activeIndex] = t
+                    inflictDirect(move.ailment, on: src, source: "싱크로")
+                    return true
+                }
+            }
         }
         state.sides[target.rawValue].team[state.side(target).activeIndex] = t
         return true
@@ -1703,6 +2075,39 @@ struct BattleEngine {
                 say("\(KO.t(b.name)) \(b.heldItem?.display ?? "도구") 때문에 \(ail.ko) 상태가 되었다!")
             }
 
+            if state.rules.abilities {
+                // 가속 — 턴마다 스피드 상승
+                if case .speedBoostEachTurn = b.abilityKind {
+                    let cur = b.stages[.speed] ?? 0
+                    if cur < 6 {
+                        b.stages[.speed] = cur + 1
+                        say("\(b.name)의 가속! 스피드가 올라갔다!")
+                    }
+                }
+                // 탈피 — 확률로 상태이상 회복
+                if case .shedSkin(let p) = b.abilityKind, b.status != .none, rng.chance(p) {
+                    say("\(KO.t(b.name)) 탈피로 \(b.status.ko) 상태가 나았다!")
+                    b.status = .none; b.sleepTurns = 0; b.toxicCounter = 0
+                }
+                // 촉촉바디 — 특정 날씨에서 상태이상 회복
+                if state.rules.weather, state.field.hasWeather,
+                   case .healInWeather(let w) = b.abilityKind, w == state.field.weather,
+                   b.status != .none {
+                    say("\(KO.t(b.name)) \(b.ability?.display ?? "특성")(으)로 상태이상이 나았다!")
+                    b.status = .none; b.sleepTurns = 0; b.toxicCounter = 0
+                }
+                // 포이즌힐 — 독 피해 대신 회복
+                if case .poisonHeal = b.abilityKind,
+                   b.status == .poison || b.status == .toxic {
+                    if b.currentHP < b.maxHP {
+                        b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / 8))
+                        say("\(KO.t(b.name)) 포이즌힐로 체력을 회복했다!")
+                    }
+                    state.sides[s.rawValue].team[state.side(s).activeIndex] = b
+                    continue
+                }
+            }
+
             // 매직가드 — 간접 피해를 받지 않는다
             if state.rules.abilities, isMagicGuard(b) {
                 state.sides[s.rawValue].team[state.side(s).activeIndex] = b
@@ -1728,6 +2133,33 @@ struct BattleEngine {
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
+        // 픽업 — 상대가 소비한 도구를 주워온다
+        if state.rules.abilities, state.rules.itemEffects {
+            for side in [BattleSide.host, .guest] {
+                let i = state.side(side).activeIndex
+                guard state.side(side).team.indices.contains(i) else { continue }
+                var me = state.sides[side.rawValue].team[i]
+                guard case .pickup = me.abilityKind, me.heldItem == nil || me.itemConsumed,
+                      !me.isFainted else { continue }
+                let fIdx = state.side(side.other).activeIndex
+                guard state.side(side.other).team.indices.contains(fIdx) else { continue }
+                var foe = state.sides[side.other.rawValue].team[fIdx]
+                guard let used = foe.heldItem, foe.itemConsumed else { continue }
+                // 점착이 있으면 못 가져온다
+                if case .stickyHold = foe.abilityKind { continue }
+                me.heldItem = used
+                me.itemConsumed = false
+                foe.heldItem = nil
+                state.sides[side.rawValue].team[i] = me
+                state.sides[side.other.rawValue].team[fIdx] = foe
+                say("\(me.name)는 픽업으로 \(used.display)을(를) 주웠다!")
+            }
+        }
+
+        // 지속 피해로 HP 가 떨어졌을 수 있으니 열매를 확인한다
+        tryEatBerry(.host)
+        tryEatBerry(.guest)
+
         tickWeatherAndField()
         tickGMaxDoT()
         tickDynamax()
@@ -1755,6 +2187,22 @@ struct BattleEngine {
         if let w = ended.endedWeather { say("\(w.ko)이(가) 그쳤다!") }
         if let t = ended.endedTerrain { say("\(t.ko)가 사라졌다!") }
         if ended.gravityEnded { say("중력이 원래대로 돌아왔다!") }
+
+        // 봉인 턴수 감소
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            var b = state.sides[side.rawValue].team[i]
+            guard b.disabledTurns > 0 else { continue }
+            b.disabledTurns -= 1
+            if b.disabledTurns == 0 {
+                if let d = b.disabledMoveIndex, b.moves.indices.contains(d) {
+                    say("\(b.name)의 \(b.moves[d].def.display) 봉인이 풀렸다!")
+                }
+                b.disabledMoveIndex = nil
+            }
+            state.sides[side.rawValue].team[i] = b
+        }
 
         // 묶기 — 지속 피해 후 턴수 감소
         for side in [BattleSide.host, .guest] {

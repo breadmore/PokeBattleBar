@@ -47,6 +47,12 @@ enum TestAll {
             .init(flag: "--showdowntest", name: "Showdown 데이터", what: "플래그·추천세팅·포인트") {
                 await ShowdownTest.run()
             },
+            .init(flag: "--berrytest", name: "나무열매·특성", what: "열매 38종·먹보·긴장감·해감액·봉인·트레이스·무게") {
+                await BerryTest.run()
+            },
+            .init(flag: "--abilitytest", name: "특성 구현률", what: "등장 가능한 특성 중 반영 비율") {
+                await AbilityCoverageTest.run(full: false)
+            },
             .init(flag: "--modetest", name: "게임 모드", what: "토게피 손가락흔들기·자유의지·랜덤기술·자동변신") {
                 await ModeTest.run()
             },

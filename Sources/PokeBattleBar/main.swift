@@ -2,6 +2,23 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--berrytest") {
+    Task {
+        let passed = await BerryTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--abilitytest") {
+    let full = args.contains("--full")
+    Task {
+        let passed = await AbilityCoverageTest.run(full: full)
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--showdowntest") {
     Task {
         let passed = await ShowdownTest.run()

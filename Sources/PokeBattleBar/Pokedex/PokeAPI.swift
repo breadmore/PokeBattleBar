@@ -103,10 +103,14 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
         }
     }
 
-    /// 데미지를 주는 기술인가 (위력이 있거나 특수 데미지 규칙이 있으면 공격기다)
+    /// 데미지를 주는 기술인가.
+    /// 위력이 있거나, 특수 데미지 규칙이 있거나, 무게로 위력이 정해지는 기술이면 공격기다.
     var isDamaging: Bool {
         if (power ?? 0) > 0 { return true }
         if specialDamage != .none { return true }
+        if BattleEngine.weightBasedPower(move: name, attackerWeight: 1, targetWeight: 1) != nil {
+            return true
+        }
         return false
     }
 }
@@ -157,6 +161,8 @@ struct SpeciesDef: Codable, Sendable {
     var gmaxForm: String? = nil
     /// 이 종이 가질 수 있는 특성 (슬롯 순서, 숨겨진 특성 포함)
     var abilitySlots: [AbilitySlot] = []
+    /// 무게 (헥토그램). 헤비메탈·저울짓기·헤비봄버 계산에 쓴다.
+    var weight: Int = 0
 
     var canMega: Bool { !megaForms.isEmpty }
     /// 거다이맥스 전용 폼이 있는가 (다이맥스는 종족 제한이 없다)
@@ -288,7 +294,8 @@ actor PokeAPI {
             learnableMoves: learnable,
             megaForms: megaForms.sorted(),
             gmaxForm: gmaxForm,
-            abilitySlots: abilitySlots
+            abilitySlots: abilitySlots,
+            weight: poke["weight"] as? Int ?? 0
         )
         species[id] = def
         return def
