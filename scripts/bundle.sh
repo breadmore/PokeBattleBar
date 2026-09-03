@@ -9,8 +9,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-APP="$ROOT/build/PokeBattleBar.app"
-ZIP="$ROOT/build/PokeBattleBar.zip"
+APP="$ROOT/build.noindex/PokeBattleBar.app"
+ZIP="$ROOT/build.noindex/PokeBattleBar.zip"
 CONFIG=release
 
 if [ "${NATIVE:-0}" = "1" ]; then
@@ -65,8 +65,8 @@ codesign --force --sign - --identifier local.pokebattlebar "$APP" >/dev/null 2>&
   || echo "   경고: 서명 실패"
 
 # 배포 폴더를 만든다. 파일명은 전부 ASCII 로 — 한글 파일명은 zip 전송 중 깨진다.
-STAGE="$ROOT/build/stage/PokeBattleBar"
-rm -rf "$ROOT/build/stage"
+STAGE="$ROOT/build.noindex/stage/PokeBattleBar"
+rm -rf "$ROOT/build.noindex/stage"
 mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 
@@ -163,9 +163,9 @@ Install.command 를 더블클릭하세요.
 RM
 
 echo "==> zip 생성: $ZIP"
-( cd "$ROOT/build/stage" && ditto -c -k --sequesterRsrc --keepParent \
+( cd "$ROOT/build.noindex/stage" && ditto -c -k --sequesterRsrc --keepParent \
     PokeBattleBar "$ZIP" )
-rm -rf "$ROOT/build/stage"
+rm -rf "$ROOT/build.noindex/stage"
 
 echo
 echo "==> 완료"

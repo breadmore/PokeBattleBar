@@ -4,9 +4,9 @@
 #   ./scripts/release.sh 1.1.0
 #
 # 산출물:
-#   build/PokeBattleBar-1.1.0.zip     동료에게 보낼 파일
-#   build/poke-battle-bar.rb          Homebrew cask 초안 (tap 에 올릴 때)
-#   build/RELEASE-NOTES.txt           변경 요약
+#   build.noindex/PokeBattleBar-1.1.0.zip     동료에게 보낼 파일
+#   build.noindex/poke-battle-bar.rb          Homebrew cask 초안 (tap 에 올릴 때)
+#   build.noindex/RELEASE-NOTES.txt           변경 요약
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -33,18 +33,18 @@ fi
 echo "==> 번들"
 VERSION="$VERSION" ./scripts/bundle.sh >/dev/null
 
-VZIP="$ROOT/build/PokeBattleBar-$VERSION.zip"
-mv "$ROOT/build/PokeBattleBar.zip" "$VZIP"
+VZIP="$ROOT/build.noindex/PokeBattleBar-$VERSION.zip"
+mv "$ROOT/build.noindex/PokeBattleBar.zip" "$VZIP"
 SHA=$(shasum -a 256 "$VZIP" | cut -d' ' -f1)
 
 echo "==> 단일 설치 파일"
 ./scripts/make-installer.sh >/dev/null
-VINST="$ROOT/build/PokeBattleBar-$VERSION-설치.command"
-mv "$ROOT/build/Install-PokeBattleBar.command" "$ROOT/build/PokeBattleBar-$VERSION-Install.command"
-rm -f "$ROOT/build/PokeBattleBar-설치.command"
-VINST="$ROOT/build/PokeBattleBar-$VERSION-Install.command"
+VINST="$ROOT/build.noindex/PokeBattleBar-$VERSION-설치.command"
+mv "$ROOT/build.noindex/Install-PokeBattleBar.command" "$ROOT/build.noindex/PokeBattleBar-$VERSION-Install.command"
+rm -f "$ROOT/build.noindex/PokeBattleBar-설치.command"
+VINST="$ROOT/build.noindex/PokeBattleBar-$VERSION-Install.command"
 
-cat > "$ROOT/build/poke-battle-bar.rb" <<CASK
+cat > "$ROOT/build.noindex/poke-battle-bar.rb" <<CASK
 # Homebrew cask 초안. 자기 tap 저장소의 Casks/ 아래에 두면
 # 동료들이 'brew upgrade --cask poke-battle-bar' 로 업데이트할 수 있다.
 cask "poke-battle-bar" do
@@ -65,7 +65,7 @@ cask "poke-battle-bar" do
 end
 CASK
 
-cat > "$ROOT/build/RELEASE-NOTES.txt" <<NOTES
+cat > "$ROOT/build.noindex/RELEASE-NOTES.txt" <<NOTES
 PokeBattleBar $VERSION  (프로토콜 v$PROTO)
 
 ** 중요: 배틀하려면 양쪽이 같은 버전이어야 합니다 **
@@ -101,7 +101,7 @@ echo "   ${BLD:-}설치 파일 : $VINST  ($(du -h "$VINST" | cut -f1))${RST:-}"
 echo "               ↑ 동료에게 이것만 보내면 됩니다"
 echo "   zip     : $VZIP  ($(du -h "$VZIP" | cut -f1))"
 echo "   sha256  : $SHA"
-echo "   cask    : $ROOT/build/poke-battle-bar.rb"
-echo "   릴리즈노트: $ROOT/build/RELEASE-NOTES.txt"
+echo "   cask    : $ROOT/build.noindex/poke-battle-bar.rb"
+echo "   릴리즈노트: $ROOT/build.noindex/RELEASE-NOTES.txt"
 echo
 echo "   동료에게: zip + RELEASE-NOTES.txt 내용을 함께 전달"
