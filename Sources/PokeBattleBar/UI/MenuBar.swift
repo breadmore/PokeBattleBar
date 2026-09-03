@@ -226,3 +226,100 @@ struct InviteSheet: View {
         .frame(minWidth: 320)
     }
 }
+
+/// 업데이트 버튼.
+///
+/// 새 버전이 없으면 조용히 사라진다 — 늘 회색 버튼이 있으면 눈에 걸린다.
+/// 프로토콜 버전이 다르면 배틀 자체가 안 되므로, 있을 때는 확실히 보이게 한다.
+struct UpdateButton: View {
+    let model: AppModel
+    @State private var showNotes = false
+
+    var body: some View {
+        if let u = model.availableUpdate {
+            Button {
+                showNotes = true
+            } label: {
+                HStack(spacing: 5) {
+                    if model.updateDownloading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.down.circle.fill")
+                    }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("업데이트").font(.system(size: 11, weight: .heavy))
+                        Text("v\(u.version)")
+                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                            .opacity(0.85)
+                    }
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 7).fill(GB.hilite))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.updateDownloading)
+            .help("새 버전 v\(u.version) 이 있습니다")
+            .popover(isPresented: $showNotes, arrowEdge: .bottom) {
+                UpdatePopover(model: model, update: u)
+            }
+        }
+    }
+}
+
+struct UpdatePopover: View {
+    let model: AppModel
+    let update: UpdateChecker.Update
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                PokeBallIcon(size: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("새 버전 v\(update.version)")
+                        .font(.headline)
+                    Text("지금 v\(model.appVersion) · 프로토콜 v\(model.protocolVersion)")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Text("동료와 배틀하려면 **양쪽 버전이 같아야** 합니다. "
+                 + "한쪽만 새 버전이면 방 목록에 \"버전 불일치\" 로 표시됩니다.")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !update.notes.isEmpty {
+                ScrollView {
+                    Text(update.notes)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 160)
+            }
+
+            if let s = model.updateStatus {
+                Text(s).font(.caption.bold()).foregroundStyle(.orange)
+            }
+
+            HStack {
+                Button("릴리스 페이지") { NSWorkspace.shared.open(update.pageURL) }
+                Spacer()
+                Button(model.updateDownloading ? "받는 중…" : "지금 업데이트") {
+                    Task { await model.downloadAndRunUpdate() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(model.updateDownloading)
+            }
+
+            Text("업데이트하면 앱이 잠깐 닫히고 다시 열립니다. "
+                 + "전적·기술·도구 설정은 그대로 유지됩니다.")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(width: 330)
+    }
+}

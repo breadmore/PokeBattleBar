@@ -146,6 +146,7 @@ enum MoveAudit {
             let avail = await ItemCatalog.shared.available(forSpecies: sp)
             if avail.contains(where: { $0.name == want }) { appliable += 1 }
             else { wanted[want, default: 0] += 1 }
+            _ = avail
         }
         if total == 0 {
             print("  · 표본에 추천 도구가 있는 종이 없습니다")
@@ -160,6 +161,29 @@ enum MoveAudit {
             ok = show(appliable == total, "추천 도구를 전부 적용할 수 있다",
                       "\(appliable)/\(total)") && ok
         }
+
+        print("\n-- 규칙으로 도구를 추천할 수 있는가 --")
+        await ItemCatalog.shared.loadAll()
+        var picked = 0, tried = 0
+        for id in Set(roster).sorted() {
+            guard let sp = try? await PokeAPI.shared.species(id) else { continue }
+            tried += 1
+            let avail = await ItemCatalog.shared.available(forSpecies: sp)
+            let recMoves = Showdown.set(forSpeciesName: sp.name)?.movePool ?? []
+            var defs: [MoveDef] = []
+            for n in recMoves.prefix(4) {
+                if let m = try? await PokeAPI.shared.move(n) { defs.append(m) }
+            }
+            if let p = ItemAdvice.recommend(species: sp, moves: defs,
+                                            available: avail, fullyEvolved: true) {
+                picked += 1
+                let name = avail.first { $0.name == p.itemName }?.display ?? p.itemName
+                print("  · \(sp.display) → \(name) — \(p.reason)")
+            } else {
+                print("  · \(sp.display) → 추천 없음 (고를 수 있는 도구 \(avail.count)개)")
+            }
+        }
+        ok = show(picked == tried, "모든 종에 도구를 추천할 수 있다", "\(picked)/\(tried)") && ok
 
         print("\n-- 구현 목록이 실제 기술인가 --")
         var bogus: [String] = []

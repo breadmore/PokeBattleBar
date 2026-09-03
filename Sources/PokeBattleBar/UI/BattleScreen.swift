@@ -592,3 +592,37 @@ struct GBSpecialChip: View {
         return "이 포켓몬은 \(kind.ko)을 쓸 수 없습니다"
     }
 }
+
+/// 로비의 판. 배틀 화면과 같은 문법 — 밝은 판, 남색 선, 그림자 없는 오프셋.
+struct GBPanel<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                // 제목 앞의 표식 — 원작 메뉴의 ▶ 커서 자리
+                Text("▶")
+                    .font(.system(size: 9, weight: .black))
+                    .foregroundStyle(GB.hilite)
+                Text(title)
+                    .font(GB.face(15))
+                    .foregroundStyle(GB.ink)
+                Spacer(minLength: 0)
+            }
+            content
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(GB.plate)
+                .shadow(color: GB.ink.opacity(0.16), radius: 0, x: 3, y: 3)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(GB.ink.opacity(0.85), lineWidth: 2))
+    }
+}

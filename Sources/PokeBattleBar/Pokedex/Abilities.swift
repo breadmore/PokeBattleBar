@@ -122,10 +122,14 @@ struct AbilityDef: Codable, Hashable, Sendable, Identifiable {
     var name: String
     var koName: String
     var shortEffect: String
+    /// PokéAPI 의 한글 설명 (flavor_text). effect_entries 는 영어/프랑스어가 섞여 온다.
+    var koFlavor: String = ""
     var isHidden: Bool = false
     var kind: AbilityKind
 
     var display: String { koName.isEmpty ? name : koName }
+    /// 화면에 보여줄 설명 — 한글이 있으면 한글
+    var description: String { koFlavor.isEmpty ? shortEffect : koFlavor }
     /// 실제로 배틀 계산에 반영되는가
     var isImplemented: Bool { kind != .none && kind != .doublesOnly }
     /// 더블배틀 전용이라 1대1 에서는 애초에 발동할 수 없는가
@@ -155,6 +159,19 @@ actor AbilityCatalog {
     }
 
     /// 구조화된 효과 표. 여기에 있는 것만 배틀 계산에 반영된다.
+    /// 한글 flavor text — 여러 버전 중 가장 최근 것
+    static func koFlavor(_ raw: Any?) -> String {
+        guard let arr = raw as? [[String: Any]] else { return "" }
+        var last = ""
+        for e in arr {
+            guard let l = e["language"] as? [String: Any],
+                  let n = l["name"] as? String, n == "ko",
+                  let t = e["flavor_text"] as? String else { continue }
+            last = t.replacingOccurrences(of: "\n", with: " ")
+        }
+        return last
+    }
+
     static func kind(for slug: String) -> AbilityKind {
         // 배틀 중 폼이 바뀌는 특성은 FormChange 가 처리한다.
         // 목록을 여기서 따로 적으면 규칙이 없는 특성까지 구현됐다고
@@ -385,6 +402,7 @@ actor AbilityCatalog {
         let def = AbilityDef(name: name,
                              koName: Self.localized(j["names"], "ko") ?? name,
                              shortEffect: Self.shortEffect(j["effect_entries"]),
+                             koFlavor: Self.koFlavor(j["flavor_text_entries"]),
                              kind: Self.kind(for: name))
         abilities[name] = def
         return def

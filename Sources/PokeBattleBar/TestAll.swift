@@ -18,6 +18,11 @@ enum TestAll {
                                    speciesB: [143, 130, 149, 94, 68, 131],
                                    level: 50, verbose: verbose)
             },
+            .init(flag: "--settest", name: "실전 세팅", what: "도구 포함·중복 방지·성격 불변") {
+                await MainActor.run { () -> Task<Bool, Never> in
+                    Task { await SmogonSetTest.run() }
+                }.value
+            },
             .init(flag: "--scriptedtest", name: "손구현 기술", what: "잠자기·저주·배북·대타출동·2턴·반동") {
                 await ScriptedMoveTest.run(verbose: verbose)
             },

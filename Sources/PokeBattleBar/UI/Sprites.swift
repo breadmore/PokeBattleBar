@@ -135,3 +135,67 @@ private struct AnimatedImage: NSViewRepresentable {
         v.animates = true
     }
 }
+
+/// 도구 아이콘. 포켓몬 스프라이트와 같은 저장소에서 받아 디스크에 캐시한다.
+@MainActor
+final class ItemIconLoader: ObservableObject {
+    static let shared = ItemIconLoader()
+    private var cache: [String: NSImage] = [:]
+    private var inFlight: Set<String> = []
+
+    private let dir: URL = {
+        let d = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Application Support/PokeBattleBar/items")
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }()
+
+    func image(_ item: ItemDef) -> NSImage? {
+        if let img = cache[item.name] { return img }
+        let disk = dir.appending(path: item.name + ".png")
+        if let img = NSImage(contentsOf: disk) { cache[item.name] = img; return img }
+        download(item, to: disk)
+        return nil
+    }
+
+    private func download(_ item: ItemDef, to disk: URL) {
+        guard !inFlight.contains(item.name), let url = item.iconURL else { return }
+        inFlight.insert(item.name)
+        Task { [weak self] in
+            defer { Task { @MainActor in self?.inFlight.remove(item.name) } }
+            guard let (d, _) = try? await URLSession.shared.data(from: url),
+                  let image = NSImage(data: d) else { return }
+            try? d.write(to: disk)
+            await MainActor.run {
+                self?.cache[item.name] = image
+                self?.objectWillChange.send()
+            }
+        }
+    }
+}
+
+/// 도구 아이콘 한 칸. 아직 못 받았으면 자리만 잡아둔다 (레이아웃이 흔들리지 않게).
+struct ItemIcon: View {
+    let item: ItemDef
+    var size: CGFloat = 28
+    @ObservedObject private var loader = ItemIconLoader.shared
+
+    var body: some View {
+        Group {
+            if let img = loader.image(item) {
+                Image(nsImage: img)
+                    .interpolation(.high)
+                    .resizable().scaledToFit()
+            } else {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: "bag")
+                            .font(.system(size: size * 0.42))
+                            .foregroundStyle(.secondary)
+                    }
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
