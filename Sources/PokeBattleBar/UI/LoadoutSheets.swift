@@ -1,5 +1,42 @@
 import SwiftUI
 
+/// 밝은 판 위의 버튼.
+///
+/// 시스템 기본 버튼은 다크모드에서 글자가 흰색이라 베이지 판 위에서 보이지
+/// 않는다 — 실제로 시트가 열려도 아무것도 누를 수 없었다. 그래서 색을
+/// 직접 칠한다.
+struct GBSheetButton: View {
+    enum Kind { case primary, plain }
+    let title: String
+    var kind: Kind = .plain
+    let action: () -> Void
+
+    init(_ title: String, kind: Kind = .plain, action: @escaping () -> Void) {
+        self.title = title
+        self.kind = kind
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(kind == .primary ? GB.plate : GB.ink)
+                .padding(.horizontal, 12).padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(kind == .primary ? GB.hilite : GB.plateHi)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(kind == .primary ? .clear : GB.ink.opacity(0.4), lineWidth: 1.5)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 /// 지닌 도구 고르기.
 ///
 /// 예전에는 작은 메뉴에 이름만 나열해서, 무슨 도구인지 알려면 하나하나
@@ -53,7 +90,7 @@ struct ItemPickerSheet: View {
             }
         }
         .frame(width: 520, height: 560)
-        .background(GB.plate)
+        .gbSurface(GB.plate)
     }
 
     private var header: some View {
@@ -64,7 +101,7 @@ struct ItemPickerSheet: View {
                 Text(model.displayName(for: slot))
                     .font(GB.face(12, .semibold)).foregroundStyle(GB.inkSoft)
                 Spacer()
-                Button("닫기") { dismiss() }
+                GBSheetButton("닫기", kind: .plain) { dismiss() }
             }
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(GB.inkSoft)
@@ -77,7 +114,7 @@ struct ItemPickerSheet: View {
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 7).fill(.white.opacity(0.6)))
+            .background(RoundedRectangle(cornerRadius: 7).fill(GB.plateHi))
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(GB.ink.opacity(0.25), lineWidth: 1.5))
 
             Toggle(isOn: $showOnlyRelevant) {
@@ -215,7 +252,7 @@ struct AbilityPickerSheet: View {
                 Text(model.displayName(for: slot))
                     .font(GB.face(12, .semibold)).foregroundStyle(GB.inkSoft)
                 Spacer()
-                Button("닫기") { dismiss() }
+                GBSheetButton("닫기", kind: .plain) { dismiss() }
             }
             .padding(14)
 
@@ -237,13 +274,16 @@ struct AbilityPickerSheet: View {
             }
 
             Divider()
-            Text("숨겨진 특성은 기본으로 잡히지 않습니다 — 쓰려면 직접 골라주세요.")
-                .font(.system(size: 10)).foregroundStyle(GB.inkSoft)
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Text("숨겨진 특성은 기본으로 잡히지 않습니다 — 쓰려면 직접 골라주세요.")
+                    .font(.system(size: 10)).foregroundStyle(GB.inkSoft)
+                Spacer()
+                GBSheetButton("취소", kind: .plain) { dismiss() }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
         }
         .frame(width: 480, height: 420)
-        .background(GB.plate)
+        .gbSurface(GB.plate)
     }
 }
 
@@ -323,7 +363,7 @@ struct SmogonSetSheet: View {
                 Text(model.displayName(for: slot))
                     .font(GB.face(12, .semibold)).foregroundStyle(GB.inkSoft)
                 Spacer()
-                Button("닫기") { dismiss() }
+                GBSheetButton("닫기", kind: .plain) { dismiss() }
             }
             .padding(14)
 
@@ -356,7 +396,7 @@ struct SmogonSetSheet: View {
             }
 
             Divider()
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if let applied {
                     Text("적용됨 — \(applied)")
                         .font(.system(size: 11, weight: .semibold))
@@ -366,11 +406,13 @@ struct SmogonSetSheet: View {
                         .font(.system(size: 10)).foregroundStyle(GB.inkSoft)
                 }
                 Spacer()
+                GBSheetButton(applied == nil ? "취소" : "닫기",
+                              kind: applied == nil ? .plain : .primary) { dismiss() }
             }
-            .padding(.horizontal, 14).padding(.vertical, 9)
+            .padding(.horizontal, 14).padding(.vertical, 10)
         }
         .frame(width: 560, height: 620)
-        .background(GB.plate)
+        .gbSurface(GB.plate)
     }
 }
 
@@ -406,8 +448,7 @@ struct SmogonSetCard: View {
                     .padding(.horizontal, 5).padding(.vertical, 1.5)
                     .background(RoundedRectangle(cornerRadius: 3).fill(GB.typeColor(.water)))
                 Spacer()
-                Button("적용") { onApply() }
-                    .font(.system(size: 11, weight: .bold))
+                GBSheetButton("적용", kind: .primary) { onApply() }
             }
 
             // 기술 — 배울 수 없는 것은 흐리게 (적용하면 건너뛴다)
@@ -460,7 +501,7 @@ struct SmogonSetCard: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.5)))
+        .background(RoundedRectangle(cornerRadius: 8).fill(GB.plateHi))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(GB.ink.opacity(0.3), lineWidth: 1.5))
     }
 }
