@@ -19,6 +19,25 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     /// 지닌 도구. 메가진화·Z기술·다이맥스는 해당 도구가 없으면 쓸 수 없다.
     var heldItem: ItemDef?
+
+    // MARK: 2턴 기술 / 반동 / 특수 상태
+    //
+    // PokéAPI 도 Showdown 도 이런 효과를 **구조화해 주지 않는다** (Showdown 은
+    // 코드로 쓴다). 그래서 상태를 직접 들고 처리한다.
+
+    /// 모으는 중인 기술의 인덱스 (솔라빔·공중날기 등). nil 이면 모으는 중이 아니다.
+    var chargingMoveIndex: Int?
+    /// 모으는 동안 몸을 숨겼는가 (땅속·공중·물속) — 대부분의 기술이 맞지 않는다
+    var chargeHidden: Bool = false
+    /// 파괴광선을 쓴 뒤 못 움직이는 턴이 남았는가
+    var mustRechargeTurns: Int = 0
+    /// 대타출동 인형의 남은 HP. nil 이면 인형이 없다.
+    var substituteHP: Int?
+    /// 저주 — 매 턴 최대 HP 의 1/4 을 잃는다
+    var cursed: Bool = false
+
+    var isCharging: Bool { chargingMoveIndex != nil }
+    var hasSubstitute: Bool { (substituteHP ?? 0) > 0 }
     /// 특성
     var ability: AbilityDef?
     /// 도구가 소비됐는가 (기합의띠 등 1회성)

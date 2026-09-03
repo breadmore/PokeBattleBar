@@ -18,6 +18,9 @@ enum TestAll {
                                    speciesB: [143, 130, 149, 94, 68, 131],
                                    level: 50, verbose: verbose)
             },
+            .init(flag: "--scriptedtest", name: "손구현 기술", what: "잠자기·저주·배북·대타출동·2턴·반동") {
+                await ScriptedMoveTest.run(verbose: verbose)
+            },
             .init(flag: "--lobbytest", name: "로비·초대", what: "접속자 상태·새 방 알림·배지") {
                 await MainActor.run { () -> Task<Bool, Never> in
                     Task { await LobbyTest.run() }

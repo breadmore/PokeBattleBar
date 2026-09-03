@@ -170,6 +170,12 @@ enum MoveFlags {
     static func isSelfSwitch(_ name: String) -> Bool { Showdown.move(name)?.selfSwitch ?? false }
     /// 쓴 쪽이 쓰러지는 기술 (대폭발·자폭·목숨걸기·메멘토)
     static func isSelfDestruct(_ name: String) -> Bool { Showdown.move(name)?.selfDestruct ?? false }
+    /// 솔라빔처럼 모으는 턴이 있는 기술인가
+    static func isCharge(_ name: String) -> Bool { Showdown.move(name)?.isCharge ?? false }
+    /// 모으는 동안 몸을 숨기는가 (땅속·공중·물속)
+    static func chargeHides(_ name: String) -> Bool { Showdown.move(name)?.hidesUser ?? false }
+    /// 파괴광선처럼 쓴 다음 턴에 못 움직이는가
+    static func mustRecharge(_ name: String) -> Bool { Showdown.move(name)?.mustRecharge ?? false }
     /// 공격 **판정보다 먼저** 쓰러지는 기술인가 (대폭발 계열만).
     /// 목숨걸기는 자기 HP 만큼 데미지를 주므로 먼저 쓰러지면 위력이 0 이 된다.
     static func selfDestructsBeforeMove(_ name: String) -> Bool {

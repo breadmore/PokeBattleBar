@@ -13,6 +13,24 @@ if let i = args.firstIndex(of: "--lanprobe") {
     RunLoop.main.run()
 }
 
+if args.contains("--scriptedtest") {
+    let verbose = args.contains("--verbose")
+    Task {
+        let ok = await ScriptedMoveTest.run(verbose: verbose)
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--moveaudit") {
+    let verbose = args.contains("--verbose")
+    Task {
+        let ok = await MoveAudit.run(verbose: verbose)
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--lobbytest") {
     Task { @MainActor in
         let passed = await LobbyTest.run()

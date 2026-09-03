@@ -526,6 +526,11 @@ struct BattleEngine {
         out.protectStreak = 0
         out.trappedTurns = 0
         out.trapMoveName = nil
+        out.substituteHP = nil
+        out.cursed = false
+        out.chargingMoveIndex = nil
+        out.chargeHidden = false
+        out.mustRechargeTurns = 0
         if out.isDynamaxed { out.revertDynamax() }
         applySwitchOutAbility(&out)
         state.sides[side.rawValue].team[cur] = out
@@ -886,10 +891,33 @@ struct BattleEngine {
 
     // MARK: 기술 사용
 
-    private mutating func performMove(attacker: BattleSide, moveIndex: Int) {
+    /// 모으던 기술을 이번 턴에 내보낸다
+    private mutating func releaseChargedMove(attacker: BattleSide, moveIndex: Int) {
+        performMove(attacker: attacker, moveIndex: moveIndex, skipCharge: true)
+    }
+
+    private mutating func performMove(attacker: BattleSide, moveIndex: Int,
+                                      skipCharge: Bool = false) {
         let defender = attacker.other
         var atk = state.side(attacker).active
         let atkName = atk.name
+
+        // 파괴광선 계열을 쓴 다음 턴은 움직일 수 없다
+        if atk.mustRechargeTurns > 0 {
+            atk.mustRechargeTurns -= 1
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
+            say("\(KO.t(atkName)) 반동으로 움직일 수 없다!")
+            return
+        }
+
+        // 모으는 중이면 이번 턴에 그 기술이 나간다 (고른 기술은 무시된다)
+        if let charging = atk.chargingMoveIndex {
+            atk.chargingMoveIndex = nil
+            atk.chargeHidden = false
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
+            releaseChargedMove(attacker: attacker, moveIndex: charging)
+            return
+        }
 
         guard atk.moves.indices.contains(moveIndex) else { return }
         // 쓸 수 있는 기술이 하나도 없으면 발버둥을 쓴다 (원작 규칙).
@@ -978,6 +1006,27 @@ struct BattleEngine {
             a2.lastMoveIndex = moveIndex
             state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
         }
+
+        // 모으는 턴 — 솔라빔·공중날기 등은 이번 턴에 나가지 않는다
+        if move.isCharge, !skipCharge {
+            var a2 = state.side(attacker).active
+            a2.chargingMoveIndex = moveIndex
+            a2.chargeHidden = move.chargeHides
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+            say(chargeMessage(move, who: atkName))
+            return
+        }
+
+        // 파괴광선 계열 — 다음 턴에 움직일 수 없다.
+        // 빗맞아도 반동은 온다 (2세대 이후 규칙).
+        if move.mustRecharge {
+            var a2 = state.side(attacker).active
+            a2.mustRechargeTurns = 1
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+        }
+
+        // 데이터에 구조화돼 있지 않아 손으로 구현한 기술들
+        if handleScriptedMove(move, attacker: attacker, defender: defender) { return }
 
         // 방어 계열 — 이번 턴 자신을 보호한다. 연속으로 쓰면 성공률이 떨어진다.
         if MoveFlags.isProtect(move.name) {
@@ -1664,6 +1713,9 @@ struct BattleEngine {
     }
 
     private mutating func accuracyCheck(move: MoveDef, attacker: Battler, defender: Battler) -> Bool {
+        // 땅속·공중·물속에 숨어 있으면 맞지 않는다.
+        // (원작에는 땅속을 맞히는 지진처럼 예외가 있지만 여기서는 단순화한다)
+        if defender.chargeHidden { return false }
         // 노가드 — 양쪽 중 하나라도 있으면 반드시 명중
         if state.rules.abilities {
             if case .noGuard = attacker.abilityKind { return true }
@@ -2016,6 +2068,21 @@ struct BattleEngine {
         var b = state.side(side).active
         var amount = amount
 
+        // 대타출동 인형이 있으면 인형이 먼저 받는다.
+        // 인형이 부서질 때 넘치는 데미지는 원작대로 **본체로 넘기지 않는다.**
+        if let sub = b.substituteHP, sub > 0 {
+            let absorbed = min(sub, amount)
+            let left = sub - absorbed
+            b.substituteHP = left > 0 ? left : nil
+            state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+            if left > 0 {
+                say("\(b.name)의 인형이 데미지를 받았다! (인형 HP \(left))")
+            } else {
+                say("\(b.name)의 인형이 부서졌다!")
+            }
+            return absorbed
+        }
+
         let atFullHP = b.currentHP == b.maxHP
         if amount >= b.currentHP, atFullHP {
             var survived = false
@@ -2279,6 +2346,13 @@ struct BattleEngine {
                 say("\(KO.t(b.name)) 맹독 때문에 데미지를 받았다!")
             default: break
             }
+
+            // 저주 — 매 턴 최대 HP 의 1/4
+            if b.cursed, b.currentHP > 0 {
+                let d = max(1, b.maxHP / 4)
+                b.currentHP = max(0, b.currentHP - d)
+                say("\(KO.t(b.name)) 저주 때문에 데미지를 받았다!")
+            }
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
@@ -2438,5 +2512,196 @@ struct BattleEngine {
             say("\(state.side(.guest).playerName) 승리!")
             state.phase = .finished(winner: BattleSide.guest.rawValue)
         }
+    }
+}
+
+// MARK: - 데이터에 없어서 손으로 구현한 기술
+//
+// PokéAPI 는 이 효과들을 아예 주지 않고 (잠자기는 ailment=none, healing=0),
+// Showdown 도 코드로만 표현한다. 그래서 여기서 직접 처리한다.
+// `handleScriptedMove` 가 true 를 돌려주면 그 기술은 여기서 끝난다.
+extension BattleEngine {
+
+    /// 모으는 턴에 나오는 문구. 원작처럼 기술마다 다르다.
+    func chargeMessage(_ move: MoveDef, who: String) -> String {
+        switch move.name {
+        case "fly", "bounce":     return "\(who)는 하늘 높이 날아올랐다!"
+        case "dig":               return "\(who)는 땅속으로 파고들었다!"
+        case "dive":              return "\(who)는 물속으로 들어갔다!"
+        case "phantom-force", "shadow-force":
+                                  return "\(who)는 모습을 감췄다!"
+        case "solar-beam", "solar-blade":
+                                  return "\(who)는 빛을 흡수했다!"
+        case "sky-attack":        return "\(who)의 몸이 빛나기 시작했다!"
+        case "meteor-beam":       return "\(who)는 우주의 힘을 모으고 있다!"
+        default:                  return "\(who)는 힘을 모으고 있다!"
+        }
+    }
+
+    mutating func handleScriptedMove(_ move: MoveDef, attacker: BattleSide,
+                                     defender: BattleSide) -> Bool {
+        var a = state.side(attacker).active
+        var d = state.side(defender).active
+        let aName = a.name
+
+        switch move.name {
+
+        // 잠자기 — HP 를 모두 채우고 **자신이** 2턴 잠든다.
+        // PokéAPI 는 ailment=none, healing=0 으로 줘서 아무 일도 일어나지 않았다.
+        case "rest":
+            guard state.rules.statusEffects else {
+                say("\(aName)의 잠자기! …하지만 상태이상이 꺼져 있다!")
+                return true
+            }
+            if a.currentHP >= a.maxHP {
+                say("\(aName)의 잠자기! …하지만 실패했다!")
+                return true
+            }
+            // 불면·의기양양처럼 잠들지 못하는 특성이면 실패한다
+            if state.rules.abilities, case .statusImmunity(let imm) = a.abilityKind, imm == .sleep {
+                say("\(aName)는 \(a.ability?.display ?? "특성") 때문에 잠들 수 없다!")
+                return true
+            }
+            let healed = a.maxHP - a.currentHP
+            a.currentHP = a.maxHP
+            a.status = .sleep
+            a.sleepTurns = 2
+            commit(a, attacker)
+            say("\(KO.t(aName)) 잠들어 체력을 회복했다! (+\(healed))")
+            return true
+
+        // 저주 — 고스트 타입이면 최대 HP 의 절반을 잃고 상대를 저주한다.
+        // 아니면 공격·방어가 오르고 스피드가 떨어진다.
+        case "curse":
+            if a.types.contains(.ghost) {
+                guard !d.cursed else {
+                    say("\(aName)의 저주! …하지만 실패했다!")
+                    return true
+                }
+                let cost = max(1, a.maxHP / 2)
+                a.currentHP = max(0, a.currentHP - cost)
+                d.cursed = true
+                commit(a, attacker); commit(d, defender)
+                say("\(aName)는 자신의 체력을 깎아 \(d.name)를 저주했다!")
+                if a.currentHP <= 0 { say("\(KO.t(aName)) 쓰러졌다!") }
+                return true
+            } else {
+                bump(&a, .attack, +1); bump(&a, .defense, +1); bump(&a, .speed, -1)
+                commit(a, attacker)
+                say("\(aName)의 저주! 공격·방어가 올라가고 스피드가 떨어졌다!")
+                return true
+            }
+
+        // 배북 — 최대 HP 의 절반을 깎고 공격을 **최대까지** 올린다
+        case "belly-drum":
+            let cost = max(1, a.maxHP / 2)
+            if a.currentHP <= cost || (a.stages[.attack] ?? 0) >= 6 {
+                say("\(aName)의 배북! …하지만 실패했다!")
+                return true
+            }
+            a.currentHP -= cost
+            a.stages[.attack] = 6
+            commit(a, attacker)
+            say("\(aName)는 체력을 깎아 공격을 최대까지 올렸다!")
+            return true
+
+        // 대타출동 — 최대 HP 의 1/4 을 써서 인형을 세운다.
+        // 인형이 있는 동안 데미지와 상태이상을 대신 받는다.
+        case "substitute":
+            if a.hasSubstitute {
+                say("\(aName)의 대타출동! …하지만 이미 인형이 있다!")
+                return true
+            }
+            let cost = max(1, a.maxHP / 4)
+            if a.currentHP <= cost {
+                say("\(aName)의 대타출동! …하지만 체력이 부족했다!")
+                return true
+            }
+            a.currentHP -= cost
+            a.substituteHP = cost
+            commit(a, attacker)
+            say("\(aName)는 인형을 세웠다! (인형 HP \(cost))")
+            return true
+
+        // 아픔나누기 — 양쪽 HP 를 합쳐 반씩 나눈다
+        case "pain-split":
+            let total = a.currentHP + d.currentHP
+            let each = total / 2
+            a.currentHP = min(a.maxHP, each)
+            d.currentHP = min(d.maxHP, each)
+            commit(a, attacker); commit(d, defender)
+            say("\(aName)는 아픔을 나눴다! (양쪽 \(each))")
+            return true
+
+        // 텍스처 — 자신의 타입을 **가진 기술 중 하나**의 타입으로 바꾼다
+        case "conversion":
+            guard let first = a.moves.first?.def.type else { return true }
+            a.types = [first]
+            commit(a, attacker)
+            say("\(aName)는 \(first.ko) 타입이 되었다!")
+            return true
+
+        // 텍스처2 — 상대가 마지막에 쓴 기술에 강한 타입이 된다.
+        // 마지막 기술을 모르면 실패한다.
+        case "conversion2":
+            guard let li = d.lastMoveIndex, d.moves.indices.contains(li) else {
+                say("\(aName)의 텍스처2! …하지만 실패했다!")
+                return true
+            }
+            let incoming = d.moves[li].def.type
+            let resist = PType.allCases.first { t in
+                chart.multiplier(attack: incoming, defenders: [t]) < 1
+            }
+            guard let resist else {
+                say("\(aName)의 텍스처2! …하지만 실패했다!")
+                return true
+            }
+            a.types = [resist]
+            commit(a, attacker)
+            say("\(aName)는 \(resist.ko) 타입이 되었다!")
+            return true
+
+        // 물놀이(Soak) — 상대를 물 타입으로 만든다
+        case "soak":
+            if d.types == [.water] {
+                say("\(aName)의 물놀이! …하지만 실패했다!")
+                return true
+            }
+            d.types = [.water]
+            commit(d, defender)
+            say("\(d.name)는 물 타입이 되었다!")
+            return true
+
+        // 할로윈 / 숲의저주 — 상대에게 타입을 **추가**한다
+        case "trick-or-treat", "forests-curse":
+            let add: PType = move.name == "trick-or-treat" ? .ghost : .grass
+            if d.types.contains(add) {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            d.types.append(add)
+            commit(d, defender)
+            say("\(d.name)에게 \(add.ko) 타입이 추가되었다!")
+            return true
+
+        // 미러타입 — 상대와 같은 타입이 된다
+        case "reflect-type":
+            a.types = d.types
+            commit(a, attacker)
+            say("\(aName)는 \(d.name)와 같은 타입이 되었다!")
+            return true
+
+        default:
+            return false
+        }
+    }
+
+    private mutating func commit(_ b: Battler, _ side: BattleSide) {
+        state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+    }
+
+    private func bump(_ b: inout Battler, _ stat: Stat, _ n: Int) {
+        let cur = b.stages[stat] ?? 0
+        b.stages[stat] = max(-6, min(6, cur + n))
     }
 }
