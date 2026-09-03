@@ -1363,7 +1363,9 @@ struct BattleView: View {
                 ProgressView().frame(maxHeight: .infinity)
             }
         }
-        .background(GB.plate)
+        // 기술 선택창이 검은 배경으로 남아 있었다 — 배경만 칠하면
+        // 다크모드 기본 글자색(흰색)이 그대로 나와 안 보인다
+        .gbSurface(GB.plate)
     }
 
     /// 재생 중이면 그 시점의 팀·활성 개체를 그린다

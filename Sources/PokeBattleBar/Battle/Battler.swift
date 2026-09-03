@@ -37,6 +37,24 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var cursed: Bool = false
 
     var isCharging: Bool { chargingMoveIndex != nil }
+
+    /// 모으는 중인 기술 이름 (연출에서 어디로 숨었는지 정하는 데 쓴다)
+    var chargingMoveName: String? {
+        guard let i = chargingMoveIndex, moves.indices.contains(i) else { return nil }
+        return moves[i].def.name
+    }
+
+    /// 숨어 있는 동안 화면에 띄울 안내
+    var hiddenNote: String? {
+        guard chargeHidden else { return nil }
+        switch chargingMoveName {
+        case "fly", "bounce":  return "공중으로 피했다"
+        case "sky-attack":     return "높이 날아올랐다"
+        case "dig":            return "땅속에 숨었다"
+        case "dive":           return "물속에 숨었다"
+        default:               return "모습을 감췄다"
+        }
+    }
     var hasSubstitute: Bool { (substituteHP ?? 0) > 0 }
     /// 특성
     var ability: AbilityDef?

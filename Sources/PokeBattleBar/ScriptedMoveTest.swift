@@ -159,8 +159,171 @@ enum ScriptedMoveTest {
             ok = show(r.user.mustRechargeTurns == 0, "반동이 풀린다") && ok
         }
 
+        // MARK: 모으는 기술 · 반동 기술을 **하나씩 전부** 확인한다
+        //
+        // 솔라빔 하나만 보고 넘어가면 땅파기·공중날기처럼 숨는 기술이
+        // 제대로 되는지 알 수 없다. 데이터에 charge/recharge 로 표시된 기술을
+        // 전부 돌려본다.
+        print("\n-- 모으는 기술 전체 --")
+        let chargeNames = ["solar-beam", "solar-blade", "fly", "bounce", "dig", "dive",
+                           "sky-attack", "phantom-force", "shadow-force", "razor-wind",
+                           "skull-bash", "freeze-shock", "ice-burn", "geomancy",
+                           "meteor-beam", "electro-shot"]
+        var chargeChecked = 0
+        for name in chargeNames {
+            guard let mv = try? await PokeAPI.shared.move(name) else { continue }
+            guard mv.isCharge else {
+                // 데이터가 charge 로 표시하지 않은 기술은 2턴이 아니다 — 건너뛴다
+                continue
+            }
+            chargeChecked += 1
+            guard let r = await probe(move: name, user: 143, foe: 143, chart: chart) else {
+                ok = show(false, "\(mv.display) 실행") && ok; continue
+            }
+            let charging = r.user.isCharging
+            let noDamage = r.foe.currentHP == r.foe.maxHP
+            let hides = mv.chargeHides
+            let hidden = r.user.chargeHidden
+            var note = charging ? "모으는 중" : "모으지 않음"
+            if hides { note += hidden ? " · 숨음" : " · 숨지 않음(문제)" }
+            ok = show(charging && noDamage && (hides == hidden),
+                      "\(mv.display) — 첫 턴에 모으고 데미지 없음"
+                      + (hides ? " · 숨는다" : ""), note) && ok
+
+            // 두 번째 턴에 실제로 나가는가
+            if let r2 = await twoTurn(first: name, then: name,
+                                     user: 143, foe: 143, chart: chart) {
+                ok = show(!r2.user.isCharging && !r2.user.chargeHidden,
+                          "\(mv.display) — 두 번째 턴에 나가고 숨김이 풀린다") && ok
+            }
+        }
+        ok = show(chargeChecked >= 8, "모으는 기술을 여러 개 확인했다",
+                  "\(chargeChecked)개") && ok
+
+        print("\n-- 숨는 동안 공격이 빗나가는가 --")
+        // 땅파기·공중날기의 핵심은 그 턴에 안 맞는 것이다
+        if let r = await hiddenDodge(chart: chart) {
+            ok = show(r.dodged, "숨은 동안 상대 공격이 빗나간다",
+                      r.detail) && ok
+        } else {
+            ok = show(false, "숨기 회피 검사") && ok
+        }
+
+        print("\n-- 반동 기술 전체 --")
+        let rechargeNames = ["hyper-beam", "giga-impact", "blast-burn", "hydro-cannon",
+                             "frenzy-plant", "rock-wrecker", "roar-of-time",
+                             "prismatic-laser", "eternabeam", "meteor-assault"]
+        var rechargeChecked = 0
+        for name in rechargeNames {
+            guard let mv = try? await PokeAPI.shared.move(name), mv.mustRecharge else { continue }
+            rechargeChecked += 1
+            guard let r = await probe(move: name, user: 143, foe: 143, chart: chart) else {
+                ok = show(false, "\(mv.display) 실행") && ok; continue
+            }
+            ok = show(r.user.mustRechargeTurns == 1,
+                      "\(mv.display) — 다음 턴 반동이 예약된다",
+                      "\(r.user.mustRechargeTurns)") && ok
+        }
+        ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
+                  "\(rechargeChecked)개") && ok
+
+        // MARK: 스피드가 같을 때 선공이 매 턴 무작위인가
+        //
+        // 한쪽이 계속 먼저 가면 동타에서 불공평하다.
+        // 씨드마다 다른 것으로는 부족하다 — **한 배틀 안에서 턴마다** 갈려야 한다.
+        print("\n-- 스피드 동타 --")
+        if let r = await tieOrder(chart: chart) {
+            let hostFirst = r.hostFirst, total = r.total
+            print("  \(total)턴 중 내가 선공한 횟수: \(hostFirst)")
+            ok = show(total >= 40, "표본이 충분하다", "\(total)턴") && ok
+            ok = show(hostFirst > 0 && hostFirst < total,
+                      "한쪽이 계속 먼저 가지 않는다", "\(hostFirst)/\(total)") && ok
+            // 치우침이 심하면 무작위가 아니다 (이항분포로 40턴이면 25~75% 안에 든다)
+            let ratio = Double(hostFirst) / Double(total)
+            ok = show(ratio > 0.25 && ratio < 0.75, "치우치지 않는다",
+                      String(format: "%.0f%%", ratio * 100)) && ok
+        } else {
+            ok = show(false, "스피드 동타 표본 수집") && ok
+        }
+
         print(ok ? "\n✓ 통과" : "\n✗ 실패 항목 있음")
         return ok
+    }
+
+    /// 땅속에 숨은 동안 상대 공격이 빗나가는지 본다.
+    /// 내가 땅파기로 숨고, 상대가 (더 느리게) 공격한다.
+    private static func hiddenDodge(chart: TypeChart) async -> (dodged: Bool, detail: String)? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let dig = try? await PokeAPI.shared.move("dig"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+
+        func make(_ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            return b
+        }
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make([dig], "h", speed: 999)], activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make([tackle], "g", speed: 1)], activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 31)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        let hpBefore = e.state.sides[0].team[0].currentHP
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let hpAfter = e.state.sides[0].team[0].currentHP
+        let missed = e.state.log.contains { $0.contains("맞지 않았다") || $0.contains("피했다") }
+        return (hpAfter == hpBefore,
+                "HP \(hpBefore) → \(hpAfter)" + (missed ? " · 빗맞음 로그 있음" : ""))
+    }
+
+    /// 스피드가 완전히 같은 두 마리로 여러 턴을 돌려 선공 분포를 센다
+    private static func tieOrder(chart: TypeChart) async -> (hostFirst: Int, total: Int)? {
+        // **서로 다른 종**이어야 로그에서 누가 먼저 움직였는지 알 수 있다.
+        // 같은 종으로 하면 두 줄이 똑같아서 구분이 안 된다 (그렇게 짰다가 100% 가 나왔다).
+        guard let mine = try? await PokeAPI.shared.species(143),      // 잠만보
+              let theirs = try? await PokeAPI.shared.species(94),     // 팬텀
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+
+        var hostFirst = 0, total = 0
+        for seed in 1...12 {
+            func make(_ sp: SpeciesDef, _ tag: String) -> Battler {
+                let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                      rarity: "common", isShiny: false, origin: .dex,
+                                      fullyEvolved: true)
+                var b = Battler.make(slot: slot, species: sp, moves: [tackle], level: 50)
+                b.moves[0].ppLeft = 99
+                b.stats[.speed] = 100          // 스피드만 완전히 같게
+                b.maxHP = 9999; b.currentHP = 9999   // 오래 버티게
+                return b
+            }
+            var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                                 sides: [SideState(playerName: "나", team: [make(mine, "h")], activeIndex: 0),
+                                         SideState(playerName: "상대", team: [make(theirs, "g")], activeIndex: 0)])
+            st.phase = .chooseLead
+            var e = BattleEngine(state: st, chart: chart, seed: UInt64(seed) * 7919)
+            e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+            e.beginBattle()
+
+            for _ in 0..<5 {
+                guard case .awaitingMoves = e.state.phase else { break }
+                let before = e.state.log.count
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                // 이번 턴 로그에서 **누가 먼저 나왔는지** 본다
+                let lines = Array(e.state.log[before...])
+                guard let first = lines.first(where: { $0.contains("의 몸통박치기") }) else { continue }
+                total += 1
+                if first.hasPrefix(mine.display) { hostFirst += 1 }
+            }
+        }
+        return total > 0 ? (hostFirst, total) : nil
     }
 
     // MARK: 도구

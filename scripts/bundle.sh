@@ -35,6 +35,20 @@ cp "$BIN" "$APP/Contents/MacOS/PokeBattleBar"
 # release.sh 가 넘겨주면 그 버전을, 아니면 git 태그를 쓴다
 VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo 1.0.0)}"
 
+# 앱 아이콘 — 몬스터볼을 코드로 그린다 (원작 에셋을 쓸 수 없다).
+# 실패해도 빌드는 계속한다 (아이콘이 없어도 앱은 돈다).
+echo "==> 아이콘"
+ICONSET="$ROOT/build.noindex/AppIcon.iconset"
+rm -rf "$ICONSET"
+if swift "$ROOT/scripts/make-icon.swift" "$ROOT/build.noindex" >/dev/null 2>&1 \
+   && iconutil --convert icns "$ICONSET" --output "$ROOT/build.noindex/AppIcon.icns" >/dev/null 2>&1; then
+    mkdir -p "$APP/Contents/Resources"
+    cp "$ROOT/build.noindex/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+    echo "    몬스터볼 아이콘 적용"
+else
+    echo "    아이콘 생성 실패 — 아이콘 없이 진행합니다" >&2
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -44,6 +58,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key><string>PokeBattleBar</string>
     <key>CFBundleDisplayName</key><string>PokeBattleBar</string>
     <key>CFBundleExecutable</key><string>PokeBattleBar</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>
