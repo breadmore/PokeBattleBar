@@ -156,15 +156,36 @@ ok "설치 완료: /Applications/PokeBattleBar.app"
 
 # --- 실행 ---
 say ""
-# 앱 안의 업데이트 버튼으로 왔을 때, 옛 앱이 아직 살아 있으면 새 것이 뜨지 않는다.
-# 한 번 더 확실히 끄고 띄운다.
-pkill -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" 2>/dev/null || true
-for i in 1 2 3 4 5 6; do
-  pgrep -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" >/dev/null 2>&1 || break
-  sleep 0.5
-done
-open -n "/Applications/PokeBattleBar.app" 2>/dev/null && ok "실행했습니다" \
-  || warn "자동 실행에 실패했습니다. Launchpad 에서 PokeBattleBar 를 열어주세요."
+# 앱 안의 업데이트 버튼으로 왔다면 옛 앱이 아직 살아 있다.
+# **확실히 죽은 것을 확인한 뒤에** 띄운다.
+#
+# open -n 을 쓰면 안 된다 — 이미 실행 중이어도 새 인스턴스를 강제로 만들어서
+# 옛 앱이 안 죽었을 때 두 개가 된다. 그냥 open 을 쓰고, 그 전에 확실히 끈다.
+gone() { ! pgrep -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" >/dev/null 2>&1; }
+
+if ! gone; then
+  # 먼저 정상 종료를 부탁한다 (설정을 저장할 기회를 준다)
+  osascript -e 'quit app "PokeBattleBar"' >/dev/null 2>&1 || true
+  for i in $(seq 1 10); do gone && break; sleep 0.5; done
+fi
+if ! gone; then
+  pkill -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" 2>/dev/null || true
+  for i in $(seq 1 10); do gone && break; sleep 0.5; done
+fi
+if ! gone; then
+  # 그래도 안 죽으면 강제로
+  pkill -9 -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" 2>/dev/null || true
+  for i in $(seq 1 6); do gone && break; sleep 0.5; done
+fi
+
+if gone; then
+  open "/Applications/PokeBattleBar.app" 2>/dev/null && ok "실행했습니다" \
+    || warn "자동 실행에 실패했습니다. Launchpad 에서 PokeBattleBar 를 열어주세요."
+else
+  # 두 개가 뜨는 것보다 안 뜨는 게 낫다 — 어느 쪽이 새 버전인지 알 수 없으니까
+  warn "기존 앱이 아직 종료되지 않았습니다. 직접 닫고 다시 열어주세요."
+  say  "  (그대로 두면 옛 버전과 새 버전이 함께 떠서 헷갈립니다)"
+fi
 
 say ""
 say "────────────────────────────────────"
