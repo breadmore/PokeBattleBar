@@ -37,6 +37,26 @@ enum FormChangeTest {
             print("    기본       \(sp.types.map(\.ko).joined(separator: "/"))  종족값 \(baseTotal)")
         }
 
+        // MARK: 지역폼이 폼 선택에 새어 들어오지 않는가
+        print("\n-- 지역폼 제외 --")
+        var leaked: [(String, String)] = []
+        for id in [555, 26, 52, 105, 555, 79, 80, 27, 28, 37, 38] {
+            guard let sp = try? await PokeAPI.shared.species(id) else { continue }
+            for f in FormChange.selectable(for: sp) {
+                for region in ["-alola", "-galar", "-hisui", "-paldea"] where f.contains(region) {
+                    leaked.append((sp.display, f))
+                }
+            }
+        }
+        ok = show(leaked.isEmpty, "지역폼은 폼 선택에서 제외된다",
+                  leaked.isEmpty ? "" : "\(leaked)") && ok
+        // 불비달마는 가라르폼만 있으므로 고를 폼이 없어야 한다
+        if let dar = try? await PokeAPI.shared.species(555) {
+            let forms = FormChange.selectable(for: dar)
+            ok = show(forms.isEmpty, "불비달마는 고를 폼이 없다 (달마모드는 자동)",
+                      "\(forms)") && ok
+        }
+
         // MARK: 폼을 적용한 배틀러
         print("\n-- 폼이 배틀 스탯에 반영되는가 --")
         if let sp = try? await PokeAPI.shared.species(479),
