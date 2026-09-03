@@ -70,6 +70,9 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     var healingPercent: Int
     var flinchChance: Int
     var critRateBonus: Int
+    /// 공격 판정보다 먼저 쓰러지는가 (대폭발 계열).
+    var selfKOBeforeMove: Bool { MoveFlags.selfDestructsBeforeMove(name) }
+
     /// 쓴 쪽이 쓰러지는 기술 (대폭발·자폭·목숨걸기 등).
     /// PokeAPI 의 구조화된 필드에는 이 정보가 **없다** — effect 텍스트에만 "User faints." 로 있다.
     var selfKO: Bool

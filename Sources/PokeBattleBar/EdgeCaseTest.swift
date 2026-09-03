@@ -45,6 +45,7 @@ enum EdgeCaseTest {
         // 대폭발은 고스트에게 데미지 0 이지만, **쓴 쪽은 그래도 쓰러진다**
         ok = await selfKOAgainstImmune(chart) && ok
         ok = await selfKOOnMiss(chart) && ok
+        ok = await selfKOOrderDiffers(chart) && ok
 
         // MARK: 화상 / 상태이상 계산
         print("\n-- 상태이상 계산 --")
@@ -86,6 +87,14 @@ enum EdgeCaseTest {
         print("\n-- 스탯 공식 --")
         ok = statFormula() && ok
 
+        // MARK: 발버둥 — PP 가 다 떨어졌을 때 (무한 배틀 방지)
+        print("\n-- 발버둥 --")
+        ok = await struggleWhenNoPP(chart) && ok
+
+        // MARK: 동시 전멸 시 승패
+        print("\n-- 동시 전멸 --")
+        ok = await selfKOTieIsHandled(chart) && ok
+
         // MARK: 스피드 동일
         print("\n-- 스피드 동일 --")
         ok = await speedTieResolves(chart) && ok
@@ -116,6 +125,39 @@ enum EdgeCaseTest {
         return show(selfFainted && foeUnhurt,
                     "대폭발은 무효 상대에게도 쓴 쪽이 쓰러진다",
                     "자신 쓰러짐=\(selfFainted) 상대 무피해=\(foeUnhurt)")
+    }
+
+    /// 대폭발과 목숨걸기는 쓰러지는 **시점**이 다르다.
+    /// 대폭발은 판정보다 먼저(무효·빗나감에도 쓰러진다),
+    /// 목숨걸기는 맞춘 뒤(자기 HP 만큼 주고 나서) 쓰러진다.
+    private static func selfKOOrderDiffers(_ chart: TypeChart) async -> Bool {
+        var ok = true
+        // 대폭발 = always
+        ok = show(MoveFlags.selfDestructsBeforeMove("explosion"),
+                  "대폭발은 판정 전에 쓰러진다") && ok
+        ok = show(MoveFlags.selfDestructsBeforeMove("self-destruct"),
+                  "자폭도 판정 전") && ok
+        // 목숨걸기·메멘토 = ifHit
+        ok = show(!MoveFlags.selfDestructsBeforeMove("final-gambit"),
+                  "목숨걸기는 맞춘 뒤에 쓰러진다") && ok
+        ok = show(!MoveFlags.selfDestructsBeforeMove("memento"),
+                  "메멘토도 효과 뒤") && ok
+
+        // 목숨걸기가 실제로 자기 HP 만큼 주는지 (먼저 쓰러지면 0 이 된다)
+        guard var e = await Harness.engine(att: 143, def: 143,
+                                           attMoves: ["final-gambit"], defMoves: ["splash"],
+                                           chart: chart, seed: 2468) else {
+            return show(false, "목숨걸기 위력", "준비 실패") && ok
+        }
+        e.state.sides[1].team[0].maxHP = 99999
+        e.state.sides[1].team[0].currentHP = 99999
+        let myHP = e.state.sides[0].team[0].currentHP
+        let before = e.state.sides[1].team[0].currentHP
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let dealt = before - e.state.sides[1].team[0].currentHP
+        ok = show(dealt == myHP, "목숨걸기는 내 HP 만큼 준다", "내 HP \(myHP) → 피해 \(dealt)") && ok
+        ok = show(e.state.sides[0].team[0].isFainted, "목숨걸기 후 쓰러진다") && ok
+        return ok
     }
 
     /// 대폭발이 빗나가도 쓴 쪽은 쓰러진다 (5세대 이후 원작 규칙)
@@ -380,9 +422,10 @@ enum EdgeCaseTest {
             e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
         }
         let pp = e.state.sides[0].team[0].moves[0].ppLeft
-        let noPPLog = e.state.log.contains { $0.contains("PP가 없다") }
         var ok = show(pp >= 0, "PP 는 음수가 되지 않는다", "\(pp)")
-        ok = show(noPPLog || pp > 0, "PP 를 다 쓰면 사용 불가 안내") && ok
+        // 발버둥을 구현한 뒤로는 "PP가 없다" 가 아니라 발버둥이 나가는 것이 정답이다
+        ok = show(e.state.log.contains { $0.contains("발버둥") } || pp > 0,
+                  "PP 를 다 쓰면 발버둥을 쓴다") && ok
         return ok
     }
 
@@ -440,6 +483,56 @@ enum EdgeCaseTest {
             }
         }
         return show(true, "스피드 동일에서도 배틀이 끝난다 (10시드)")
+    }
+
+    /// PP 가 전부 떨어지면 발버둥을 쓴다. 안 그러면 배틀이 끝나지 않는다.
+    private static func struggleWhenNoPP(_ chart: TypeChart) async -> Bool {
+        guard var e = await Harness.engine(att: 143, def: 143,
+                                           attMoves: ["body-slam"], defMoves: ["splash"],
+                                           chart: chart, seed: 3131) else {
+            return show(false, "발버둥", "준비 실패")
+        }
+        e.state.sides[0].team[0].moves[0].ppLeft = 0
+        e.state.sides[1].team[0].maxHP = 99999
+        e.state.sides[1].team[0].currentHP = 99999
+        let hpBefore = e.state.sides[0].team[0].currentHP
+        let foeBefore = e.state.sides[1].team[0].currentHP
+
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let used = e.state.log.contains { $0.contains("발버둥") }
+        let dealt = foeBefore - e.state.sides[1].team[0].currentHP
+        let recoil = hpBefore - e.state.sides[0].team[0].currentHP
+
+        var ok = show(used, "PP 가 없으면 발버둥을 쓴다")
+        ok = show(dealt > 0, "발버둥이 데미지를 준다", "\(dealt)") && ok
+        ok = show(recoil > 0, "발버둥은 반동이 있다", "\(recoil)") && ok
+        return ok
+    }
+
+    /// 자폭으로 양쪽이 동시에 전멸할 때, 전멸한 쪽이 승자로 남으면 안 된다.
+    private static func selfKOTieIsHandled(_ chart: TypeChart) async -> Bool {
+        for seed in 1...30 {
+            guard var e = await Harness.engine(att: 143, def: 143,
+                                               attMoves: ["explosion"], defMoves: ["splash"],
+                                               chart: chart, seed: UInt64(seed) * 137) else { continue }
+            // 양쪽 다 한 방에 쓰러지는 상황
+            e.state.sides[1].team[0].currentHP = 1
+            e.state.sides[1].team[0].stats[.defense] = 1
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+
+            guard case .finished(let w) = e.state.phase else { continue }
+            let hostGone = e.state.sides[0].remaining == 0
+            let guestGone = e.state.sides[1].remaining == 0
+            guard hostGone, guestGone else { continue }
+
+            // 둘 다 전멸했으면 승자가 없어야 한다
+            let pass = w == nil
+            print(pass ? "  ✓ 동시 전멸은 무승부로 처리된다"
+                       : "  ✗ 동시 전멸인데 승자가 기록됐다 (winner=\(w!))")
+            if !pass { for l in e.state.log.suffix(6) { print("      \(l)") } }
+            return pass
+        }
+        return show(true, "동시 전멸 (30시드 내 미발생, 규칙 위반 없음)")
     }
 
     // MARK: 로그 / 데미지 헬퍼

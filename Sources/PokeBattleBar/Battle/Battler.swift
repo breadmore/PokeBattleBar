@@ -270,8 +270,17 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         gmaxMove = nil
         if !isMega { formLabel = nil }
         guard baseMaxHP > 0, maxHP != baseMaxHP else { return }
+
+        // **쓰러진 개체는 절대 되살리지 않는다.**
+        // 예전에는 max(1, ...) 때문에 다이맥스 중 쓰러진 포켓몬이 해제될 때
+        // HP 1 로 부활했고, "종료됐는데 양쪽 다 생존" 상태가 만들어졌다.
+        let wasFainted = currentHP <= 0
         let ratio = maxHP > 0 ? Double(currentHP) / Double(maxHP) : 1.0
         maxHP = max(1, baseMaxHP)
-        currentHP = max(1, min(maxHP, Int(Double(maxHP) * ratio)))
+        if wasFainted {
+            currentHP = 0
+        } else {
+            currentHP = max(1, min(maxHP, Int(Double(maxHP) * ratio)))
+        }
     }
 }

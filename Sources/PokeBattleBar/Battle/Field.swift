@@ -168,6 +168,11 @@ enum MoveFlags {
 
     /// 쓴 뒤 자신이 교체되는 기술 (유턴·볼트체인지·퀵턴·배턴터치)
     static func isSelfSwitch(_ name: String) -> Bool { Showdown.move(name)?.selfSwitch ?? false }
-    /// 쓴 쪽이 쓰러지는 기술 (대폭발·자폭)
+    /// 쓴 쪽이 쓰러지는 기술 (대폭발·자폭·목숨걸기·메멘토)
     static func isSelfDestruct(_ name: String) -> Bool { Showdown.move(name)?.selfDestruct ?? false }
+    /// 공격 **판정보다 먼저** 쓰러지는 기술인가 (대폭발 계열만).
+    /// 목숨걸기는 자기 HP 만큼 데미지를 주므로 먼저 쓰러지면 위력이 0 이 된다.
+    static func selfDestructsBeforeMove(_ name: String) -> Bool {
+        Showdown.move(name)?.selfDestructBeforeMove ?? false
+    }
 }

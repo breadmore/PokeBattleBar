@@ -12,7 +12,12 @@ struct ShowdownMove: Sendable {
     var type: String?
     var category: String?
     var selfSwitch: Bool = false
-    var selfDestruct: Bool = false
+    /// Showdown 의 selfdestruct 값.
+    /// "always" = 대폭발 계열, 빗나가거나 무효여도 **공격보다 먼저** 쓰러진다.
+    /// "ifHit"  = 목숨걸기·메멘토 계열, 효과를 낸 **뒤에** 쓰러진다.
+    var selfDestructMode: String?
+    var selfDestruct: Bool { selfDestructMode != nil }
+    var selfDestructBeforeMove: Bool { selfDestructMode == "always" }
     var isMax: Bool = false
     var isZ: Bool = false
     var nonstandard: String?
@@ -116,7 +121,7 @@ enum Showdown {
             m.type = d["ty"] as? String
             m.category = d["cat"] as? String
             m.selfSwitch = d["sw"] != nil
-            m.selfDestruct = d["sd"] != nil
+            m.selfDestructMode = d["sd"] as? String
             m.isMax = d["mx"] != nil
             m.isZ = d["z"] != nil
             m.nonstandard = d["ns"] as? String
