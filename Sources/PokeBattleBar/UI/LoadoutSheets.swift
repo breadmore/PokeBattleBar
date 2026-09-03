@@ -89,7 +89,7 @@ struct ItemPickerSheet: View {
                 .padding(.bottom, 10)
             }
         }
-        .frame(width: 520, height: 560)
+        .frame(width: 500, height: 430)
         .gbSurface(GB.plate)
     }
 
@@ -282,7 +282,7 @@ struct AbilityPickerSheet: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
         }
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 380)
         .gbSurface(GB.plate)
     }
 }
@@ -411,7 +411,7 @@ struct SmogonSetSheet: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
         }
-        .frame(width: 560, height: 620)
+        .frame(width: 520, height: 450)
         .gbSurface(GB.plate)
     }
 }
