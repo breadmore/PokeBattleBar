@@ -58,6 +58,8 @@ struct LobbyView: View {
 
                 RosterSection(model: model)
 
+                LoadoutWarningBanner(model: model)
+
                 Divider()
 
                 HStack(alignment: .top, spacing: 24) {
@@ -191,6 +193,43 @@ struct RosterCard: View {
         )
         .onTapGesture { model.toggleSelection(slot) }
         .task { moves = await model.moveset(for: slot) }
+    }
+}
+
+/// 장비 낭비 경고.
+/// 변신은 종류별로 배틀당 1회뿐이라, 같은 슬롯을 노리는 도구가 겹치면 미리 알려준다.
+struct LoadoutWarningBanner: View {
+    let model: AppModel
+
+    var body: some View {
+        let warnings = model.loadoutWarnings
+        if !warnings.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(warnings) { w in
+                    HStack(alignment: .top, spacing: 6) {
+                        Text(w.severity == .waste ? "✗" : "⚠️")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(w.severity == .waste ? Color.red : Color.orange)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(w.title)
+                                .font(.caption.bold())
+                                .foregroundStyle(w.severity == .waste ? Color.red : Color.orange)
+                            Text(w.detail.replacingOccurrences(of: "**", with: ""))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(Color.orange.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 1))
+        }
     }
 }
 

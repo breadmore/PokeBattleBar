@@ -245,11 +245,11 @@ final class AppModel {
 
     // MARK: 도구 / 특성 선택
 
-    private(set) var itemsForSpecies: [Int: [ItemDef]] = [:]
-    private(set) var abilitiesForSpecies: [Int: [AbilityDef]] = [:]
-    private(set) var loadouts: [String: LoadoutStore.Loadout] = [:]
+    var itemsForSpecies: [Int: [ItemDef]] = [:]
+    var abilitiesForSpecies: [Int: [AbilityDef]] = [:]
+    var loadouts: [String: LoadoutStore.Loadout] = [:]
     /// 개체별 기술 — Z크리스탈이 실제로 쓸 수 있는지 즉시 판정하려면 필요하다
-    private(set) var movesetsBySlot: [String: [MoveDef]] = [:]
+    var movesetsBySlot: [String: [MoveDef]] = [:]
 
     /// 로비에서 도구·특성을 고를 수 있도록 목록을 미리 받아둔다.
     private func loadLoadoutOptions() async {
@@ -327,6 +327,74 @@ final class AppModel {
             return ItemReadiness(ok: true, headline: "상시 효과",
                                  detail: item.shortEffect.isEmpty ? item.display : item.shortEffect)
         }
+    }
+
+    /// 로비에서 띄울 장비 경고.
+    /// 변신은 **종류별로 배틀당 1회**뿐이라, 같은 슬롯을 노리는 도구를 여러 마리가 끼면
+    /// 한 쪽은 반드시 낭비된다. 배틀에 들어가기 전에 알려줘야 한다.
+    var loadoutWarnings: [LoadoutWarning] {
+        var out: [LoadoutWarning] = []
+        let team = teamSlots
+
+        func name(_ slot: RosterSlot) -> String {
+            rosterSpecies[slot.speciesID]?.display ?? "#\(slot.speciesID)"
+        }
+
+        // 슬롯별로 "실제로 작동하는" 도구를 낀 개체를 센다.
+        // 작동하지 않는 도구는 슬롯 경쟁이 아니라 낭비 경고로 따로 잡는다.
+        var mega: [String] = []
+        var dynamax: [(String, String)] = []      // (포켓몬, 도구)
+        var zMove: [String] = []
+        var broken: [(String, String, String)] = []   // (포켓몬, 도구, 이유)
+
+        for slot in team {
+            guard let item = currentItem(for: slot) else { continue }
+            let r = itemReadiness(for: slot)
+            guard let r else { continue }
+            if !r.ok {
+                broken.append((name(slot), item.display, r.detail))
+                continue
+            }
+            switch item.kind {
+            case .megaStone:                        mega.append(name(slot))
+            case .dynamaxBand:                      dynamax.append((name(slot), item.display))
+            case .maxMushroom:                      dynamax.append((name(slot), item.display))
+            case .zCrystalType, .zCrystalSignature: zMove.append(name(slot))
+            default: break
+            }
+        }
+
+        if dynamax.count > 1 {
+            let list = dynamax.map { "\($0.0)(\($0.1))" }.joined(separator: ", ")
+            out.append(LoadoutWarning(
+                id: "dynamax",
+                severity: .redundant,
+                title: "다이맥스 도구를 \(dynamax.count)마리가 끼고 있습니다",
+                detail: "다이맥스와 거다이맥스는 같은 슬롯이라 **배틀당 한 번**뿐입니다. "
+                      + "먼저 쓴 쪽만 발동하고 나머지는 낭비됩니다 — \(list)"))
+        }
+        if mega.count > 1 {
+            out.append(LoadoutWarning(
+                id: "mega",
+                severity: .redundant,
+                title: "메가스톤을 \(mega.count)마리가 끼고 있습니다",
+                detail: "메가진화는 배틀당 한 번뿐입니다 — \(mega.joined(separator: ", "))"))
+        }
+        if zMove.count > 1 {
+            out.append(LoadoutWarning(
+                id: "z",
+                severity: .redundant,
+                title: "Z크리스탈을 \(zMove.count)마리가 끼고 있습니다",
+                detail: "Z기술은 배틀당 한 번뿐입니다 — \(zMove.joined(separator: ", "))"))
+        }
+        for (who, item, why) in broken {
+            out.append(LoadoutWarning(
+                id: "broken-\(who)-\(item)",
+                severity: .waste,
+                title: "\(who)의 \(item)은 작동하지 않습니다",
+                detail: why))
+        }
+        return out
     }
 
     /// 같은 도구를 다른 개체가 이미 끼고 있는지 (중복 안내용)

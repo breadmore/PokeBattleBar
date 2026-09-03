@@ -10,6 +10,8 @@ enum FormTest {
         guard let chart = try? await PokeAPI.shared.typeChart() else {
             print("✗ 상성표 실패"); return false
         }
+        // 도구 게이팅 검증에 필요하다
+        await ItemCatalog.shared.loadAll()
         var ok = true
 
         // 리자몽(메가X/Y + 거다이맥스), 팬텀(메가 + 거다이맥스), 잠만보(거다이맥스만),
@@ -128,6 +130,12 @@ enum FormTest {
                       "폼이 없는 포켓몬도 다이맥스는 가능 (종족 제한 없음)") && ok
         }
 
+        // --- 서로 다른 두 마리가 각각 다른 도구로 다이맥스할 수 있는가 ---
+        // 잠만보(다이버섯) + 뮤(다이맥스 밴드) 처럼 도구를 나눠 끼면
+        // 한 배틀에 두 마리가 변신할 수 있는지 — 슬롯 공유가 진짜인지 확인한다.
+        print("\n-- 서로 다른 두 마리 (도구를 나눠 낀 경우) --")
+        ok = await twoPokemonShareSlot(chart) && ok
+
         // --- 위력 변환표 ---
         print("\n-- 위력 변환표 --")
         ok = show(FormTables.zPower(basePower: 40) == 100, "Z: 위력40 → 100") && ok
@@ -140,6 +148,86 @@ enum FormTest {
         ok = show(FormTables.maxMove.count == 18, "맥스기술 18타입 매핑") && ok
 
         print(ok ? "\n✓ 전부 통과" : "\n✗ 실패 항목 있음")
+        return ok
+    }
+
+    /// 팀에 두 마리를 두고, 첫 마리가 다이맥스한 뒤 쓰러지면
+    /// 두 번째 마리가 거다이맥스를 시도한다. 슬롯을 공유하면 거부되어야 한다.
+    private static func twoPokemonShareSlot(_ chart: TypeChart) async -> Bool {
+        guard let mew = try? await PokeAPI.shared.species(151),      // 뮤 — 거다이맥스 폼 없음
+              let snorlax = try? await PokeAPI.shared.species(143),  // 잠만보 — 거다이맥스 O
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let splash = try? await PokeAPI.shared.move("splash"),
+              let band = await ItemCatalog.shared.item("dynamax-band"),
+              let mush = await ItemCatalog.shared.item("max-mushrooms") else {
+            return show(false, "두 마리 슬롯 공유", "준비 실패")
+        }
+
+        func mk(_ sp: SpeciesDef, _ item: ItemDef, _ tag: String) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: [tackle], level: 50, heldItem: item)
+            b.moves[0].ppLeft = 99
+            return b
+        }
+        // 1번: 뮤(다이맥스 밴드), 2번: 잠만보(다이버섯)
+        var a1 = mk(mew, band, "a1")
+        let a2 = mk(snorlax, mush, "a2")
+        a1.stats[.speed] = 999
+
+        func foe(_ tag: String) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: 143, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: snorlax, moves: [splash], level: 50)
+            b.moves[0].ppLeft = 99
+            b.stats[.speed] = 1
+            return b
+        }
+
+        var rules = BattleRules(maxTeamSize: 6, level: 50)
+        rules.requireItems = true     // 도구 게이팅을 켠 실제 조건
+        var st = BattleState(rules: rules,
+                             sides: [SideState(playerName: "A", team: [a1, a2], activeIndex: 0),
+                                     SideState(playerName: "B", team: [foe("b1")], activeIndex: 0)])
+        st.phase = .awaitingMoves
+        st.turn = 1
+        var e = BattleEngine(state: st, chart: chart, seed: 5555)
+        if let g = snorlax.gmaxForm { e.gmaxCache[g] = try? await PokeAPI.shared.form(named: g) }
+        for (_, n) in FormTables.maxMove {
+            if let m = try? await PokeAPI.shared.move(n) { e.maxMoveCache[n] = m }
+        }
+        if let g = try? await PokeAPI.shared.move(FormTables.maxGuard) {
+            e.maxMoveCache[FormTables.maxGuard] = g
+        }
+
+        // 1턴: 뮤가 다이맥스 밴드로 다이맥스
+        e.resolveTurn(hostAction: .useMove(index: 0, special: .dynamax),
+                      guestAction: .useMove(index: 0))
+        var ok = show(e.state.sides[0].team[0].isDynamaxed && e.state.sides[0].usedDynamax,
+                      "1번(뮤)이 다이맥스 밴드로 다이맥스") 
+
+        // 뮤를 쓰러뜨리고 잠만보로 교체
+        e.state.sides[0].team[0].currentHP = 0
+        e.state.phase = .awaitingReplacement([0])
+        e.applyReplacement(.host, teamIndex: 1)
+        guard case .awaitingMoves = e.state.phase else {
+            return show(false, "두 마리 슬롯 공유", "교체 후 행동 단계가 아님") && ok
+        }
+
+        // 2턴: 잠만보가 다이버섯으로 거다이맥스 시도 → 거부되어야 한다
+        let before = e.state.log.count
+        e.resolveTurn(hostAction: .useMove(index: 0, special: .gmax),
+                      guestAction: .useMove(index: 0))
+        let second = e.state.sides[0].team[1]
+        let refused = e.state.log[before...].contains { $0.contains("이미 사용") }
+
+        ok = show(!second.isDynamaxed,
+                  "2번(잠만보)은 다이버섯이 있어도 거다이맥스 불가",
+                  second.isDynamaxed ? "변신해버렸다" : "차단됨") && ok
+        ok = show(refused, "거부 안내가 로그에 남는다") && ok
+        if second.isDynamaxed {
+            for l in e.state.log.suffix(6) { print("      \(l)") }
+        }
         return ok
     }
 
