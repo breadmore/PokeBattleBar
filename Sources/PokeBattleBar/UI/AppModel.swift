@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Observation
 import Network
 
@@ -41,7 +42,17 @@ final class AppModel {
     var selectedSlotIDs: Set<String> = []      // 방 상한을 넘을 때 내가 데려갈 포켓몬
 
     // 화면 / 상태
-    var screen: Screen = .loading
+    /// 화면이 바뀌면 로비 광고 상태도 따라가야 한다 — 배틀 중인 사람에게
+    /// 초대가 가지 않도록. @Observable 은 didSet 을 쓸 수 없어 계산 프로퍼티로 감싼다.
+    var screen: Screen {
+        get { screenStorage }
+        set {
+            guard newValue != screenStorage else { return }
+            screenStorage = newValue
+            syncPresenceStatus()
+        }
+    }
+    private var screenStorage: Screen = .loading
     var role: Role = .none
     var status: String = ""
     var errorMessage: String?
@@ -61,6 +72,30 @@ final class AppModel {
     }
     var chatLines: [ChatLine] = []
     var chatDraft: String = ""
+
+    // 로비 (누가 있는지 / 초대 / 새 방 알림)
+    var lobbyPeers: [LobbyPeer] = []
+    struct Invite: Equatable, Sendable {
+        var from: String
+        var roomName: String
+    }
+    var incomingInvite: Invite?
+    /// 내가 초대를 보낸 상대 (회신을 기다리는 중)
+    var invitesSent: Set<String> = []
+
+    /// 로비 알림. 새 방이 열렸거나 초대가 왔을 때 쌓인다.
+    struct Notice: Identifiable, Sendable {
+        let id = UUID()
+        var kind: Kind
+        var text: String
+        var at = Date()
+        enum Kind: Sendable { case newRoom, invite, declined, info }
+    }
+    var notices: [Notice] = []
+    /// 아직 보지 않은 알림 수 — 상단 탭 배지에 쓴다
+    var unseenNotices = 0
+    /// 지금 화면에 띄워둔 토스트
+    var toast: Notice?
 
     // 전적 / 포인트
     var record = RecordStore.Record()
@@ -208,6 +243,12 @@ final class AppModel {
 
     private let host = RoomHost()
     private let browser = RoomBrowser()
+    private let presence = LobbyPresence()
+    /// 이미 알림을 띄운 방 이름 — 같은 방으로 두 번 알리지 않는다
+    private var announcedRooms: Set<String> = []
+    /// 첫 검색 결과는 "새 방" 이 아니다 (이미 열려 있던 방들이다)
+    private var didFirstRoomScan = false
+    private var toastTask: Task<Void, Never>?
     private var guestLink: PeerLink?
 
     private var engine: BattleEngine?
@@ -246,6 +287,9 @@ final class AppModel {
             roomName = "\(playerName)의 방"
             status = ""
             screen = .lobby
+            // 로비에 누가 있는지 알리고, 새 방이 열리는 것도 계속 지켜본다
+            startPresence()
+            startBrowsing()
         } catch {
             errorMessage = describe(error)
             screen = .lobby
@@ -885,10 +929,12 @@ final class AppModel {
 
     // MARK: 방 참가 (게스트)
 
+    /// 방 검색은 **로비에 있는 동안 계속** 돌린다.
+    /// 예전에는 참가 화면을 열 때만 켜서, 새 방이 열려도 알 수가 없었다.
+    /// `role` 은 실제로 들어갈 때(`join`) 정해진다 — 보는 것만으로 게스트가 되지 않는다.
     func startBrowsing() {
-        role = .guest
         browser.onRooms = { [weak self] rooms in
-            Task { @MainActor in self?.discovered = rooms }
+            Task { @MainActor in self?.roomsChanged(rooms) }
         }
         browser.onError = { [weak self] e in
             Task { @MainActor in self?.errorMessage = e }
@@ -897,6 +943,175 @@ final class AppModel {
     }
 
     func stopBrowsing() { browser.stop() }
+
+    /// 테스트용 — 방 검색 결과가 들어온 것처럼 흉내낸다.
+    /// 실제 Bonjour 없이 알림 규칙(첫 스캔 제외·중복 제외·내 방 제외)을 검증한다.
+    func simulateRoomScan(_ rooms: [(name: String, host: String)]) {
+        roomsChanged(rooms.map {
+            DiscoveredRoom(name: $0.name, hostName: $0.host, teamCap: 6, level: 50,
+                           occupied: false, endpoint: NWEndpointStub.make(),
+                           protocolVersion: PokeBattleProtocol.version)
+        })
+    }
+
+    private func roomsChanged(_ rooms: [DiscoveredRoom]) {
+        let previous = announcedRooms
+        discovered = rooms
+        announcedRooms = Set(rooms.map(\.name))
+
+        // 처음 켠 직후에는 이미 열려 있던 방까지 전부 "새 방" 이 되므로 알리지 않는다
+        guard didFirstRoomScan else { didFirstRoomScan = true; return }
+        // 배틀 중에는 방해하지 않는다
+        guard screen == .lobby || screen == .hostingRoom else { return }
+
+        for r in rooms where !previous.contains(r.name) {
+            guard r.hostName != playerName else { continue }   // 내 방은 알리지 않는다
+            notify(.newRoom, "새 방! \(r.hostName) · 최대 \(r.teamCap)마리 · Lv.\(r.level)")
+        }
+    }
+
+    // MARK: 로비 존재 알림 + 초대
+
+    /// 앱이 닫힐 때 광고를 내린다.
+    /// 안 그러면 mDNS 레코드가 TTL 동안 남아 로비에 **유령**이 보인다
+    /// (강제 종료는 어쩔 수 없지만, 정상 종료는 깔끔해야 한다).
+    func stopPresenceOnQuit() {
+        presence.stop()
+        host.stop()
+        browser.stop()
+    }
+
+    func startPresence() {
+        presence.onPeers = { [weak self] peers in
+            Task { @MainActor in
+                guard let self else { return }
+                self.lobbyPeers = peers
+                // 로비를 떠난 사람에게 보낸 초대는 지운다
+                let live = Set(peers.map(\.displayName))
+                self.invitesSent.formIntersection(live)
+            }
+        }
+        presence.onInvite = { [weak self] from, room in
+            Task { @MainActor in
+                guard let self else { return }
+                // 배틀 중이면 자동으로 거절한다 (초대창이 배틀을 가리면 안 된다)
+                guard self.screen == .lobby else {
+                    self.presence.decline(from: from, myName: self.playerName)
+                    return
+                }
+                self.incomingInvite = Invite(from: from, roomName: room)
+                self.notify(.invite, "\(from) 님이 배틀에 초대했습니다")
+            }
+        }
+        presence.onDeclined = { [weak self] who in
+            Task { @MainActor in
+                guard let self else { return }
+                self.invitesSent.remove(who)
+                self.notify(.declined, "\(who) 님이 초대를 거절했습니다")
+            }
+        }
+        presence.onInviteFailed = { [weak self] who in
+            Task { @MainActor in
+                guard let self, self.invitesSent.contains(who) else { return }
+                self.invitesSent.remove(who)
+                self.notify(.info, "\(who) 님에게 초대를 보낼 수 없었습니다 (이미 앱을 닫았을 수 있습니다)")
+            }
+        }
+        presence.onError = { [weak self] e in
+            Task { @MainActor in self?.status = e }
+        }
+        presence.start(displayName: playerName)
+    }
+
+    /// 이름을 바꾸면 로비에 보이는 이름도 따라가야 한다
+    func presenceNameChanged() { presence.update(displayName: playerName) }
+
+    private func syncPresenceStatus() {
+        switch screen {
+        case .lobby:                    presence.update(status: .free)
+        case .hostingRoom, .joiningRoom: presence.update(status: .hosting)
+        case .chooseLead, .battle, .result, .loading: presence.update(status: .battling)
+        }
+    }
+
+    /// 상대를 초대한다. 방이 없으면 먼저 연다 — 초대만 보내면 들어올 곳이 없다.
+    func invite(_ peer: LobbyPeer) async {
+        guard peer.compatible else {
+            errorMessage = "\(peer.displayName) 님의 앱 버전이 다릅니다 "
+                + "(상대 v\(peer.protocolVersion) / 내 v\(PokeBattleProtocol.version))."
+            return
+        }
+        if screen == .lobby {
+            await startHosting()
+            guard screen == .hostingRoom else { return }   // 방 열기가 실패했다
+        }
+        let room = roomName.isEmpty ? "\(playerName)의 방" : roomName
+        invitesSent.insert(peer.displayName)
+        presence.sendInvite(to: peer, roomName: room)
+        status = "\(peer.displayName) 님에게 초대를 보냈습니다 — 수락을 기다립니다"
+    }
+
+    func acceptInvite() async {
+        guard let inv = incomingInvite else { return }
+        incomingInvite = nil
+        presence.closeInvite(from: inv.from)
+        markNoticesSeen()
+
+        // 초대에 실린 방을 찾는다. 아직 검색에 안 걸렸으면 잠깐 기다려본다.
+        for _ in 0..<20 {
+            if let room = discovered.first(where: { $0.name == inv.roomName }) {
+                await join(room)
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        errorMessage = "\(inv.from) 님의 방을 찾을 수 없습니다. 방이 닫혔을 수 있습니다."
+    }
+
+    func declineInvite() {
+        guard let inv = incomingInvite else { return }
+        incomingInvite = nil
+        presence.decline(from: inv.from, myName: playerName)
+        markNoticesSeen()
+    }
+
+    // MARK: 알림
+
+    private func notify(_ kind: Notice.Kind, _ text: String) {
+        let n = Notice(kind: kind, text: text)
+        notices.append(n)
+        if notices.count > 40 { notices.removeFirst(notices.count - 40) }
+        unseenNotices += 1
+        toast = n
+        toastTask?.cancel()
+        toastTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard let self, self.toast?.id == n.id else { return }
+            self.toast = nil
+        }
+    }
+
+    // MARK: 상단 탭 / Dock
+
+    /// Dock 아이콘을 숨기고 상단 탭에만 두는가 (PokeTokenBar 처럼).
+    /// 테스트 인스턴스마다 따로 저장한다 — 두 개를 띄웠을 때 서로 덮지 않게.
+    private static var dockKey: String { "hideDockIcon" + (TestProfile.tag.map { "-\($0)" } ?? "") }
+    var hideDockIcon: Bool = UserDefaults.standard.bool(forKey: AppModel.dockKey)
+
+    func setHideDockIcon(_ on: Bool) {
+        hideDockIcon = on
+        UserDefaults.standard.set(on, forKey: AppModel.dockKey)
+        applyDockPolicy()
+    }
+
+    func applyDockPolicy() {
+        // .accessory 면 Dock 과 앱 전환기에서 사라지고 상단 탭만 남는다
+        NSApplication.shared.setActivationPolicy(hideDockIcon ? .accessory : .regular)
+    }
+
+    func markNoticesSeen() { unseenNotices = 0 }
+    func dismissToast() { toast = nil; toastTask?.cancel() }
+    func clearNotices() { notices = []; unseenNotices = 0 }
 
     /// 자동 매칭 — 비어 있는 첫 방에 바로 들어간다.
     func autoMatch() async {

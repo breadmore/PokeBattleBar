@@ -28,10 +28,15 @@ launch() {
     local tag="$1" team="$2"
     # 번들 안의 실행 파일을 직접 실행한다 — open(1) 은 두 번째 실행에서
     # 새 프로세스를 띄우지 않고 기존 창만 활성화한다.
+    # POKEBATTLE_NETLOG=1 로 실행하면 로비 광고·검색 로그를 파일로 남긴다
+    local log=/dev/null
+    if [ "${POKEBATTLE_NETLOG:-}" = "1" ]; then log="/tmp/pokenet-$tag.log"; fi
     if [ -n "$team" ]; then
-        POKEBATTLE_PROFILE="$tag" POKEBATTLE_TEAM="$team" "$BIN" >/dev/null 2>&1 &
+        POKEBATTLE_NETLOG="${POKEBATTLE_NETLOG:-}" POKEBATTLE_PROFILE="$tag" \
+            POKEBATTLE_TEAM="$team" "$BIN" >"$log" 2>&1 &
     else
-        POKEBATTLE_PROFILE="$tag" "$BIN" >/dev/null 2>&1 &
+        POKEBATTLE_NETLOG="${POKEBATTLE_NETLOG:-}" POKEBATTLE_PROFILE="$tag" \
+            "$BIN" >"$log" 2>&1 &
     fi
     echo "   [$tag] pid $!${team:+   팀 $team}"
 }

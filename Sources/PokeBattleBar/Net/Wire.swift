@@ -10,6 +10,12 @@ enum Wire: Codable, Sendable {
     /// 채팅 (양방향)
     case chat(from: String, text: String)
 
+    // 로비 (배틀 전 — 방을 열지 않은 사람끼리)
+    /// 배틀 초대. 보낸 사람이 방을 먼저 열고 방 이름을 실어 보낸다.
+    case invite(from: String, roomName: String)
+    /// 초대 거절 회신 — 없으면 보낸 쪽이 계속 기다린다
+    case inviteDeclined(from: String)
+
     // 호스트 -> 게스트
     case joinAccepted(rules: BattleRules, hostName: String, yourSide: Int)
     case joinRejected(reason: String)
@@ -24,8 +30,9 @@ enum Wire: Codable, Sendable {
 /// 쓰지 않으므로, 신규 필드가 하나만 늘어도 구버전이 보낸 JSON 은 디코딩이 실패한다.
 /// 버전을 함께 실어보내야 "그냥 연결이 끊겼다" 가 아니라 "버전이 다르다" 를 보여줄 수 있다.
 enum PokeBattleProtocol {
-    static let version = 10
+    static let version = 11
 
+    /// 11: 로비 존재 알림(_pokelobby._tcp), 초대 주고받기
     /// 7: 게임 모드 4종 (랜덤기술·자유의지·자동변신·토게피 손가락흔들기),
     ///    다이맥스밴드/다이버섯 역할 분리
     /// 6: 전용 Z크리스탈, 스텔스록·중력·조임·아무것도않기·방어, 교체 기반,

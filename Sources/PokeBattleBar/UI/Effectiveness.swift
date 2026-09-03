@@ -50,6 +50,17 @@ struct Effectiveness {
         }
     }
 
+    /// 원작 문구. "게임보이 계승" 화면은 배수 대신 이 말로 알려준다.
+    var sentence: String? {
+        switch multiplier {
+        case 0:      return "효과가 없는 것 같다…"
+        case ..<1:   return "효과가 별로인 듯하다…"
+        case 1:      return nil
+        case 2:      return "효과가 굉장하다!"
+        default:     return "효과가 굉장하다! (4배)"
+        }
+    }
+
     /// 고정 데미지 기술 설명
     var specialNote: String? {
         switch special {

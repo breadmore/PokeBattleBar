@@ -55,6 +55,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSBonjourServices</key>
     <array>
         <string>_pokebattle._tcp</string>
+        <!-- 로비 존재 알림 + 초대. 여기 없으면 광고와 검색이 조용히 실패해
+             "로비 0명" 이 된다 — 번들 밖에서 바이너리를 직접 돌리면
+             제한이 없어서 통과하므로 특히 놓치기 쉽다. -->
+        <string>_pokelobby._tcp</string>
     </array>
 </dict>
 </plist>

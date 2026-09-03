@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd ~/PokeBattleBar && .build/release/PokeBattleBar --playbacktest 2>&1\",\"description\":\"See playback test failure\"}",
-  "error": "Exit code 1\n=== 턴 재생 연출 ===\n\n  ✓ 재생할 스텝이 생겼다  (2단계)\n  ✓ 이 턴에는 양쪽이 다 맞는다 (검사가 유효)  (나 [235, 235]→[213, 235] / 상대 [175, 175]→[146, 175])\n  ✓ 재생 시작 시 내 HP 는 턴 시작 값  (화면 [235, 235] / 턴시작 [235, 235] / 결과 [213, 235])\n  ✓ 재생 시작 시 상대 HP 는 턴 시작 값  (화면 [175, 175] / 턴시작 [175, 175] / 결과 [146, 175])\n  ✓ 턴 결과 상태가 한 프레임도 노출되지 않는다\n  ✓ 로그도 턴 시작 지점까지만 보인다  (2 / 전체 4)\n  ✗ 재생할 것이 없으면 바로 최신 상태를 보여준다\n\n✗ 실패 항목 있음",
-  "timestamp": "2026-09-03T07:07:15.555Z",
+  "tool_input_preview": "{\"command\":\"cd ~/PokeBattleBar\\nVERSION=\\\"dev\\\" ./scripts/bundle.sh >/dev/null 2>&1\\nPOKEBATTLE_NETLOG=1 ./scripts/dev-two.sh 94,386,137 555,479,351 2>&1 | head -3\\nuntil grep -q \\\"검색 결과\\\" /tmp/pokene...",
+  "error": "Exit code 1\n==> 두 인스턴스 실행\n   [A] pid 94783   팀 94,386,137\n   [B] pid 94790   팀 555,479,351\n════ A 마지막 검색 ════\n[net A] 검색 결과 7건 (나=개발자01-A#b9ac): 개발자01-A#b9ac, 개발자01-A#67d7, 개발자01-B#b217, 개발자01-B#1f6f, 개발자01-A#d0c5, 개발자01-B#2962, 개발자01-A#323e\n[net A] 검색 결과 8건 (나=개발자01-A#b9ac): 개발자01-A#b9ac, 개발자01-A#67d7, 개발자01-B#b217, 개발자01-B#2490, 개발자01-B#1f6f, 개발자01-A#d0c5, 개발자01-B#2962, 개발자01-A#323e\n════ B 마지막 검색 ════\n[net B] 검색 결과 7건 (나=개발자01-B#2490): 개발자01-A#323e, 개발자01-B#b217, 개발자01-B#2962, 개발자01-A#67d7, 개발...",
+  "timestamp": "2026-09-03T07:51:48.624Z",
   "retry_count": 1
 }

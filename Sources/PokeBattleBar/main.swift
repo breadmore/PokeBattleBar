@@ -13,6 +13,14 @@ if let i = args.firstIndex(of: "--lanprobe") {
     RunLoop.main.run()
 }
 
+if args.contains("--lobbytest") {
+    Task { @MainActor in
+        let passed = await LobbyTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--playbacktest") {
     Task { @MainActor in
         let passed = await PlaybackTest.run()
