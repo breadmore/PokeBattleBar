@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd ~/PokeBattleBar\\ncp build.noindex/PokeBattleBar-1.11.0-Install.command ~/Desktop/\\nrm -f ~/Desktop/PokeBattleBar-1.10.0-Install.command\\nls -lh ~/Desktop/PokeBattleBar-*\\necho \\\"──── 설치...",
-  "error": "Exit code 143\nCommand timed out after 6m 40s\n-rwxr-xr-x@ 1 actionfit  staff   4.6M  9월  3 17:27 /Users/actionfit/Desktop/PokeBattleBar-1.11.0-Install.command\n──── 설치본 최종 확인 ────",
-  "timestamp": "2026-09-03T08:34:17.858Z",
-  "retry_count": 1
-}

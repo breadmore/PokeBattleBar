@@ -1,3 +1,7 @@
 .build/
 build.noindex/
 build/
+
+# 도구가 만드는 세션 캐시 (세션 ID·경로가 들어간다 — 저장소에 둘 것이 아니다)
+.omc/
+**/.omc/
