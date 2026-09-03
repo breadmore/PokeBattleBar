@@ -25,6 +25,13 @@ enum LoadoutTest {
                         expect: true, "다이맥스밴드 끼우면 다이맥스 가능", chart) && ok
         ok = await gate(.gmax, species: 143, item: "max-mushrooms",
                         expect: true, "다이버섯 끼우면 거다이맥스 가능", chart) && ok
+        // 두 도구의 역할이 겹치면 하나가 무의미해진다 — 양방향으로 막혔는지 확인한다
+        ok = await gate(.gmax, species: 143, item: "dynamax-band",
+                        expect: false, "다이맥스 밴드로는 거다이맥스 불가", chart) && ok
+        ok = await gate(.dynamax, species: 143, item: "max-mushrooms",
+                        expect: false, "다이버섯으로는 일반 다이맥스 불가", chart) && ok
+        ok = await gate(.gmax, species: 143, item: nil,
+                        expect: false, "도구 없으면 거다이맥스 불가", chart) && ok
         ok = await gate(.zMove, species: 143, item: nil,
                         expect: false, "Z크리스탈 없으면 Z기술 불가", chart) && ok
 

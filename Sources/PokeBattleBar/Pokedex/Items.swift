@@ -259,3 +259,10 @@ actor ItemCatalog {
         .sorted { ($0.group, $0.display) < ($1.group, $1.display) }
     }
 }
+
+/// 끼운 도구가 그 개체에게 실제로 작동하는지
+struct ItemReadiness: Sendable {
+    var ok: Bool
+    var headline: String     // "메가진화 가능" / "거다이맥스 불가"
+    var detail: String       // 이유 또는 부연
+}

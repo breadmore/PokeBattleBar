@@ -14,6 +14,8 @@ struct DiscoveredRoom: Identifiable, Sendable {
     var endpoint: NWEndpoint
     /// 방장의 프로토콜 버전. 다르면 접속해도 통신이 안 되므로 목록에서 미리 막는다.
     var protocolVersion: Int
+    /// 게임 모드 요약 (목록에 표시)
+    var mode: String = "일반"
 
     var compatible: Bool { protocolVersion == PokeBattleProtocol.version }
     var versionNote: String? {
@@ -48,12 +50,14 @@ final class RoomHost: @unchecked Sendable {
     private var roomName = ""
     private var hostName = ""
     private var rules = BattleRules.default
+    private var modeSummary = "일반"
 
-    func start(roomName: String, hostName: String, rules: BattleRules) {
+    func start(roomName: String, hostName: String, rules: BattleRules, modeSummary: String = "일반") {
         stop()
         self.roomName = roomName
         self.hostName = hostName
         self.rules = rules
+        self.modeSummary = modeSummary
 
         do {
             let l = try NWListener(using: PeerLink.params)
@@ -118,6 +122,7 @@ final class RoomHost: @unchecked Sendable {
         t["lvl"] = String(rules.level)
         t["busy"] = occupied ? "1" : "0"
         t["pv"] = String(PokeBattleProtocol.version)
+        t["mode"] = modeSummary
         return t
     }
 
@@ -179,16 +184,18 @@ final class RoomBrowser: @unchecked Sendable {
                 var hostName = name, cap = 6, lvl = 50, busy = false
                 // pv 가 없으면 버전 정보를 싣지 않던 최초 배포판(v1) 이다
                 var pv = 1
+                var mode = "일반"
                 if case .bonjour(let txt) = r.metadata {
                     hostName = txt["host"] ?? name
                     cap = Int(txt["cap"] ?? "6") ?? 6
                     lvl = Int(txt["lvl"] ?? "50") ?? 50
                     busy = (txt["busy"] ?? "0") == "1"
                     pv = Int(txt["pv"] ?? "1") ?? 1
+                    mode = txt["mode"] ?? "일반"
                 }
                 return DiscoveredRoom(name: name, hostName: hostName, teamCap: cap,
                                       level: lvl, occupied: busy, endpoint: r.endpoint,
-                                      protocolVersion: pv)
+                                      protocolVersion: pv, mode: mode)
             }
             self?.onRooms?(rooms.sorted { $0.name < $1.name })
         }

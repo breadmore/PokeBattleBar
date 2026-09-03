@@ -52,6 +52,12 @@ actor MovesetStore {
         return picked
     }
 
+    /// 저장하지 않고 그 자리에서만 뽑는다 (랜덤 기술 모드용).
+    /// 저장본을 덮으면 다음 배틀에 원래 기술이 사라지므로 분리한다.
+    func drawWithoutSaving(species: SpeciesDef) async -> [MoveDef] {
+        await pick(from: species.learnableMoves)
+    }
+
     private func resolve(_ names: [String]) async -> [MoveDef] {
         var out: [MoveDef] = []
         for n in names {

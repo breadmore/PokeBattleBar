@@ -17,6 +17,16 @@ enum Role { case none, host, guest }
 @MainActor
 @Observable
 final class AppModel {
+    /// 방 목록에 보여줄 모드 요약
+    var modeSummary: String {
+        if rules.metronomeMode { return "토게피 손가락흔들기" }
+        var tags: [String] = []
+        if rules.randomMoveset { tags.append("랜덤기술") }
+        if rules.autoMove { tags.append("자유의지") }
+        if rules.autoSpecial { tags.append("자동변신") }
+        return tags.isEmpty ? "일반" : tags.joined(separator: "·")
+    }
+
     /// 표시용 앱 버전 (번들에서 읽는다)
     var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
@@ -134,6 +144,7 @@ final class AppModel {
         e.gmaxCache = gmaxCache
         e.zMoveCache = zMoveCache
         e.maxMoveCache = maxMoveCache
+        e.metronomePool = metronomePool
     }
 
     private func describe(_ e: Error) -> String {
@@ -183,11 +194,48 @@ final class AppModel {
         selectedSlotIDs = Set(keep.map(\.id))
     }
 
+    /// 토게피 손가락흔들기 모드의 팀.
+    /// 보유 여부와 무관하게 양쪽 모두 토게피 1마리, 기술은 손가락흔들기 하나,
+    /// PP 최대치, 생명의구슬 장착으로 고정한다.
+    private func buildMetronomeTeam() async -> [Battler] {
+        guard let sp = try? await PokeAPI.shared.species(GameModes.Metronome.speciesID),
+              var mv = try? await PokeAPI.shared.move(GameModes.Metronome.move) else { return [] }
+        mv.pp = GameModes.maxPP(base: mv.pp)
+        let item = await ItemCatalog.shared.item(GameModes.Metronome.item)
+        let slot = RosterSlot(id: "metronome-togepi", speciesID: sp.id,
+                              nature: GameModes.Metronome.nature, rarity: "common",
+                              isShiny: false, origin: .dex, fullyEvolved: true)
+        var b = Battler.make(slot: slot, species: sp, moves: [mv], level: rules.level,
+                             heldItem: item, ability: nil)
+        b.moves[0].ppLeft = mv.pp
+        return [b]
+    }
+
+    /// 손가락흔들기 풀을 받아둔다 (첫 실행만 오래 걸린다).
+    private var metronomePool: [MoveDef] = []
+    private func preloadMetronomePool() async {
+        guard metronomePool.isEmpty else { return }
+        var out: [MoveDef] = []
+        let names = GameModes.uniquePool
+        for (i, n) in names.enumerated() {
+            if let m = try? await PokeAPI.shared.move(n) { out.append(m) }
+            if i % 20 == 0 {
+                status = "손가락흔들기 기술 풀 준비 중… \(i)/\(names.count)"
+            }
+        }
+        metronomePool = out
+    }
+
     private func buildTeam() async -> [Battler] {
+        // 토게피 모드는 로스터와 무관하게 고정 팀을 쓴다
+        if rules.metronomeMode { return await buildMetronomeTeam() }
         var out: [Battler] = []
         for slot in teamSlots {
             guard let sp = rosterSpecies[slot.speciesID] else { continue }
-            let moves = await MovesetStore.shared.moveset(for: slot, species: sp)
+            // 랜덤 기술 모드면 배틀마다 새로 뽑는다 (저장본을 덮지 않는 일회성 추첨)
+            let moves = rules.randomMoveset
+                ? await MovesetStore.shared.drawWithoutSaving(species: sp)
+                : await MovesetStore.shared.moveset(for: slot, species: sp)
             let (item, ability) = await LoadoutStore.shared.resolve(for: slot, species: sp)
             out.append(Battler.make(slot: slot, species: sp, moves: moves,
                                     level: rules.level, heldItem: item, ability: ability))
@@ -200,6 +248,8 @@ final class AppModel {
     private(set) var itemsForSpecies: [Int: [ItemDef]] = [:]
     private(set) var abilitiesForSpecies: [Int: [AbilityDef]] = [:]
     private(set) var loadouts: [String: LoadoutStore.Loadout] = [:]
+    /// 개체별 기술 — Z크리스탈이 실제로 쓸 수 있는지 즉시 판정하려면 필요하다
+    private(set) var movesetsBySlot: [String: [MoveDef]] = [:]
 
     /// 로비에서 도구·특성을 고를 수 있도록 목록을 미리 받아둔다.
     private func loadLoadoutOptions() async {
@@ -213,12 +263,87 @@ final class AppModel {
                 abilitiesForSpecies[slot.speciesID] = await AbilityCatalog.shared.abilities(for: sp)
             }
             loadouts[slot.id] = await LoadoutStore.shared.loadout(for: slot)
+            movesetsBySlot[slot.id] = await MovesetStore.shared.moveset(for: slot, species: sp)
+        }
+    }
+
+    /// 끼운 도구가 **이 개체에게 실제로 작동하는지** 판정한다.
+    /// 메가스톤·다이버섯·Z크리스탈은 개체 자격에 따라 무용지물이 될 수 있어서,
+    /// 로비에서 미리 알려줘야 배틀에서 헛클릭하지 않는다.
+    func itemReadiness(for slot: RosterSlot) -> ItemReadiness? {
+        guard let item = currentItem(for: slot) else { return nil }
+        guard let sp = rosterSpecies[slot.speciesID] else {
+            return ItemReadiness(ok: false, headline: "확인 불가", detail: "종 데이터 없음")
+        }
+        let moves = movesetsBySlot[slot.id] ?? []
+
+        switch item.kind {
+        case .megaStone(let form):
+            guard sp.megaForms.contains(form) else {
+                return ItemReadiness(ok: false, headline: "메가진화 불가",
+                                     detail: "\(sp.display)의 스톤이 아닙니다")
+            }
+            let label = form.hasSuffix("-x") ? "메가 X" : (form.hasSuffix("-y") ? "메가 Y" : "메가")
+            return ItemReadiness(ok: true, headline: "메가진화 가능",
+                                 detail: "\(label) 로 진화")
+
+        case .dynamaxBand:
+            return ItemReadiness(ok: true, headline: "다이맥스 가능",
+                                 detail: "일반 다이맥스 전용 (거다이맥스는 다이버섯)")
+
+        case .maxMushroom:
+            guard sp.canGigantamax else {
+                return ItemReadiness(ok: false, headline: "거다이맥스 불가",
+                                     detail: "\(sp.display)는 거다이맥스 폼이 없습니다")
+            }
+            return ItemReadiness(ok: true, headline: "거다이맥스 가능",
+                                 detail: "전용기 " + (GMaxMove.forSpecies(sp.id)?.ko ?? "있음"))
+
+        case .zCrystalType(let t):
+            let match = moves.filter {
+                $0.damageClass != .status && $0.isDamaging && $0.type == t
+            }
+            guard !match.isEmpty else {
+                return ItemReadiness(ok: false, headline: "Z기술 불가",
+                                     detail: "\(t.ko)타입 공격기가 없습니다")
+            }
+            return ItemReadiness(ok: true, headline: "Z기술 가능",
+                                 detail: match.map(\.display).joined(separator: ", "))
+
+        case .zCrystalSignature(let sid):
+            guard sid == sp.id else {
+                return ItemReadiness(ok: false, headline: "Z기술 불가",
+                                     detail: "\(sp.display) 전용이 아닙니다")
+            }
+            let atk = moves.filter { $0.damageClass != .status && $0.isDamaging }
+            guard !atk.isEmpty else {
+                return ItemReadiness(ok: false, headline: "Z기술 불가",
+                                     detail: "공격기가 없습니다")
+            }
+            return ItemReadiness(ok: true, headline: "전용 Z기술 가능",
+                                 detail: "타입 제한 없음")
+
+        default:
+            return ItemReadiness(ok: true, headline: "상시 효과",
+                                 detail: item.shortEffect.isEmpty ? item.display : item.shortEffect)
+        }
+    }
+
+    /// 같은 도구를 다른 개체가 이미 끼고 있는지 (중복 안내용)
+    func slotsSharingItem(_ slot: RosterSlot) -> [String] {
+        guard let name = loadouts[slot.id]?.item else { return [] }
+        return roster.compactMap { other in
+            guard other.id != slot.id, loadouts[other.id]?.item == name else { return nil }
+            return rosterSpecies[other.speciesID]?.display ?? "#\(other.speciesID)"
         }
     }
 
     func setItem(_ item: ItemDef?, for slot: RosterSlot) async {
         await LoadoutStore.shared.setItem(item?.name, for: slot)
         loadouts[slot.id] = await LoadoutStore.shared.loadout(for: slot)
+        if movesetsBySlot[slot.id] == nil, let sp = rosterSpecies[slot.speciesID] {
+            movesetsBySlot[slot.id] = await MovesetStore.shared.moveset(for: slot, species: sp)
+        }
     }
 
     func setAbility(_ ability: AbilityDef?, for slot: RosterSlot) async {
@@ -239,7 +364,9 @@ final class AppModel {
 
     func rerollMoves(for slot: RosterSlot) async {
         guard let sp = rosterSpecies[slot.speciesID] else { return }
-        _ = await MovesetStore.shared.reroll(for: slot, species: sp)
+        let fresh = await MovesetStore.shared.reroll(for: slot, species: sp)
+        // Z크리스탈 사용 가능 여부가 기술에 달려 있으므로 함께 갱신한다
+        movesetsBySlot[slot.id] = fresh
     }
 
     func moveset(for slot: RosterSlot) async -> [MoveDef] {
@@ -257,6 +384,7 @@ final class AppModel {
         status = "특수 변신 데이터를 준비하는 중…"
         await preloadForms(for: myTeam)
         await preloadTransformMoves()
+        if rules.metronomeMode { await preloadMetronomePool() }
 
         host.onGuestMessage = { [weak self] msg in
             Task { @MainActor in self?.hostHandle(msg) }
@@ -285,7 +413,7 @@ final class AppModel {
         }
 
         host.start(roomName: roomName.isEmpty ? "\(playerName)의 방" : roomName,
-                   hostName: playerName, rules: rules)
+                   hostName: playerName, rules: rules, modeSummary: modeSummary)
         status = "상대를 기다리는 중…"
         screen = .hostingRoom
     }
@@ -329,6 +457,7 @@ final class AppModel {
             chosenLead = nil
             screen = .chooseLead
             status = "선봉을 고르세요"
+            autoPickLeadIfNeeded()
 
         case .chooseLead(let index):
             guestLead = index
@@ -449,7 +578,15 @@ final class AppModel {
         case .joinAccepted(let r, let hostName, let side):
             // 팀은 이미 보냈다. 상한이 더 작아졌으면 호스트가 앞에서 자르므로 우리도 맞춘다.
             rules = r
-            if myTeam.count > r.maxTeamSize {
+            // 토게피 모드는 팀이 고정이므로 호스트 규칙을 받은 뒤 다시 만든다
+            if r.metronomeMode {
+                Task { @MainActor in
+                    self.status = "토게피 모드 준비 중…"
+                    await self.preloadMetronomePool()
+                    self.myTeam = await self.buildMetronomeTeam()
+                    self.autoPickLeadIfNeeded()
+                }
+            } else if myTeam.count > r.maxTeamSize {
                 myTeam = Array(myTeam.prefix(r.maxTeamSize))
             }
             opponentName = hostName
@@ -457,6 +594,7 @@ final class AppModel {
             chosenLead = nil
             screen = .chooseLead
             status = "선봉을 고르세요"
+            autoPickLeadIfNeeded()
 
         case .joinRejected(let reason):
             errorMessage = reason
@@ -475,6 +613,15 @@ final class AppModel {
     }
 
     // MARK: 선봉 / 행동
+
+    /// 자유의지 모드에서는 선봉도 자동으로 뽑는다.
+    func autoPickLeadIfNeeded() {
+        guard rules.autoMove || rules.metronomeMode else { return }
+        guard chosenLead == nil else { return }
+        let count = myState?.team.count ?? sentTeam.count
+        guard count > 0 else { return }
+        submitLead(Int.random(in: 0..<count))
+    }
 
     func submitLead(_ index: Int) {
         chosenLead = index
@@ -499,6 +646,12 @@ final class AppModel {
         host.send(.battleBegan(state: e.state))
         waitingForOpponent = false
         applyPhaseToUI(e.state)
+        if rules.autoMove {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(700))
+                self.advanceAutoIfNeeded()
+            }
+        }
     }
 
     /// 이번 턴에 함께 선언할 특수 변신. UI 에서 토글한다.
@@ -634,6 +787,37 @@ final class AppModel {
         applyPhaseToUI(e.state)
     }
 
+    /// 자유의지 모드에서는 호스트가 양쪽 행동을 굴려 스스로 턴을 넘긴다.
+    /// 게스트는 화면만 받는다 (양쪽이 따로 굴리면 결과가 갈린다).
+    private func advanceAutoIfNeeded() {
+        guard role == .host, rules.autoMove, var e = engine else { return }
+        switch e.state.phase {
+        case .awaitingMoves:
+            let h = e.autoAction(for: .host)
+            let g = e.autoAction(for: .guest)
+            e.resolveTurn(hostAction: h, guestAction: g)
+        case .awaitingReplacement(let needs):
+            for raw in needs {
+                guard let side = BattleSide(rawValue: raw),
+                      let pick = e.autoReplacement(for: side) else { continue }
+                e.applyReplacement(side, teamIndex: pick)
+            }
+        default:
+            return
+        }
+        engine = e
+        battle = e.state
+        host.send(.stateChanged(state: e.state))
+        applyPhaseToUI(e.state)
+
+        // 다음 턴도 자동으로 — 화면이 넘어가는 걸 볼 수 있게 잠깐 쉰다
+        if case .finished = e.state.phase { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(700))
+            self.advanceAutoIfNeeded()
+        }
+    }
+
     private func applyPhaseToUI(_ st: BattleState) {
         switch st.phase {
         case .chooseLead:
@@ -641,11 +825,19 @@ final class AppModel {
             status = "선봉을 고르세요"
         case .awaitingMoves:
             screen = .battle
-            waitingForOpponent = false
-            status = "기술을 고르세요"
+            if rules.autoMove {
+                waitingForOpponent = true
+                status = "자유의지 — 포켓몬이 스스로 싸우는 중…"
+            } else {
+                waitingForOpponent = false
+                status = "기술을 고르세요"
+            }
         case .awaitingReplacement(let needs):
             screen = .battle
-            if needs.contains(mySide.rawValue) {
+            if rules.autoMove {
+                waitingForOpponent = true
+                status = "자유의지 — 다음 포켓몬이 자동으로 나옵니다…"
+            } else if needs.contains(mySide.rawValue) {
                 waitingForOpponent = false
                 status = "다음 포켓몬을 고르세요"
             } else {
