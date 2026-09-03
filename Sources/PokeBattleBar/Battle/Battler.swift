@@ -35,6 +35,11 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var trapMoveName: String?
     /// 아무것도않기 — 같은 기술을 연속으로 쓸 수 없다
     var tormented: Bool = false
+    /// 저주받은바디로 봉인된 기술과 남은 턴
+    var disabledMoveIndex: Int?
+    var disabledTurns: Int = 0
+    /// 무게 (헥토그램). 헤비메탈·저울짓기 계산에 쓴다.
+    var weight: Int = 0
     /// 직전에 쓴 기술 (아무것도않기 판정용)
     var lastMoveIndex: Int?
     /// 이번 턴 방어 상태인가
@@ -76,6 +81,14 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     /// 다이맥스 또는 거다이맥스 상태 — 둘 다 기술이 맥스 기술로 바뀐다
     var isDynamaxed: Bool { dynamaxTurnsLeft > 0 }
+
+    /// 특성 보정이 반영된 실효 무게 (헤비메탈·라이트메탈)
+    var effectiveWeight: Int {
+        if case .weightMultiplier(let m) = abilityKind {
+            return max(1, Int(Double(weight) * m))
+        }
+        return weight
+    }
 
     /// 지닌 도구의 효과 (소비됐으면 없음)
     var itemKind: ItemKind {
@@ -210,6 +223,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
             moves: moves.map { .init(def: $0, ppLeft: $0.pp) },
             heldItem: heldItem,
             ability: ability,
+            weight: species.weight,
             megaForms: species.megaForms,
             gmaxForm: species.gmaxForm,
             baseMaxHP: hp

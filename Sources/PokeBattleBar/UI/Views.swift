@@ -193,6 +193,12 @@ struct RosterCard: View {
             .font(.system(size: 9))
             .buttonStyle(.link)
 
+            if let why = model.recommendationUnavailableReason(for: slot) {
+                Text("실전 추천 없음 — \(why)")
+                    .font(.system(size: 8)).foregroundStyle(.tertiary)
+                    .frame(width: 112, alignment: .leading)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
             if model.hasRecommendation(for: slot) {
                 Button("실전 추천 적용") {
                     Task {
@@ -352,6 +358,101 @@ struct ChatPanel: View {
     }
 }
 
+/// 구현된 특성이 실제로 무슨 일을 하는지 한 줄로
+func abilitySummary(_ a: AbilityDef) -> String {
+    switch a.kind {
+    case .none:                        "배틀에 반영되지 않음"
+    case .pinchBoost(let t, _):        "HP 1/3 이하에서 \(t.ko) 기술 강화"
+    case .intimidate:                  "등장 시 상대 공격 하락"
+    case .typeImmunity(let t):         "\(t.ko) 기술 무효"
+    case .sturdy:                      "풀피에서 일격을 버틴다"
+    case .damageTaken(let ts, _):      "\(ts.map(\.ko).joined(separator: "·")) 피해 감소"
+    case .superEffectiveResist:        "효과가 굉장한 피해 감소"
+    case .statusImmunity(let s):       "\(s.ko) 상태가 되지 않음"
+    case .technician:                  "저위력 기술 강화"
+    case .clearBody:                   "능력치 하락 무효"
+    case .noGuard:                     "반드시 명중"
+    case .sheerForce:                  "위력 상승, 부가효과 없음"
+    case .tintedLens:                  "효과가 별로인 기술 강화"
+    case .adaptability:                "자기 타입 일치 보너스 증가"
+    case .sniper:                      "급소 배율 증가"
+    case .attackMultiplier:            "공격 2배"
+    case .statusDefBoost:              "상태이상일 때 방어 상승"
+    case .statusAtkBoost:              "상태이상일 때 공격 상승"
+    case .magicGuard:                  "간접 피해를 받지 않음"
+    case .rockHead:                    "반동을 받지 않음"
+    case .reckless:                    "반동기 강화"
+    case .scrappy:                     "노말·격투가 고스트에 통함"
+    case .unaware:                     "상대 능력치 변화 무시"
+    case .sereneGrace:                 "부가효과 확률 2배"
+    case .shieldDust:                  "부가효과를 받지 않음"
+    case .weatherOnEntry(let w):       "등장 시 \(w.ko)"
+    case .weatherSpeedBoost(let w, _): "\(w.ko)에서 스피드 2배"
+    case .weatherStatBoost(let w, let s, _): "\(w.ko)에서 \(s.ko) 상승"
+    case .weatherHeal(let w, _):       "\(w.ko)에서 회복"
+    case .weatherEvasion(let w):       "\(w.ko)에서 회피율 상승"
+    case .weatherImmuneChip:           "날씨 피해 무효"
+    case .dryskin:                     "물 흡수, 불꽃에 약해짐"
+    case .contactStatus(let s, let p): "접촉 시 \(p)% 확률로 \(s.ko)"
+    case .contactDamage:               "접촉한 상대에게 반사 피해"
+    case .moveFlagBoost(let f, _):     "\(f.rawValue) 기술 강화"
+    case .soundImmunity:               "소리 기술 무효"
+    case .powderImmunity:              "가루 기술 무효"
+    case .ignoreAbility:               "상대 특성 무시"
+    case .criticalImmunity:            "급소를 맞지 않음"
+    case .multiscale:                  "풀피에서 받는 피해 감소"
+    case .levitateLike(let t, let m):  m == 0 ? "\(t.ko) 무효" : "\(t.ko) 피해 감소"
+    case .statMultiplier(let s, let m): "\(s.ko) \(m)배"
+    case .statusSpeedBoost:            "상태이상일 때 스피드 상승"
+    case .accuracyMultiplier:          "명중률 상승"
+    case .hustle:                      "공격 상승, 물리 명중률 하락"
+    case .defeatist:                   "HP 절반 이하에서 공격 반감"
+    case .speedBoostEachTurn:          "턴마다 스피드 상승"
+    case .boostOnKO(let s, _):         "쓰러뜨리면 \(s.ko) 상승"
+    case .boostWhenHit(let t, let s, _):
+        t == nil ? "공격받으면 \(s.ko) 상승" : "\(t!.ko) 기술을 맞으면 \(s.ko) 상승"
+    case .boostOnFlinch(let s, _):     "풀죽으면 \(s.ko) 상승"
+    case .contrary:                    "능력치 변화가 반대로"
+    case .simple:                      "능력치 변화가 2배"
+    case .analytic:                    "나중에 움직이면 위력 상승"
+    case .download:                    "등장 시 상대 약한 쪽을 노려 상승"
+    case .poisonHeal:                  "독 피해 대신 회복"
+    case .shedSkin(let p):             "턴마다 \(p)% 확률로 상태이상 회복"
+    case .healInWeather(let w):        "\(w.ko)에서 상태이상 회복"
+    case .noStatusInWeather(let w):    "\(w.ko)에서 상태이상에 걸리지 않음"
+    case .earlyBird:                   "잠듦이 빨리 풀린다"
+    case .statDropImmunity(let ss):
+        ss.isEmpty ? "명중률이 떨어지지 않음" : "\(ss.map(\.ko).joined(separator: "·")) 하락 무효"
+    case .flinchImmunity:              "풀죽지 않음"
+    case .wonderGuard:                 "효과가 굉장한 기술만 통함"
+    case .truant:                      "한 턴 걸러 행동"
+    case .priorityBoost(let c, let n):
+        c == .status ? "변화기 우선도 +\(n)" : "기술 우선도 \(n > 0 ? "+" : "")\(n)"
+    case .pressure:                    "상대 PP 를 더 소모시킨다"
+    case .damp:                        "자폭 기술을 막는다"
+    case .aftermath:                   "쓰러질 때 접촉한 상대에게 피해"
+    case .contactStatDrop(let s, _):   "접촉한 상대의 \(s.ko) 하락"
+    case .poisonTouch(let p):          "접촉 공격 시 \(p)% 확률로 독"
+    case .synchronize:                 "받은 상태이상을 상대에게도"
+    case .absorbAndBoost(let t, let s, _): "\(t.ko) 무효 + \(s.ko) 상승"
+    case .magicBounce:                 "변화기를 되돌린다"
+    case .unburden:                    "도구를 쓰면 스피드 2배"
+    case .quickDraw(let p):            "\(p)% 확률로 선공"
+    case .moveTypeBoost:               "특정 기술군 강화"
+    case .healOnEntry:                 "물러날 때 체력 회복"
+    case .cureOnSwitch:                "물러나면 상태이상 회복"
+    case .gluttony:                    "나무열매를 HP 절반에서 먹는다"
+    case .unnerve:                     "상대가 나무열매를 먹지 못한다"
+    case .liquidOoze:                  "흡수 기술이 오히려 피해를 준다"
+    case .cursedBody(let p):           "맞은 기술을 \(p)% 확률로 봉인"
+    case .trace:                       "등장 시 상대 특성을 복사"
+    case .stickyHold:                  "도구를 빼앗기지 않는다"
+    case .pickup:                      "소비된 도구를 주워온다"
+    case .weightMultiplier(let m):     m > 1 ? "무게 2배" : "무게 절반"
+    case .doublesOnly:                 "더블배틀 전용 (1대1 에서는 발동 불가)"
+    }
+}
+
 /// 성격이 어떤 스탯을 올리고 내리는지 보여준다 (2번)
 struct NatureLabel: View {
     let nature: Nature
@@ -381,7 +482,18 @@ struct MovePickerSheet: View {
     @State private var search = ""
     @State private var details: [String: MoveDef] = [:]
 
-    private var all: [String] { model.learnableMoves(for: slot) }
+    private var recommended: Set<String> { Set(model.recommendedMoveNames(for: slot)) }
+
+    /// 추천 기술을 맨 위로 올린다 — 포켓몬을 잘 모르면 목록에서 뭘 골라야 할지 알 수 없다
+    private var all: [String] {
+        let list = model.learnableMoves(for: slot)
+        let rec = recommended
+        return list.sorted { a, b in
+            let ra = rec.contains(a), rb = rec.contains(b)
+            if ra != rb { return ra }
+            return a < b
+        }
+    }
     private var filtered: [String] {
         guard !search.isEmpty else { return all }
         let q = search.lowercased()
@@ -399,8 +511,18 @@ struct MovePickerSheet: View {
                 Text("\(picked.count)/4").font(.callout.bold())
                     .foregroundStyle(picked.count == 4 ? .green : .secondary)
             }
-            Text("배울 수 있는 기술 \(all.count)개 — 4개까지 고를 수 있습니다")
-                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("배울 수 있는 기술 \(all.count)개 — 4개까지")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !recommended.isEmpty {
+                    Text("⭐ 실전 추천 \(recommended.count)개 (맨 위)")
+                        .font(.caption).foregroundStyle(.orange)
+                    Button("추천으로 채우기") {
+                        picked = Array(model.recommendedMoveNames(for: slot).prefix(4))
+                    }
+                    .font(.caption)
+                }
+            }
 
             TextField("기술 이름 검색", text: $search).textFieldStyle(.roundedBorder)
 
@@ -409,7 +531,8 @@ struct MovePickerSheet: View {
                     ForEach(filtered, id: \.self) { name in
                         MoveRow(name: name,
                                 def: details[name],
-                                isPicked: picked.contains(name)) {
+                                isPicked: picked.contains(name),
+                                isRecommended: recommended.contains(name)) {
                             if let i = picked.firstIndex(of: name) { picked.remove(at: i) }
                             else if picked.count < 4 { picked.append(name) }
                         }
@@ -441,13 +564,19 @@ struct MovePickerSheet: View {
         let name: String
         let def: MoveDef?
         let isPicked: Bool
+        var isRecommended = false
         let onTap: () -> Void
 
         var body: some View {
             HStack(spacing: 6) {
                 Image(systemName: isPicked ? "checkmark.square.fill" : "square")
                     .foregroundStyle(isPicked ? Color.accentColor : .secondary)
-                Text(def?.display ?? name).font(.callout)
+                if isRecommended {
+                    Text("⭐").font(.system(size: 9))
+                }
+                Text(def?.display ?? name)
+                    .font(.callout)
+                    .fontWeight(isRecommended ? .semibold : .regular)
                 if let d = def {
                     Text(d.type.ko).font(.system(size: 9))
                         .padding(.horizontal, 4)
@@ -486,12 +615,15 @@ struct LoadoutPickers: View {
         VStack(alignment: .leading, spacing: 3) {
             // 지닌 도구 — 착용 여부가 한눈에 보이게
             let equipped = model.currentItem(for: slot)
+            let recItem = model.recommendedItemName(for: slot)
             Menu {
                 Button("없음") { Task { await model.setItem(nil, for: slot) } }
                 ForEach(groupedItems(), id: \.0) { group, list in
                     Section(group) {
                         ForEach(list) { it in
-                            Button(it.display) { Task { await model.setItem(it, for: slot) } }
+                            Button((recItem == it.name ? "⭐ " : "") + it.display) {
+                                Task { await model.setItem(it, for: slot) }
+                            }
                         }
                     }
                 }
@@ -501,6 +633,9 @@ struct LoadoutPickers: View {
                     Text(equipped?.display ?? "도구 없음")
                         .font(.system(size: 9, weight: equipped == nil ? .regular : .bold))
                         .lineLimit(1)
+                    if let e = equipped, recItem == e.name {
+                        Text("⭐").font(.system(size: 7))
+                    }
                 }
                 .padding(.horizontal, 4).padding(.vertical, 2)
                 .frame(width: 112, alignment: .leading)
@@ -537,29 +672,47 @@ struct LoadoutPickers: View {
                 }
             }
 
-            // 특성
+            // 특성 — 추천에는 ⭐ 를 붙인다
+            let recAbils = model.recommendedAbilityNames(for: slot)
+            let curAbil = model.currentAbility(for: slot)
             Menu {
                 ForEach(abilities) { a in
                     Button {
                         Task { await model.setAbility(a, for: slot) }
                     } label: {
-                        Text(a.display + (a.isHidden ? " (숨겨진)" : "")
-                             + (a.isImplemented ? "" : " · 표시만"))
+                        Text((recAbils.contains(a.name) ? "⭐ " : "")
+                             + a.display
+                             + (a.isHidden ? " (숨겨진)" : "")
+                             + (a.statusTag.map { " · \($0)" } ?? ""))
                     }
                 }
             } label: {
                 HStack(spacing: 2) {
                     Text("✨").font(.system(size: 8))
-                    Text(model.currentAbility(for: slot)?.display ?? "특성")
-                        .font(.system(size: 9)).lineLimit(1)
-                    if let a = model.currentAbility(for: slot), !a.isImplemented {
-                        Text("표시만").font(.system(size: 7)).foregroundStyle(.secondary)
+                    Text(curAbil?.display ?? "특성 없음")
+                        .font(.system(size: 9, weight: curAbil == nil ? .regular : .bold))
+                        .lineLimit(1)
+                    if let a = curAbil, recAbils.contains(a.name) {
+                        Text("⭐").font(.system(size: 7))
+                    }
+                    if let a = curAbil, let tag = a.statusTag {
+                        Text(tag).font(.system(size: 7)).foregroundStyle(.secondary)
                     }
                 }
             }
             .menuStyle(.borderlessButton)
-            .frame(width: 108, alignment: .leading)
-            .help(model.currentAbility(for: slot)?.shortEffect ?? "특성을 고릅니다")
+            .frame(width: 112, alignment: .leading)
+            .help(curAbil?.shortEffect ?? "특성을 고릅니다")
+
+            // 고른 특성이 실제로 무슨 일을 하는지
+            if let a = curAbil {
+                Text(a.isDoublesOnly ? "더블배틀 전용 — 1대1 에서는 발동하지 않습니다"
+                     : (a.isImplemented ? abilitySummary(a) : "이 특성은 배틀에 반영되지 않습니다"))
+                    .font(.system(size: 8))
+                    .foregroundStyle(a.isImplemented ? .secondary : .tertiary)
+                    .frame(width: 112, alignment: .leading)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

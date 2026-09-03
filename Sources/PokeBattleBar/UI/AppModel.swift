@@ -478,6 +478,41 @@ final class AppModel {
         return Showdown.set(forSpeciesName: sp.name) != nil
     }
 
+    /// 추천이 없는 이유. 버튼이 그냥 안 보이면 왜 없는지 알 수 없다.
+    func recommendationUnavailableReason(for slot: RosterSlot) -> String? {
+        guard let sp = rosterSpecies[slot.speciesID] else { return nil }
+        if Showdown.set(forSpeciesName: sp.name) != nil { return nil }
+        // 원본은 9세대 랜덤배틀 세팅이라, 9세대에 없거나 미진화면 빠져 있다
+        if !slot.fullyEvolved { return "아직 진화가 끝나지 않았습니다" }
+        if sp.id > 1025 { return "실전 세팅 데이터에 없는 종입니다" }
+        return "9세대에 등장하지 않거나 미진화 종이라 실전 세팅이 없습니다"
+    }
+
+    /// 추천 특성 이름들 (그 종이 실제로 가질 수 있는 것만)
+    func recommendedAbilityNames(for slot: RosterSlot) -> [String] {
+        guard let sp = rosterSpecies[slot.speciesID],
+              let rec = Showdown.set(forSpeciesName: sp.name) else { return [] }
+        let owned = Set((abilitiesForSpecies[slot.speciesID] ?? []).map(\.name))
+        return rec.abilities.filter { owned.contains($0) }
+    }
+
+    /// 추천 도구 이름 (그 종에게 노출되는 것만)
+    func recommendedItemName(for slot: RosterSlot) -> String? {
+        guard let sp = rosterSpecies[slot.speciesID],
+              let rec = Showdown.set(forSpeciesName: sp.name),
+              let want = rec.item else { return nil }
+        let avail = itemsForSpecies[slot.speciesID] ?? []
+        return avail.contains { $0.name == want } ? want : nil
+    }
+
+    /// 추천 기술 이름들 (그 개체가 배울 수 있는 것만)
+    func recommendedMoveNames(for slot: RosterSlot) -> [String] {
+        guard let sp = rosterSpecies[slot.speciesID],
+              let rec = Showdown.set(forSpeciesName: sp.name) else { return [] }
+        let learnable = Set(sp.learnableMoves)
+        return rec.movePool.filter { learnable.contains($0) }
+    }
+
     /// Showdown 의 실전 세팅을 그대로 적용한다.
     /// 포켓몬을 잘 모르는 사람도 바로 쓸 수 있게 하기 위한 기능이다.
     @discardableResult

@@ -5,7 +5,7 @@ import Foundation
 /// PokeAPI 는 373개 특성을 이름·한글명·효과 텍스트로 주지만 효과는 산문이다.
 /// 그래서 모든 특성을 **표시**는 하되, 아래에 구조화한 것만 **실제로 계산에 반영**한다.
 /// (특성별 개별 구현이 필요하고, 날씨·접촉 판정처럼 이 엔진에 없는 개념에 의존하는 것도 많다)
-enum AbilityKind: Codable, Hashable, Sendable {
+enum AbilityKind: Codable, Hashable, Sendable, Equatable {
     case none                                   // 표시만 (미구현)
 
     case pinchBoost(PType, Double)              // 맹화/급류/신록/벌레의야망 — HP 1/3 이하에서 해당 타입 강화
@@ -54,6 +54,57 @@ enum AbilityKind: Codable, Hashable, Sendable {
     case criticalImmunity                       // 전투무장/조가비갑옷
     case multiscale(Double)                     // 멀티스케일 — 풀피에서 피해 감소
     case levitateLike(PType, Double)            // 저수/축전/타오르는불꽃 — 흡수
+
+    // --- 확장 (2차) ---
+    case statMultiplier(Stat, Double)           // 의욕(공격)/황금몸 등 상시 배율
+    case statusSpeedBoost(Double)               // 속보 — 상태이상 시 스피드 상승
+    case accuracyMultiplier(Double)             // 복안 — 명중률 상승
+    case hustle                                 // 의욕 — 공격↑ 물리 명중↓
+    case defeatist                              // 무기력 — HP 절반 이하에서 공격 반감
+    case speedBoostEachTurn                     // 가속 — 턴마다 스피드 +1
+    case boostOnKO(Stat, Int)                   // 자기과신/비스트부스트 — 쓰러뜨리면 상승
+    case boostWhenHit(PType?, Stat, Int)        // 정의의마음/주눅/깨어진갑옷
+    case boostOnFlinch(Stat, Int)               // 불굴의마음 — 풀죽으면 스피드 상승
+    case contrary                               // 청개구리 — 능력 변화 반전
+    case simple(Double)                         // 단순 — 능력 변화 2배
+    case analytic(Double)                       // 애널라이즈 — 나중에 움직이면 강화
+    case download                               // 다운로드 — 상대 방어 보고 공격/특공 상승
+    case poisonHeal                             // 포이즌힐 — 독 피해 대신 회복
+    case shedSkin(percent: Int)                 // 탈피 — 확률로 상태이상 회복
+    case healInWeather(Weather)                 // 촉촉바디 — 비에서 상태이상 회복
+    case noStatusInWeather(Weather)             // 리프가드 — 쾌청에서 상태이상 무효
+    case earlyBird(Double)                      // 일찍기상 — 잠듦이 빨리 풀린다
+    case statDropImmunity([Stat])               // 괴력집게/날카로운눈/큰부리
+    case flinchImmunity                         // 정신력 — 풀죽지 않는다
+    case wonderGuard                            // 불가사의부적 — 효과 굉장한 기술만 통한다
+    case truant                                 // 게으름 — 한 턴 걸러 행동
+    case priorityBoost(DamageClass?, Int)       // 짓궂은마음/질풍날개
+    case pressure                               // 프레셔 — 상대 PP 추가 소모
+    case damp                                   // 축축함 — 자폭 기술 봉쇄
+    case aftermath(Int)                         // 유폭 — 쓰러질 때 접촉한 상대에게 피해
+    case contactStatDrop(Stat, Int)             // 미끈미끈/엉겨붙는머리 — 접촉 시 상대 스피드↓
+    case poisonTouch(percent: Int)              // 독수 — 접촉 공격 시 상대를 독으로
+    case synchronize                            // 싱크로 — 받은 상태이상을 되돌려준다
+    case absorbAndBoost(PType, Stat, Int)       // 초식/전기엔진 — 무효화 + 능력 상승
+    case magicBounce                            // 매직미러 — 변화기를 되돌린다
+    case unburden                               // 곡예 — 도구를 쓰면 스피드 2배
+    case quickDraw(percent: Int)                // 선단 — 확률로 선공
+    case moveTypeBoost([String], Double)        // 메가런처/칼날몸 — 특정 기술군 강화
+    case healOnEntry                            // 재생력 — 물러날 때 회복 (교체·유턴에서 작동)
+    case cureOnSwitch                           // 자연회복 — 물러나면 상태이상 회복
+
+    // --- 확장 (3차) ---
+    case gluttony                               // 먹보 — 열매를 HP 1/2 에서 먹는다
+    case unnerve                                // 긴장감 — 상대가 열매를 먹지 못한다
+    case liquidOoze                             // 해감액 — 흡수 기술이 오히려 피해를 준다
+    case cursedBody(percent: Int)               // 저주받은바디 — 맞은 기술을 봉인
+    case trace                                  // 트레이스 — 등장 시 상대 특성 복사
+    case stickyHold                             // 점착 — 도구를 빼앗기지 않는다
+    case pickup                                 // 픽업 — 소비된 도구를 주워온다
+    case weightMultiplier(Double)               // 헤비메탈 / 라이트메탈
+
+    /// 더블배틀 전용 — 1대1 에서는 발동할 수 없다 (미구현이 아니라 해당 없음)
+    case doublesOnly
 }
 
 /// 기술 플래그 종류 (철주먹·옹골찬턱용)
@@ -71,7 +122,15 @@ struct AbilityDef: Codable, Hashable, Sendable, Identifiable {
 
     var display: String { koName.isEmpty ? name : koName }
     /// 실제로 배틀 계산에 반영되는가
-    var isImplemented: Bool { kind != .none }
+    var isImplemented: Bool { kind != .none && kind != .doublesOnly }
+    /// 더블배틀 전용이라 1대1 에서는 애초에 발동할 수 없는가
+    var isDoublesOnly: Bool { kind == .doublesOnly }
+    /// UI 에 붙일 꼬리표
+    var statusTag: String? {
+        if isDoublesOnly { return "더블 전용" }
+        if !isImplemented { return "표시만" }
+        return nil
+    }
 }
 
 actor AbilityCatalog {
@@ -129,8 +188,95 @@ actor AbilityCatalog {
         case "reckless":   return .reckless(1.2)
         case "scrappy":    return .scrappy
         case "unaware":    return .unaware
+        // --- 확장 매핑 ---
+        case "compound-eyes":   return .accuracyMultiplier(1.3)
+        case "victory-star":    return .accuracyMultiplier(1.1)
+        case "hustle":          return .hustle
+        case "defeatist":       return .defeatist
+        case "speed-boost":     return .speedBoostEachTurn
+        case "moxie", "chilling-neigh", "grim-neigh", "as-one-glastrier":
+                                return .boostOnKO(.attack, 1)
+        case "beast-boost":     return .boostOnKO(.attack, 1)
+        case "soul-heart":      return .boostOnKO(.spAttack, 1)
+        case "justified":       return .boostWhenHit(.dark, .attack, 1)
+        case "rattled":         return .boostWhenHit(nil, .speed, 1)
+        case "weak-armor":      return .boostWhenHit(nil, .speed, 2)
+        case "steadfast":       return .boostOnFlinch(.speed, 1)
+        case "contrary":        return .contrary
+        case "simple":          return .simple(2.0)
+        case "analytic":        return .analytic(1.3)
+        case "download":        return .download
+        case "poison-heal":     return .poisonHeal
+        case "shed-skin":       return .shedSkin(percent: 33)
+        case "hydration":       return .healInWeather(.rain)
+        case "leaf-guard":      return .noStatusInWeather(.sun)
+        case "early-bird":      return .earlyBird(2.0)
+        case "hyper-cutter":    return .statDropImmunity([.attack])
+        case "keen-eye", "illuminate", "mind-s-eye": return .statDropImmunity([])
+        case "big-pecks":       return .statDropImmunity([.defense])
+        case "inner-focus":     return .flinchImmunity
+        case "wonder-guard":    return .wonderGuard
+        case "truant":          return .truant
+        case "prankster":       return .priorityBoost(.status, 1)
+        case "gale-wings":      return .priorityBoost(nil, 1)
+        case "triage":          return .priorityBoost(nil, 3)
+        case "pressure":        return .pressure
+        case "damp":            return .damp
+        case "aftermath":       return .aftermath(4)
+        case "gooey", "tangling-hair": return .contactStatDrop(.speed, 1)
+        case "poison-touch":    return .poisonTouch(percent: 30)
+        case "synchronize":     return .synchronize
+        case "sap-sipper2":     return .absorbAndBoost(.grass, .attack, 1)
+        case "motor-drive":     return .absorbAndBoost(.electric, .speed, 1)
+        case "lightning-rod":   return .absorbAndBoost(.electric, .spAttack, 1)
+        case "storm-drain":     return .absorbAndBoost(.water, .spAttack, 1)
+        case "water-compaction":return .boostWhenHit(.water, .defense, 2)
+        case "magic-bounce":    return .magicBounce
+        case "unburden":        return .unburden
+        case "quick-draw":      return .quickDraw(percent: 30)
+        case "mega-launcher":   return .moveTypeBoost(["aura-sphere", "dark-pulse", "dragon-pulse",
+                                                       "water-pulse", "heal-pulse", "origin-pulse",
+                                                       "terrain-pulse"], 1.5)
+        case "sharpness":       return .moveTypeBoost(["air-slash", "night-slash", "psycho-cut",
+                                                       "slash", "cross-poison", "aerial-ace",
+                                                       "leaf-blade", "sacred-sword", "razor-shell",
+                                                       "solar-blade", "aqua-cutter", "kowtow-cleave"], 1.5)
+        case "regenerator":     return .healOnEntry
+        case "natural-cure":    return .cureOnSwitch
+        case "quick-feet":      return .statusSpeedBoost(1.5)
+        case "flare-boost":     return .statusAtkBoost(.spAttack, 1.5)
+        case "toxic-boost":     return .statusAtkBoost(.attack, 1.5)
+        case "overcoat":        return .powderImmunity
+        case "sand-veil2":      return .weatherEvasion(.sandstorm)
+        case "stall":           return .priorityBoost(nil, -1)
+        case "vital-spirit2":   return .flinchImmunity
+        case "oblivious", "own-tempo2": return .statusImmunity(.confusion)
+        case "pure-power":      return .attackMultiplier(2.0)
+        case "gorilla-tactics": return .statMultiplier(.attack, 1.5)
+        case "transistor":      return .pinchBoost(.electric, 1.3)
+        case "dragon-s-maw":    return .pinchBoost(.dragon, 1.5)
+        case "rocky-payload":   return .pinchBoost(.rock, 1.5)
+        case "steelworker", "steely-spirit": return .pinchBoost(.steel, 1.5)
+
         case "serene-grace": return .sereneGrace(2.0)
-        case "shield-dust", "overcoat": return .shieldDust
+        case "shield-dust": return .shieldDust
+
+        // --- 확장 (3차) ---
+        case "gluttony":       return .gluttony
+        case "unnerve", "as-one-spectrier": return .unnerve
+        case "liquid-ooze":    return .liquidOoze
+        case "cursed-body":    return .cursedBody(percent: 30)
+        case "trace":          return .trace
+        case "sticky-hold":    return .stickyHold
+        case "pickup":         return .pickup
+        case "heavy-metal":    return .weightMultiplier(2.0)
+        case "light-metal":    return .weightMultiplier(0.5)
+
+        // 더블배틀 전용 — 아군이 없으면 발동 자체가 불가능하다
+        case "telepathy", "friend-guard", "healer", "symbiosis", "battery",
+             "power-spot", "steely-spirit2", "victory-star2", "plus", "minus",
+             "sweet-veil", "flower-veil", "aroma-veil", "storm-drain2", "commander":
+            return .doublesOnly
 
         // 날씨를 부르는 특성
         case "drought", "orichalcum-pulse":  return .weatherOnEntry(.sun)
