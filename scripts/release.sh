@@ -12,6 +12,13 @@ cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
 VERSION="${1:-}"
+# 버전은 x.y.z 형태여야 한다. 안 그러면 --testall 같은 플래그가
+# 버전으로 들어가 PokeBattleBar---testall-Install.command 가 만들어진다.
+if [ -n "$VERSION" ] && ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "버전이 x.y.z 형태가 아닙니다: $VERSION" >&2
+    echo "사용법: ./scripts/release.sh 1.9.0   (테스트는 항상 실행됩니다)" >&2
+    exit 1
+fi
 if [ -z "$VERSION" ]; then
   echo "사용법: ./scripts/release.sh <버전>   예: ./scripts/release.sh 1.1.0" >&2
   exit 1

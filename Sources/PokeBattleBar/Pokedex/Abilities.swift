@@ -103,6 +103,11 @@ enum AbilityKind: Codable, Hashable, Sendable, Equatable {
     case pickup                                 // 픽업 — 소비된 도구를 주워온다
     case weightMultiplier(Double)               // 헤비메탈 / 라이트메탈
 
+    /// 배틀 중 폼이 자동으로 바뀌는 특성 (날씨·HP 조건).
+    /// 실제 처리는 FormChange.autoRule 이 하지만, 여기에 케이스가 없으면
+    /// "표시만" 으로 잘못 표기된다.
+    case autoFormChange
+
     /// 더블배틀 전용 — 1대1 에서는 발동할 수 없다 (미구현이 아니라 해당 없음)
     case doublesOnly
 }
@@ -262,6 +267,12 @@ actor AbilityCatalog {
         case "shield-dust": return .shieldDust
 
         // --- 확장 (3차) ---
+        // 배틀 중 자동 폼 변화 — 처리는 FormChange 가 한다
+        case "forecast", "flower-gift", "zen-mode", "schooling", "disguise",
+             "hunger-switch", "power-construct", "shields-down", "stance-change",
+             "battle-bond", "ice-face":
+            return .autoFormChange
+
         case "gluttony":       return .gluttony
         case "unnerve", "as-one-spectrier": return .unnerve
         case "liquid-ooze":    return .liquidOoze

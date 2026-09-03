@@ -13,9 +13,11 @@ enum FormChange {
         sp.altForms.filter { name in
             !name.contains("-mega") && !name.hasSuffix("-gmax")
                 && !name.contains("-totem") && !name.contains("-cap")
-                // 지역폼은 사실상 다른 포켓몬이라 폼 선택에서 제외한다
-                && !name.hasSuffix("-alola") && !name.hasSuffix("-galar")
-                && !name.hasSuffix("-hisui") && !name.contains("-paldea")
+                // 지역폼은 사실상 다른 포켓몬이라 폼 선택에서 제외한다.
+                // **hasSuffix 로는 부족하다** — darmanitan-galar-standard 처럼
+                // 지역 표기 뒤에 폼 이름이 더 붙는 경우가 있다.
+                && !name.contains("-alola") && !name.contains("-galar")
+                && !name.contains("-hisui") && !name.contains("-paldea")
                 // 배틀 중 자동 변신하는 폼은 고르는 대상이 아니다
                 && !isAutoForm(name)
         }

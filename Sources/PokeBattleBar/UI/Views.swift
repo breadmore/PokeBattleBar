@@ -518,6 +518,7 @@ func abilitySummary(_ a: AbilityDef) -> String {
     case .stickyHold:                  "도구를 빼앗기지 않는다"
     case .pickup:                      "소비된 도구를 주워온다"
     case .weightMultiplier(let m):     m > 1 ? "무게 2배" : "무게 절반"
+    case .autoFormChange:              "배틀 중 조건에 따라 폼이 자동으로 바뀐다"
     case .doublesOnly:                 "더블배틀 전용 (1대1 에서는 발동 불가)"
     }
 }

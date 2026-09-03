@@ -87,10 +87,26 @@ enum RosterDump {
             if !sigZ.isEmpty { badges.append("⚡ 전용Z(\(sigZ.joined(separator: ",")))") }
             print("   자격: \(badges.joined(separator: "  "))")
 
+            // 폼 (사전 선택 / 배틀 중 자동)
+            let forms = FormChange.selectable(for: sp)
+            if !forms.isEmpty {
+                print("   고를 수 있는 폼 \(forms.count)종: "
+                      + forms.map { f in FormChange.label(f) }.joined(separator: ", "))
+                // 폼마다 타입·종족값이 어떻게 다른지
+                for f in forms {
+                    guard let fs = try? await PokeAPI.shared.form(named: f) else { continue }
+                    let total = Stat.allCases.reduce(0) { $0 + fs.base($1) }
+                    print("      \(FormChange.label(f).padding(toLength: 8, withPad: " ", startingAt: 0))"
+                          + "\(fs.types.map(\.ko).joined(separator: "/"))  종족값 \(total)")
+                }
+            }
+
             // 특성
             let abils = await AbilityCatalog.shared.abilities(for: sp)
             let abilText = abils.map {
-                $0.display + ($0.isHidden ? "(숨겨진)" : "") + ($0.isImplemented ? "" : "·표시만")
+                $0.display + ($0.isHidden ? "(숨겨진)" : "")
+                    + ($0.statusTag.map { t in "·\(t)" } ?? "")
+                    + (FormChange.isAutoAbility($0.name) ? "·자동폼" : "")
             }.joined(separator: ", ")
             print("   특성: \(abilText.isEmpty ? "-" : abilText)")
 
@@ -144,6 +160,15 @@ enum RosterDump {
         print("  메가진화 가능: \(megaCount)마리")
         print("  거다이맥스 가능: \(gmaxCount)마리")
         print("  전용 Z기술 보유: \(sigZCount)마리")
+        var formCount = 0, autoFormCount = 0
+        for slot in roster {
+            guard let sp = try? await PokeAPI.shared.species(slot.speciesID) else { continue }
+            if !FormChange.selectable(for: sp).isEmpty { formCount += 1 }
+            let abils = await AbilityCatalog.shared.abilities(for: sp)
+            if abils.contains(where: { FormChange.isAutoAbility($0.name) }) { autoFormCount += 1 }
+        }
+        print("  폼 선택 가능: \(formCount)마리")
+        print("  배틀 중 자동 폼 변화: \(autoFormCount)마리")
         print("  다이맥스: \(roster.count)마리 전원 (종족 제한 없음)")
         return true
     }
