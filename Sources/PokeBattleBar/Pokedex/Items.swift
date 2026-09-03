@@ -7,6 +7,9 @@ enum ItemKind: Codable, Hashable, Sendable {
 
     // 변신 자격 도구
     case megaStone(form: String)                // 특정 메가 폼으로 진화 허용
+    /// 원시회귀 — 주홍구슬(그란돈) · 쪽빛구슬(가이오가).
+    /// 메가와 달리 **등장할 때 자동으로** 바뀌고 배틀당 1회 제한이 없다.
+    case primalOrb(form: String, speciesID: Int)
     case zCrystalType(PType)                    // 해당 타입 Z기술 허용
     case zCrystalSignature(species: Int)        // 전용 Z기술 (특정 종만)
     case dynamaxBand                            // 다이맥스 허용
@@ -77,6 +80,12 @@ struct ItemDef: Codable, Hashable, Sendable, Identifiable {
         }
     }
 
+    /// 원시회귀 도구인가 (등장할 때 자동으로 바뀐다 — 슬롯을 차지하지 않는다)
+    var isPrimalOrb: Bool {
+        if case .primalOrb = kind { return true }
+        return false
+    }
+
     /// 배틀당 1회뿐인 변신 슬롯 이름. 변신 도구가 아니면 nil.
     ///
     /// 팀에서 이 슬롯이 겹치면 한쪽은 반드시 낭비된다 —
@@ -114,6 +123,22 @@ actor ItemCatalog {
 
     /// 배틀에 의미가 있는 도구만 받는다 — 2223개를 전부 받을 이유가 없다.
     private static let battleItems: [String] = [
+        // 실전 세팅에 자주 나오는데 목록에 없던 것들.
+        // 효과가 구조화되지 않은 것은 ItemKind.none 이 되어 목록에서 숨겨지지만,
+        // 카탈로그에 있어야 세팅 적용이 조용히 실패하지 않는다.
+        "red-orb", "blue-orb",           // 원시회귀 (그란돈 · 가이오가)
+        "air-balloon", "black-sludge", "clear-amulet", "rocky-helmet",
+        "safety-goggles", "protective-pads", "throat-spray", "mirror-herb",
+        "damp-rock", "heat-rock", "icy-rock", "smooth-rock",
+        "heavy-duty-boots", "utility-umbrella", "covert-cloak", "loaded-dice",
+        "punching-glove", "ability-shield", "booster-energy",
+        "griseous-orb", "adamant-orb", "lustrous-orb", "soul-dew",
+        "light-clay", "shell-bell",
+        "charcoal", "mystic-water", "magnet", "miracle-seed", "never-melt-ice",
+        "sharp-beak", "poison-barb", "soft-sand", "hard-stone", "silver-powder",
+        "spell-tag", "twisted-spoon", "black-belt", "black-glasses",
+        "dragon-fang", "metal-coat", "silk-scarf",
+
         "leftovers", "life-orb", "focus-sash", "expert-belt",
         "muscle-band", "wise-glasses", "choice-band", "choice-specs", "choice-scarf",
         "eviolite", "assault-vest", "flame-orb", "toxic-orb", "quick-claw",
@@ -299,6 +324,10 @@ actor ItemCatalog {
         if slug == "leppa-berry" { return .berryRestorePP(10) }
 
         switch slug {
+        // 원시회귀 구슬 — 해당 종에게만 의미가 있다
+        case "red-orb":       return .primalOrb(form: "groudon-primal", speciesID: 383)
+        case "blue-orb":      return .primalOrb(form: "kyogre-primal", speciesID: 382)
+
         case "dynamax-band":  return .dynamaxBand
         case "max-mushrooms": return .maxMushroom
         case "leftovers":     return .leftovers
@@ -351,13 +380,29 @@ actor ItemCatalog {
         }
 
         for n in names {
-            if let d = await load(n) { out[d.name] = d }
+            guard var d = await load(n) else { continue }
+            // PokeAPI 는 Z크리스탈을 "firium-z--held" 로 준다.
+            // 실전 세팅과 우리 코드는 "firium-z" 를 쓰므로 **그 이름으로만** 등록한다.
+            // 두 이름으로 등록하면 도구 목록에 같은 것이 두 번 나온다.
+            if let bare = Self.stripHeldSuffix(d.name) { d.name = bare }
+            out[d.name] = d
         }
         items = out
         loaded = true
     }
 
-    func item(_ name: String) -> ItemDef? { items[name] }
+    /// "firium-z--held" -> "firium-z". 접미사가 없으면 nil.
+    static func stripHeldSuffix(_ name: String) -> String? {
+        guard name.hasSuffix("--held") else { return nil }
+        return String(name.dropLast("--held".count))
+    }
+
+    func item(_ name: String) -> ItemDef? {
+        if let d = items[name] { return d }
+        // "firium-z--held" 로 물어봐도 찾아준다
+        if let bare = Self.stripHeldSuffix(name), let d = items[bare] { return d }
+        return nil
+    }
 
     /// 어떤 개체가 지닐 수 있는 도구 목록 (그 종에게 의미 있는 것만 위로).
     /// 메가스톤은 자기 종 것만, 전용 Z크리스탈은 제외한다.
@@ -368,6 +413,8 @@ actor ItemCatalog {
                 return sp.megaForms.contains(form)
             case .zCrystalSignature(let sid):
                 return sid == sp.id                // 전용 Z 는 그 종에게만
+            case .primalOrb(_, let sid):
+                return sid == sp.id                // 그란돈·가이오가에게만
             case .maxMushroom:
                 return sp.canGigantamax            // 거다이맥스 폼이 없으면 의미 없다
             case .none:

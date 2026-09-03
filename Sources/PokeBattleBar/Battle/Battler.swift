@@ -54,6 +54,8 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var magnetRiseTurns: Int = 0
     /// 검은눈빛 등으로 도망갈 수 없는 상태 (교체 불가)
     var cannotFlee: Bool = false
+    /// 원시회귀 상태인가 (등장할 때 자동으로 바뀐다)
+    var isPrimal: Bool = false
 
     var isCharging: Bool { chargingMoveIndex != nil }
     var isEncored: Bool { encoreTurns > 0 && encoreMoveIndex != nil }
@@ -315,6 +317,21 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     /// 메가진화 — 타입과 종족값이 바뀐다. HP 는 원작과 같이 그대로 둔다
     /// (모든 메가 폼은 기본 폼과 HP 종족값이 동일하다).
+    /// 원시회귀. 메가와 계산은 같지만 **1회 제한이 없고 자동**이며,
+    /// isMega 를 세우지 않는다 (메가 슬롯을 쓰지 않기 때문).
+    mutating func applyPrimal(form: FormStats, nature: Nature) {
+        let iv = 31
+        func other(_ s: Stat) -> Int {
+            let inner = (2 * form.base(s) + iv) * level / 100 + 5
+            return max(1, Int(Double(inner) * nature.multiplier(for: s)))
+        }
+        for s in [Stat.attack, .defense, .spAttack, .spDefense, .speed] { stats[s] = other(s) }
+        types = form.types
+        visualForm = form.name
+        formLabel = "원시"
+        isPrimal = true
+    }
+
     mutating func applyMega(form: FormStats, nature: Nature) {
         let iv = 31
         func other(_ s: Stat) -> Int {

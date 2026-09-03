@@ -36,9 +36,9 @@ enum LoadoutTest {
                         expect: false, "Z크리스탈 없으면 Z기술 불가", chart) && ok
 
         // 노말 타입 기술을 가진 잠만보에 노말Z
-        ok = await gate(.zMove, species: 143, item: "normalium-z--held", move: "body-slam",
+        ok = await gate(.zMove, species: 143, item: "normalium-z", move: "body-slam",
                         expect: true, "노말Z + 노말 기술이면 Z기술 가능", chart) && ok
-        ok = await gate(.zMove, species: 143, item: "firium-z--held", move: "body-slam",
+        ok = await gate(.zMove, species: 143, item: "firium-z", move: "body-slam",
                         expect: false, "불꽃Z 인데 불꽃 기술이 없으면 불가", chart) && ok
 
         // MARK: 도구 상시 효과
@@ -199,14 +199,16 @@ enum LoadoutTest {
         for i in roster.indices { setItem(i, nil) }
         if let tackle = try? await PokeAPI.shared.move("tackle") {
             m.movesetsBySlot[roster[0].id] = [tackle]      // 노말 기술만
-            setItem(0, "firium-z--held")                   // 불꽃Z → 맞는 기술 없음
+            // PokeAPI 는 "firium-z--held" 로 주지만 카탈로그는 실전 세팅과 같은
+            // 정규형("firium-z")으로 등록한다 — 두 이름으로 두면 목록에 중복이 생긴다
+            setItem(0, "firium-z")                   // 불꽃Z → 맞는 기술 없음
             let r = m.itemReadiness(for: roster[0])
             ok = check(r?.ok == false, "불꽃 공격기가 없으면 불꽃Z 는 작동 불가",
                        got: r?.headline ?? "nil") && ok
             ok = check(m.loadoutWarnings.contains { $0.severity == .waste },
                        "작동하지 않는 도구는 낭비 경고", got: "\(titles())") && ok
 
-            setItem(0, "normalium-z--held")                // 노말Z → 몸통박치기와 맞음
+            setItem(0, "normalium-z")                // 노말Z → 몸통박치기와 맞음
             ok = check(m.itemReadiness(for: roster[0])?.ok == true,
                        "노말 공격기가 있으면 노말Z 는 작동") && ok
             ok = check(!m.loadoutWarnings.contains { $0.severity == .waste },
@@ -215,8 +217,8 @@ enum LoadoutTest {
 
         // 7) Z크리스탈 2개 → 경고
         for i in roster.indices { setItem(i, nil) }
-        setItem(0, "snorlium-z--held")         // 잠만보 전용Z
-        setItem(1, "mewnium-z--held")          // 뮤 전용Z
+        setItem(0, "snorlium-z")         // 잠만보 전용Z
+        setItem(1, "mewnium-z")          // 뮤 전용Z
         ok = check(m.loadoutWarnings.contains { $0.id == "z" },
                    "Z크리스탈 2개 → 경고", got: "\(titles())") && ok
 

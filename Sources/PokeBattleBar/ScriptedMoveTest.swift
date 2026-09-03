@@ -227,6 +227,81 @@ enum ScriptedMoveTest {
         ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
                   "\(rechargeChecked)개") && ok
 
+        // MARK: 원시회귀 — 구슬을 지니면 등장할 때 자동으로 바뀐다
+        print("\n-- 원시회귀 --")
+        if let r = await primalCheck(speciesID: 383, orb: "red-orb",
+                                     form: "groudon-primal", chart: chart) {
+            ok = show(r.became, "그란돈이 구슬을 지니면 원시회귀한다", r.detail) && ok
+            ok = show(r.stronger, "종족값이 올라간다", r.detail2) && ok
+            ok = show(r.sawLog, "로그에 남는다") && ok
+        } else { ok = show(false, "그란돈 원시회귀 검사") && ok }
+
+        if let r = await primalCheck(speciesID: 382, orb: "blue-orb",
+                                     form: "kyogre-primal", chart: chart) {
+            ok = show(r.became, "가이오가도 원시회귀한다", r.detail) && ok
+        }
+
+        // 구슬이 없으면 바뀌지 않아야 한다
+        if let r = await primalCheck(speciesID: 383, orb: nil,
+                                     form: "groudon-primal", chart: chart) {
+            ok = show(!r.became, "구슬이 없으면 바뀌지 않는다", r.detail) && ok
+        }
+        // 엉뚱한 종이 구슬을 들어도 바뀌지 않아야 한다
+        if let r = await primalCheck(speciesID: 143, orb: "red-orb",
+                                     form: "groudon-primal", chart: chart) {
+            ok = show(!r.became, "다른 종은 구슬로 바뀌지 않는다", r.detail) && ok
+        }
+
+        // MARK: 화면 (리플렉터 · 빛의장막 · 오로라베일)
+        //
+        // 라벨만 뜨고 데미지가 그대로면 아무 의미가 없다 —
+        // **실제로 절반이 되는지**를 본다.
+        print("\n-- 리플렉터 (물리 절반) --")
+        if let r = await screenCheck(screen: "reflect", attack: "tackle",
+                                     weather: nil, chart: chart) {
+            ok = show(r.applied, "화면이 세워진다", r.detail) && ok
+            ok = show(r.halved, "물리 데미지가 절반이 된다", r.detail2) && ok
+        } else { ok = show(false, "리플렉터 검사") && ok }
+
+        print("\n-- 리플렉터는 특수를 막지 않는다 --")
+        if let r = await screenCheck(screen: "reflect", attack: "swift",
+                                     weather: nil, chart: chart) {
+            ok = show(!r.halved, "특수 데미지는 그대로", r.detail2) && ok
+        }
+
+        print("\n-- 빛의장막 (특수 절반) --")
+        if let r = await screenCheck(screen: "light-screen", attack: "swift",
+                                     weather: nil, chart: chart) {
+            ok = show(r.halved, "특수 데미지가 절반이 된다", r.detail2) && ok
+        }
+        if let r = await screenCheck(screen: "light-screen", attack: "tackle",
+                                     weather: nil, chart: chart) {
+            ok = show(!r.halved, "물리 데미지는 그대로", r.detail2) && ok
+        }
+
+        print("\n-- 오로라베일 --")
+        // 눈이 안 오면 실패해야 한다 (그래서 아무 효과가 없어 보이기 쉽다)
+        if let r = await screenCheck(screen: "aurora-veil", attack: "tackle",
+                                     weather: nil, chart: chart) {
+            ok = show(!r.applied, "눈이 없으면 실패한다", r.detail) && ok
+            ok = show(!r.halved, "실패하면 데미지도 그대로", r.detail2) && ok
+        }
+        // 눈이 오면 걸리고 물리·특수 둘 다 절반
+        if let r = await screenCheck(screen: "aurora-veil", attack: "tackle",
+                                     weather: "snowscape", chart: chart) {
+            ok = show(r.applied, "눈이 오면 걸린다", r.detail) && ok
+            ok = show(r.halved, "물리 데미지가 절반", r.detail2) && ok
+        } else { ok = show(false, "오로라베일(눈) 검사") && ok }
+        if let r = await screenCheck(screen: "aurora-veil", attack: "swift",
+                                     weather: "snowscape", chart: chart) {
+            ok = show(r.halved, "특수 데미지도 절반", r.detail2) && ok
+        }
+
+        print("\n-- 깨뜨리다로 화면을 부순다 --")
+        if let r = await breakScreen(chart: chart) {
+            ok = show(r.broken, "깨뜨리다가 상대 화면을 부순다", r.detail) && ok
+        } else { ok = show(false, "화면 파괴 검사") && ok }
+
         // MARK: 앙코르 · 하품 · 비축 · 누적 위력 · 전자부유 · 검은눈빛
         print("\n-- 앙코르 --")
         // 상대가 기술을 쓴 뒤여야 걸린다 — 두 턴을 돌린다
@@ -474,6 +549,170 @@ enum ScriptedMoveTest {
                                 user: Int, foe: Int, chart: TypeChart,
                                 setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 원시회귀가 등장할 때 발동하는지 본다
+    private static func primalCheck(speciesID: Int, orb: String?, form: String,
+                                    chart: TypeChart) async -> (
+        became: Bool, detail: String, stronger: Bool, detail2: String, sawLog: Bool
+    )? {
+        await ItemCatalog.shared.loadAll()
+        guard let sp = try? await PokeAPI.shared.species(speciesID),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let splash = try? await PokeAPI.shared.move("splash"),
+              let foeSp = try? await PokeAPI.shared.species(143) else { return nil }
+        var orbItem: ItemDef?
+        if let orb { orbItem = await ItemCatalog.shared.item(orb) }
+        if orb != nil, orbItem == nil { return nil }
+
+        func make(_ species: SpeciesDef, _ ms: [MoveDef], _ tag: String,
+                  item: ItemDef?) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: species.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: species, moves: ms, level: 50,
+                                 heldItem: item)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            return b
+        }
+
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make(sp, [tackle], "h", item: orbItem)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make(foeSp, [splash], "g", item: nil)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 7)
+        // 원시 폼 스탯을 엔진에 심어야 한다 (앱은 preloadForms 가 한다)
+        if let fs = try? await PokeAPI.shared.form(named: form) {
+            e.megaCache[form] = fs
+        }
+        let before = e.state.sides[0].team[0]
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+        let after = e.state.sides[0].team[0]
+
+        let sumBefore = Stat.allCases.reduce(0) { $0 + (before.stats[$1] ?? 0) }
+        let sumAfter = Stat.allCases.reduce(0) { $0 + (after.stats[$1] ?? 0) }
+        let sawLog = e.state.log.contains { $0.contains("원시의 것으로") }
+        return (after.isPrimal,
+                "원시=\(after.isPrimal) 폼=\(after.spriteForm ?? "기본")",
+                sumAfter > sumBefore,
+                "실능력치 합 \(sumBefore) → \(sumAfter)",
+                sawLog)
+    }
+
+    /// 화면을 세운 뒤 데미지가 정말 절반이 되는지 본다.
+    ///
+    /// 같은 씨드로 두 번 돌린다 — 한 번은 화면 없이, 한 번은 화면을 세우고.
+    /// 난수가 같으므로 차이는 화면 때문이다.
+    private static func screenCheck(screen: String, attack: String, weather: String?,
+                                    chart: TypeChart) async -> (
+        applied: Bool, detail: String, halved: Bool, detail2: String
+    )? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let scr = try? await PokeAPI.shared.move(screen),
+              let atk = try? await PokeAPI.shared.move(attack),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+        var weatherMove: MoveDef?
+        if let w = weather { weatherMove = try? await PokeAPI.shared.move(w) }
+
+        /// 방어측이 `defenderMoves` 를 쓰고, 공격측이 `attack` 으로 때린다.
+        /// 돌려주는 값은 공격이 준 데미지.
+        func run(defenderMoves: [MoveDef]) -> (dmg: Int, log: [String], screenOn: Bool) {
+            func make(_ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+                let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                      rarity: "common", isShiny: false, origin: .dex,
+                                      fullyEvolved: true)
+                var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+                for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+                b.stats[.speed] = speed
+                b.maxHP = 99999; b.currentHP = 99999
+                return b
+            }
+            var rules = BattleRules(maxTeamSize: 1, level: 50)
+            rules.weather = true
+            // 방어측(host)이 화면을 세우고, 공격측(guest)이 때린다
+            var st = BattleState(rules: rules,
+                                 sides: [SideState(playerName: "방어",
+                                                   team: [make(defenderMoves, "d", speed: 999)],
+                                                   activeIndex: 0),
+                                         SideState(playerName: "공격",
+                                                   team: [make([atk], "a", speed: 1)],
+                                                   activeIndex: 0)])
+            st.phase = .chooseLead
+            var e = BattleEngine(state: st, chart: chart, seed: 4242)
+            e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+            e.beginBattle()
+
+            // 날씨를 먼저 깔아야 하는 경우 한 턴 더 쓴다
+            var idx = 0
+            if weatherMove != nil, defenderMoves.count > 1 {
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                idx = 1
+            }
+            // 방어측이 화면(또는 아무것도)을 쓴다
+            e.resolveTurn(hostAction: .useMove(index: idx), guestAction: .useMove(index: 0))
+            let on = e.state.sides[0].hasAnyScreen
+            // 다음 턴의 데미지를 잰다
+            let before = e.state.sides[0].team[0].currentHP
+            e.resolveTurn(hostAction: .useMove(index: idx), guestAction: .useMove(index: 0))
+            return (before - e.state.sides[0].team[0].currentHP, e.state.log, on)
+        }
+
+        // 기준: 화면 없이 (튀어오르기만 쓴다)
+        var baseMoves: [MoveDef] = [splash]
+        var screenMoves: [MoveDef] = [scr]
+        if let wm = weatherMove {
+            baseMoves = [wm, splash]
+            screenMoves = [wm, scr]
+        }
+        let base = run(defenderMoves: baseMoves)
+        let withScreen = run(defenderMoves: screenMoves)
+
+        let ratio = base.dmg > 0 ? Double(withScreen.dmg) / Double(base.dmg) : 1
+        return (withScreen.screenOn,
+                "화면 걸림=\(withScreen.screenOn)",
+                ratio < 0.65,
+                String(format: "데미지 %d → %d (%.0f%%)", base.dmg, withScreen.dmg, ratio * 100))
+    }
+
+    /// 깨뜨리다가 상대 화면을 부수는지 본다
+    private static func breakScreen(chart: TypeChart) async -> (broken: Bool, detail: String)? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let reflect = try? await PokeAPI.shared.move("reflect"),
+              let brick = try? await PokeAPI.shared.move("brick-break") else { return nil }
+
+        func make(_ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = 99999; b.currentHP = 99999
+            return b
+        }
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "방어",
+                                               team: [make([reflect], "d", speed: 999)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "공격",
+                                               team: [make([brick], "a", speed: 1)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 909)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let onBefore = e.state.sides[0].hasAnyScreen
+        let onAfter = e.state.sides[0].hasAnyScreen
+        let sawBreak = e.state.log.contains { $0.contains("화면을 부쉈다") }
+        return (onBefore && !onAfter || sawBreak,
+                "세워짐=\(onBefore) · 부숨 로그=\(sawBreak)")
     }
 
     /// 앙코르에 걸린 쪽이 정말 그 기술만 쓰는지 본다
