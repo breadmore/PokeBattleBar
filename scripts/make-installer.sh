@@ -2,13 +2,13 @@
 # 앱을 안에 담은 **단일 설치 파일**을 만든다.
 # 받는 사람은 파일 하나만 실행하면 설치·격리해제·실행까지 다 끝난다.
 #
-#   ./scripts/make-installer.sh            현재 build/PokeBattleBar.app 을 담는다
+#   ./scripts/make-installer.sh            현재 build.noindex/PokeBattleBar.app 을 담는다
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
-APP="$ROOT/build/PokeBattleBar.app"
-OUT="$ROOT/build/PokeBattleBar-설치.command"
-OUT_ASCII="$ROOT/build/Install-PokeBattleBar.command"
+APP="$ROOT/build.noindex/PokeBattleBar.app"
+OUT="$ROOT/build.noindex/PokeBattleBar-설치.command"
+OUT_ASCII="$ROOT/build.noindex/Install-PokeBattleBar.command"
 
 [ -d "$APP" ] || { echo "먼저 ./scripts/bundle.sh 를 실행하세요" >&2; exit 1; }
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
@@ -16,7 +16,7 @@ VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/C
 echo "==> 앱 압축 (v$VERSION)"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-( cd "$ROOT/build" && tar czf "$TMP/app.tgz" PokeBattleBar.app )
+( cd "$ROOT/build.noindex" && tar czf "$TMP/app.tgz" PokeBattleBar.app )
 echo "    $(du -h "$TMP/app.tgz" | cut -f1)"
 
 echo "==> 설치 스크립트 생성"

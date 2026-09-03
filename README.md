@@ -13,7 +13,7 @@ PokeTokenBar 를 수정하지 않는 **별도 컴패니언 앱**이다.
 
 5개 검증 스위트를 **전부 통과해야만** 산출물이 나온다. 실패하면 배포가 중단된다.
 
-**`build/PokeBattleBar-1.1.0-Install.command` 이 파일 하나만** 보내면 된다 (약 1.6MB).
+**`build.noindex/PokeBattleBar-1.1.0-Install.command` 이 파일 하나만** 보내면 된다 (약 1.6MB).
 앱이 파일 안에 들어 있어서 다운로드도 압축 해제도 필요 없다. 실행하면:
 
 1. macOS 버전과 PokeTokenBar 설치 여부를 확인한다 (포켓몬 몇 마리인지도 알려준다)
@@ -51,7 +51,7 @@ macOS 가 경고를 띄운다. 터미널로 실행하면(방법 2) Gatekeeper �
 
 마찰을 완전히 없애려면 Apple Developer 계정(연 $99)으로 서명 + 공증(notarize) 해야 한다.
 
-`build/poke-battle-bar.rb` 에 Homebrew cask 초안도 함께 생성된다 —
+`build.noindex/poke-battle-bar.rb` 에 Homebrew cask 초안도 함께 생성된다 —
 tap 저장소를 쓸 생각이 있으면 URL 만 채우면 된다.
 
 ### 소스에서 직접 빌드 (격리 문제 없음)
@@ -62,7 +62,7 @@ tap 저장소를 쓸 생각이 있으면 URL 만 채우면 된다.
 xcode-select --install
 git clone <이 저장소> && cd PokeBattleBar
 NATIVE=1 ./scripts/bundle.sh     # 내 맥 아키텍처만 — 더 빠르다
-open build/PokeBattleBar.app
+open build.noindex/PokeBattleBar.app
 ```
 
 ### 첫 실행
@@ -240,7 +240,7 @@ PP, 스피드 선공, 우선도, 난수 폭(85~100%), 다단히트, 흡수/반�
 전부 헤드리스로 돌아간다. UI 없이 엔진·네트워크·규칙을 실제로 굴려서 확인한다.
 
 ```sh
-B=./build/PokeBattleBar.app/Contents/MacOS/PokeBattleBar
+B=./build.noindex/PokeBattleBar.app/Contents/MacOS/PokeBattleBar
 
 $B --selftest     # 스탯 공식·상성표·전투 종료·HP 불변식·한국어 조사
 $B --movetest     # 기술 효과 32항목 — 반동·흡수·회복·상태이상·랭크·다단·고정데미지·자폭·지속데미지
