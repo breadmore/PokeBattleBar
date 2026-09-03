@@ -81,8 +81,9 @@ enum GMaxMove: String, Codable, Sendable {
         case .wildfire:   .damageOverTime(immuneType: .fire, turns: 4)
         case .cannonade:  .damageOverTime(immuneType: .water, turns: 4)
         case .volcalith:  .damageOverTime(immuneType: .rock, turns: 4)
-        case .centiferno: .damageOverTime(immuneType: .fire, turns: 4)
-        case .sandblast:  .damageOverTime(immuneType: .ground, turns: 4)
+        // 원작에서 이 둘은 지속 피해에 더해 상대를 묶는다
+        case .centiferno: .damageOverTimeAndTrap(immuneType: .fire, turns: 4)
+        case .sandblast:  .damageOverTimeAndTrap(immuneType: .ground, turns: 4)
 
         // 상태이상
         case .voltCrash:  .inflict(.paralysis)
@@ -107,10 +108,15 @@ enum GMaxMove: String, Codable, Sendable {
         case .depletion:  .drainPP(3)
         case .resonance:  .selfStat(.defense, 1)   // 오로라베일 대용 (방어 상승으로 재현)
 
-        // 이 엔진에 대응 개념이 없는 것 (교체가 없어 스텔스록·묶기·중력이 무의미)
-        case .terror, .windRage, .gravitas, .stonesurge, .steelsurge,
-             .meltdown, .oneBlow, .rapidFlow:
-            .none
+        // 교체룰이 들어올 때를 대비해 전부 구현해 둔다.
+        // 스텔스록 계열은 지금도 작동한다 — 쓰러진 뒤 다음 포켓몬이 등장할 때 피해를 받는다.
+        case .stonesurge: .hazard(.stealthRock)
+        case .steelsurge: .hazard(.steelSurge)
+        case .windRage:   .clearOwnHazards
+        case .gravitas:   .gravity(turns: 5)
+        case .terror:     .trap(turns: 4)
+        case .meltdown:   .torment
+        case .oneBlow, .rapidFlow: .bypassProtect
         }
     }
 
@@ -146,6 +152,13 @@ enum GMaxEffect: Codable, Hashable, Sendable {
     case cureStatus
     case drainPP(Int)
     case ignoreAbility
+    case damageOverTimeAndTrap(immuneType: PType, turns: Int)
+    case hazard(Hazard)
+    case clearOwnHazards
+    case gravity(turns: Int)
+    case trap(turns: Int)
+    case torment
+    case bypassProtect
 
     /// 이 엔진에서 실제로 재현되는가
     var isImplemented: Bool { self != .none }
@@ -164,6 +177,14 @@ enum GMaxEffect: Codable, Hashable, Sendable {
         case .cureStatus:                    "자신 상태이상 회복"
         case .drainPP(let n):                "상대 기술 PP \(n) 감소"
         case .ignoreAbility:                 "상대 특성 무시"
+        case .damageOverTimeAndTrap(let t, let n):
+            "\(n)턴간 \(t.ko)타입이 아닌 상대에게 지속 피해 + 교체 봉쇄"
+        case .hazard(let h):                 "상대 진영에 \(h.ko) 설치 (등장 시 피해)"
+        case .clearOwnHazards:               "내 진영의 장애물 제거"
+        case .gravity(let n):                "\(n)턴간 중력 (부유 무효, 명중률 상승)"
+        case .trap(let n):                   "\(n)턴간 상대 교체 봉쇄"
+        case .torment:                       "상대가 같은 기술을 연속으로 쓸 수 없게"
+        case .bypassProtect:                 "방어를 관통"
         }
     }
 }

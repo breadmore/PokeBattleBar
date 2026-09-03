@@ -24,12 +24,8 @@ echo "==> 버전 $VERSION / 프로토콜 v$PROTO"
 echo "==> 검증 먼저"
 swift build -c release >/dev/null
 BIN="$(swift build -c release --show-bin-path)/PokeBattleBar"
-FAILED=0
-for t in --selftest --movetest --formtest --pickertest --itemtest --loadouttest --extendedtest --nettest; do
-  printf "    %-14s " "$t"
-  if "$BIN" "$t" >/dev/null 2>&1; then echo "✓"; else echo "✗"; FAILED=1; fi
-done
-if [ "$FAILED" = "1" ]; then
+# 전체 스위트를 한 번에 — 하나라도 실패하면 배포를 중단한다
+if ! "$BIN" --testall --battles 60 2>/dev/null | sed -n '/^요약/,$p'; then
   echo "검증이 실패했습니다. 배포를 중단합니다." >&2
   exit 1
 fi

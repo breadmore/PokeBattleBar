@@ -28,6 +28,19 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     /// 등장 시 특성(위협 등)을 이미 발동했는가
     var entryAbilityFired: Bool = false
 
+    /// 조임 — 교체할 수 없다 (교체룰이 들어오면 작동한다)
+    var trappedTurns: Int = 0
+    /// 아무것도않기 — 같은 기술을 연속으로 쓸 수 없다
+    var tormented: Bool = false
+    /// 직전에 쓴 기술 (아무것도않기 판정용)
+    var lastMoveIndex: Int?
+    /// 이번 턴 방어 상태인가
+    var isProtecting: Bool = false
+    /// 방어를 연속으로 쓴 횟수 (연속 사용 시 성공률이 떨어진다)
+    var protectStreak: Int = 0
+
+    var isTrapped: Bool { trappedTurns > 0 }
+
     // 전투 중 상태
     var status: Ailment = .none
     var sleepTurns: Int = 0
@@ -78,6 +91,11 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         if case .zCrystalType(let t) = itemKind { return t }
         return nil
     }
+    /// 전용 Z크리스탈을 지녔고 그 종이 맞는가
+    var hasSignatureZ: Bool {
+        if case .zCrystalSignature(let sid) = itemKind { return sid == speciesID }
+        return false
+    }
     var hasDynamaxBand: Bool { if case .dynamaxBand = itemKind { return true }; return false }
     var hasMaxMushroom: Bool { if case .maxMushroom = itemKind { return true }; return false }
     var canMega: Bool { !megaForms.isEmpty && !isMega }
@@ -104,7 +122,9 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     func canZMove(requiringItem: Bool) -> Bool {
         guard canZMove else { return false }
         guard requiringItem else { return true }
-        // 크리스탈 타입과 일치하는 공격기가 있어야 한다
+        // 전용 Z크리스탈은 그 종이면 공격기만 있으면 된다
+        if hasSignatureZ { return true }
+        // 타입 Z크리스탈은 일치하는 공격기가 있어야 한다
         guard let t = zCrystalType else { return false }
         return moves.contains { $0.usable && $0.def.damageClass != .status
                                 && $0.def.isDamaging && $0.def.type == t }

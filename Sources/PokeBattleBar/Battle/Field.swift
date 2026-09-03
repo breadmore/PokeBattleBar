@@ -71,15 +71,46 @@ enum Terrain: String, Codable, Sendable {
     }
 }
 
+/// 등장 시 피해를 주는 장애물.
+/// **교체가 없어도 의미가 있다** — 이 게임에는 "쓰러지면 다음 포켓몬 등장" 이라는 등장 시점이 있다.
+/// 교체룰이 들어오면 그대로 교체 시에도 작동한다.
+enum Hazard: String, Codable, Sendable, CaseIterable {
+    case stealthRock      // 다이맥스스톤즈 — 바위 상성 기반 피해
+    case steelSurge       // 다이맥스스틸 — 강철 상성 기반 피해
+
+    var ko: String {
+        switch self {
+        case .stealthRock: "스텔스록"
+        case .steelSurge:  "스틸록"
+        }
+    }
+    /// 상성 계산에 쓰는 타입
+    var type: PType {
+        switch self {
+        case .stealthRock: .rock
+        case .steelSurge:  .steel
+        }
+    }
+    /// 등장 시 피해 = 최대HP × 상성배율 / 8
+    func damage(maxHP: Int, multiplier: Double) -> Int {
+        max(1, Int(Double(maxHP) * multiplier / 8.0))
+    }
+}
+
 /// 배틀 필드 상태
 struct FieldState: Codable, Sendable, Equatable {
     var weather: Weather = .none
     var weatherTurns: Int = 0
     var terrain: Terrain = .none
     var terrainTurns: Int = 0
+    /// 중력 — 부유·비행 무효, 명중률 상승
+    var gravityTurns: Int = 0
 
     var hasWeather: Bool { weather != .none && weatherTurns > 0 }
     var hasTerrain: Bool { terrain != .none && terrainTurns > 0 }
+    var hasGravity: Bool { gravityTurns > 0 }
+
+    mutating func setGravity(_ turns: Int) { gravityTurns = turns }
 
     mutating func setWeather(_ w: Weather, turns: Int = 5) {
         weather = w; weatherTurns = turns
@@ -87,9 +118,9 @@ struct FieldState: Codable, Sendable, Equatable {
     mutating func setTerrain(_ t: Terrain, turns: Int = 5) {
         terrain = t; terrainTurns = turns
     }
-    /// 턴 종료 시 감소. 끝난 날씨/필드 이름을 돌려준다 (로그용).
-    mutating func tick() -> (endedWeather: Weather?, endedTerrain: Terrain?) {
-        var ew: Weather?, et: Terrain?
+    /// 턴 종료 시 감소. 끝난 것들을 돌려준다 (로그용).
+    mutating func tick() -> (endedWeather: Weather?, endedTerrain: Terrain?, gravityEnded: Bool) {
+        var ew: Weather?, et: Terrain?, eg = false
         if weatherTurns > 0 {
             weatherTurns -= 1
             if weatherTurns == 0 { ew = weather; weather = .none }
@@ -98,7 +129,11 @@ struct FieldState: Codable, Sendable, Equatable {
             terrainTurns -= 1
             if terrainTurns == 0 { et = terrain; terrain = .none }
         }
-        return (ew, et)
+        if gravityTurns > 0 {
+            gravityTurns -= 1
+            if gravityTurns == 0 { eg = true }
+        }
+        return (ew, et, eg)
     }
 }
 
@@ -157,6 +192,13 @@ enum MoveFlags {
         "rage-powder", "powder", "magic-powder"
     ]
 
+    /// 방어 기술 (다이맥스일격/연격이 관통한다)
+    static let protect: Set<String> = [
+        "protect", "detect", "spiky-shield", "kings-shield", "baneful-bunker",
+        "obstruct", "silk-trap", "burning-bulwark"
+    ]
+
+    static func isProtect(_ name: String) -> Bool { protect.contains(name) }
     static func isContact(_ name: String) -> Bool { contact.contains(name) }
     static func isPunch(_ name: String) -> Bool { punch.contains(name) }
     static func isBite(_ name: String) -> Bool { bite.contains(name) }
