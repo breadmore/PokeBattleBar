@@ -24,12 +24,13 @@ enum Wire: Codable, Sendable {
 /// 쓰지 않으므로, 신규 필드가 하나만 늘어도 구버전이 보낸 JSON 은 디코딩이 실패한다.
 /// 버전을 함께 실어보내야 "그냥 연결이 끊겼다" 가 아니라 "버전이 다르다" 를 보여줄 수 있다.
 enum PokeBattleProtocol {
-    static let version = 9
+    static let version = 10
 
     /// 7: 게임 모드 4종 (랜덤기술·자유의지·자동변신·토게피 손가락흔들기),
     ///    다이맥스밴드/다이버섯 역할 분리
     /// 6: 전용 Z크리스탈, 스텔스록·중력·조임·아무것도않기·방어, 교체 기반,
     ///    MoveDef.target 추가 (변화기 타입 면역 판정)
+    /// 10: 폼 체인지(사전 선택 + 자동), 턴 재생 스텝, 폼 스프라이트
     /// 9: 나무열매 38종, 특성 대폭 확장(96%), 무게, 묶기·유턴, 기술 봉인
     /// 8: 채팅, 기술 직접 선택, 추천 세팅, 묶기·유턴, Showdown 데이터 통합
     /// 5: 날씨·필드, G-Max 전용기, 접촉 기반 특성 추가
@@ -37,7 +38,7 @@ enum PokeBattleProtocol {
     /// 3: 다이맥스 추가 (usedGmax -> usedDynamax, gmaxTurnsLeft -> dynamaxTurnsLeft)
     /// 2: 메가진화/거다이맥스/Z기술 필드 추가 + 프로토콜 버전 도입
     /// 1: 최초 배포 (버전 정보 없음 — v2 이상과는 통신 불가)
-    static let changelog = "v9 — 나무열매·특성 96%·무게"
+    static let changelog = "v10 — 폼 체인지·턴 재생 연출"
 }
 
 /// 버전만 먼저 읽기 위한 최소 구조체.

@@ -47,6 +47,9 @@ enum TestAll {
             .init(flag: "--showdowntest", name: "Showdown 데이터", what: "플래그·추천세팅·포인트") {
                 await ShowdownTest.run()
             },
+            .init(flag: "--formchangetest", name: "폼 체인지·재생", what: "폼 선택·자동 변신·스프라이트·턴 스텝") {
+                await FormChangeTest.run()
+            },
             .init(flag: "--berrytest", name: "나무열매·특성", what: "열매 38종·먹보·긴장감·해감액·봉인·트레이스·무게") {
                 await BerryTest.run()
             },

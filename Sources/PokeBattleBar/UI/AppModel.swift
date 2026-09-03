@@ -65,6 +65,99 @@ final class AppModel {
     var record = RecordStore.Record()
     var lastPointsGained: Int?
 
+    // MARK: 턴 재생 (실제 배틀처럼 순서대로 보여준다)
+    //
+    // 엔진은 한 턴을 한 번에 계산한다. 그 결과만 그리면 누가 먼저 때렸는지,
+    // 무슨 일이 있었는지 알 수 없다. 그래서 엔진이 남긴 단계(steps) 를
+    // 하나씩 재생하면서 HP·로그를 점진적으로 보여준다.
+
+    /// 재생 중 화면에 그릴 HP (없으면 실제 상태를 쓴다)
+    var playbackHostHP: [Int]?
+    var playbackGuestHP: [Int]?
+    var playbackHostActive: Int?
+    var playbackGuestActive: Int?
+    /// 재생 중 보여줄 로그 줄 수
+    var playbackLogCount: Int?
+    /// 재생 중인가 (행동 입력을 막는다)
+    var isPlayingBack = false
+    /// 지금 재생 중인 단계 설명 (상단 배너)
+    var playbackBanner: String?
+
+    private var playbackTask: Task<Void, Never>?
+
+    /// 한 단계당 머무는 시간
+    private let stepDuration: Duration = .milliseconds(850)
+
+    /// 엔진이 넘겨준 단계들을 순서대로 재생한다.
+    private func playback(_ st: BattleState) {
+        playbackTask?.cancel()
+        guard !st.steps.isEmpty else {
+            clearPlayback()
+            return
+        }
+        isPlayingBack = true
+        // 재생은 턴 시작 시점부터 — 로그는 이번 턴 이전까지만 보여준다
+        let addedLines = st.steps.reduce(0) { $0 + $1.log.count }
+        var shown = max(0, st.log.count - addedLines)
+        playbackLogCount = shown
+
+        playbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for step in st.steps {
+                if Task.isCancelled { return }
+                shown += step.log.count
+                // 애니메이션은 뷰가 값 변화를 보고 처리한다 (HPBar 의 .animation)
+                self.playbackHostHP = step.hostHP
+                self.playbackGuestHP = step.guestHP
+                self.playbackHostActive = step.hostActive
+                self.playbackGuestActive = step.guestActive
+                self.playbackLogCount = shown
+                // 이 단계의 첫 줄을 배너로 (누가 무엇을 했는지)
+                self.playbackBanner = step.log.first
+                try? await Task.sleep(for: self.stepDuration)
+            }
+            if Task.isCancelled { return }
+            self.clearPlayback()
+            // 재생이 끝난 뒤에 다음 단계 UI 를 연다
+            self.applyPhaseToUI(st)
+            if self.rules.autoMove { self.advanceAutoIfNeeded() }
+        }
+    }
+
+    private func clearPlayback() {
+        playbackHostHP = nil
+        playbackGuestHP = nil
+        playbackHostActive = nil
+        playbackGuestActive = nil
+        playbackLogCount = nil
+        playbackBanner = nil
+        isPlayingBack = false
+    }
+
+    /// 화면에 그릴 팀 (재생 중이면 그 시점 HP 로 덮어쓴다)
+    func displayTeam(_ side: BattleSide) -> [Battler] {
+        guard let b = battle else { return [] }
+        var team = b.sides[side.rawValue].team
+        let hp = side == .host ? playbackHostHP : playbackGuestHP
+        if let hp {
+            for i in team.indices where i < hp.count { team[i].currentHP = hp[i] }
+        }
+        return team
+    }
+
+    func displayActiveIndex(_ side: BattleSide) -> Int {
+        let live = battle?.sides[side.rawValue].activeIndex ?? 0
+        let pb = side == .host ? playbackHostActive : playbackGuestActive
+        return pb ?? live
+    }
+
+    /// 화면에 그릴 로그
+    var displayLog: [String] {
+        guard let b = battle else { return [] }
+        guard let n = playbackLogCount else { return b.log }
+        return Array(b.log.prefix(n))
+    }
+
     // 배틀
     var battle: BattleState?
     var mySide: BattleSide = .host
@@ -160,6 +253,7 @@ final class AppModel {
         e.zMoveCache = zMoveCache
         e.maxMoveCache = maxMoveCache
         e.metronomePool = metronomePool
+        e.formCache = formCache
     }
 
     private func describe(_ e: Error) -> String {
@@ -254,8 +348,18 @@ final class AppModel {
                 ? await MovesetStore.shared.drawWithoutSaving(species: sp)
                 : await MovesetStore.shared.moveset(for: slot, species: sp)
             let (item, ability) = await LoadoutStore.shared.resolve(for: slot, species: sp)
+            // 고른 폼이 있으면 그 종족값·타입으로 만든다
+            let formName = await LoadoutStore.shared.loadout(for: slot).form
+            var formStats: FormStats?
+            if let formName {
+                if formCache[formName] == nil {
+                    formCache[formName] = try? await PokeAPI.shared.form(named: formName)
+                }
+                formStats = formCache[formName]
+            }
             out.append(Battler.make(slot: slot, species: sp, moves: moves,
-                                    level: rules.level, heldItem: item, ability: ability))
+                                    level: rules.level, heldItem: item, ability: ability,
+                                    form: formStats, formName: formName))
         }
         return out
     }
@@ -441,6 +545,48 @@ final class AppModel {
         return itemsForSpecies[slot.speciesID]?.first { $0.name == n }
     }
 
+    // MARK: 폼 선택 (PokeTokenBar 는 건드리지 않는다)
+
+    /// 이 개체가 고를 수 있는 폼 (로토무 히트 등). 없으면 빈 배열.
+    func selectableForms(for slot: RosterSlot) -> [String] {
+        guard let sp = rosterSpecies[slot.speciesID] else { return [] }
+        return FormChange.selectable(for: sp)
+    }
+
+    /// 지금 고른 폼
+    func currentForm(for slot: RosterSlot) -> String? {
+        loadouts[slot.id]?.form
+    }
+
+    func setForm(_ form: String?, for slot: RosterSlot) async {
+        await LoadoutStore.shared.setForm(form, for: slot)
+        loadouts[slot.id] = await LoadoutStore.shared.loadout(for: slot)
+        if let form, formCache[form] == nil {
+            formCache[form] = try? await PokeAPI.shared.form(named: form)
+        }
+    }
+
+    /// 폼 종족값 캐시 (배틀 팀 구성에 필요)
+    private var formCache: [String: FormStats] = [:]
+
+    /// 배틀 중 자동 변신에 필요한 폼들을 미리 받아둔다
+    private func preloadAutoForms(for team: [Battler]) async {
+        for b in team {
+            guard let ab = b.ability?.name,
+                  let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID) else { continue }
+            var names: [String] = []
+            switch rule {
+            case .byWeather(let map, let base): names = Array(map.values) + [base]
+            case .inSun(let f, let base):       names = [f, base]
+            case .belowHP(_, let f, let base):  names = [f, base]
+            case .aboveHP(_, let f, let base):  names = [f, base]
+            }
+            for n in names where formCache[n] == nil {
+                formCache[n] = try? await PokeAPI.shared.form(named: n)
+            }
+        }
+    }
+
     func currentAbility(for slot: RosterSlot) -> AbilityDef? {
         let opts = abilitiesForSpecies[slot.speciesID] ?? []
         if let n = loadouts[slot.id]?.ability, let a = opts.first(where: { $0.name == n }) { return a }
@@ -573,6 +719,7 @@ final class AppModel {
         status = "특수 변신 데이터를 준비하는 중…"
         await preloadForms(for: myTeam)
         await preloadTransformMoves()
+        await preloadAutoForms(for: myTeam)
         if rules.metronomeMode {
             await preloadMetronomePool()
             metronomeTeamSnapshot = await buildMetronomeTeam()
@@ -730,6 +877,7 @@ final class AppModel {
         status = "특수 변신 데이터를 준비하는 중…"
         await preloadForms(for: myTeam)
         await preloadTransformMoves()
+        await preloadAutoForms(for: myTeam)
 
         opponentName = room.hostName
         status = "\(room.hostName) 의 방에 접속 중…"
@@ -809,7 +957,11 @@ final class AppModel {
 
         case .battleBegan(let st), .stateChanged(let st):
             battle = st
-            applyPhaseToUI(st)
+            if st.steps.isEmpty {
+                applyPhaseToUI(st)
+            } else {
+                playback(st)          // 순서대로 재생한 뒤에 UI 를 연다
+            }
 
         case .chat(let from, let text):
             receiveChat(from: from, text: text)
@@ -868,6 +1020,7 @@ final class AppModel {
     var pendingSpecial: SpecialAction?
 
     func submitMove(_ index: Int) {
+        guard !isPlayingBack else { return }
         guard let b = battle, case .awaitingMoves = b.phase else { return }
         let special = pendingSpecial
         pendingSpecial = nil
@@ -1013,7 +1166,7 @@ final class AppModel {
         battle = e.state
         host.send(.stateChanged(state: e.state))
         waitingForOpponent = false
-        applyPhaseToUI(e.state)
+        if e.state.steps.isEmpty { applyPhaseToUI(e.state) } else { playback(e.state) }
     }
 
     private func applyReplacement(_ side: BattleSide, _ idx: Int) {
@@ -1055,13 +1208,16 @@ final class AppModel {
         engine = e
         battle = e.state
         host.send(.stateChanged(state: e.state))
-        applyPhaseToUI(e.state)
-
-        // 다음 턴도 자동으로 — 화면이 넘어가는 걸 볼 수 있게 잠깐 쉰다
-        if case .finished = e.state.phase { return }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(700))
-            self.advanceAutoIfNeeded()
+        if e.state.steps.isEmpty {
+            applyPhaseToUI(e.state)
+            if case .finished = e.state.phase { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                self.advanceAutoIfNeeded()
+            }
+        } else {
+            // 재생이 끝나면 playback 이 다음 턴을 이어서 돌린다
+            playback(e.state)
         }
     }
 
@@ -1170,6 +1326,8 @@ final class AppModel {
         waitingForOpponent = false
         role = .none
         status = ""
+        playbackTask?.cancel()
+        clearPlayback()
         chatLines = []
         chatDraft = ""
         lastPointsGained = nil

@@ -76,6 +76,21 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var critStage: Int = 0
     /// 변신 표시용 라벨 ("메가 X", "다이맥스", "거다이맥스")
     var formLabel: String?
+    /// 전투 전에 고른 폼 (로토무 히트 등). 배틀 시작 시 이미 적용돼 있다.
+    var chosenForm: String?
+    /// 배틀 중 자동 변신으로 바뀐 현재 폼 (캐스퐁·불비달마)
+    var autoForm: String?
+    /// 메가진화·거다이맥스로 바뀐 폼 이름 (스프라이트 교체용)
+    var visualForm: String?
+
+    /// 지금 화면에 그려야 할 스프라이트의 폼 이름.
+    /// 자동 변신 > 메가·거다이맥스 > 전투 전 선택 순으로 우선한다.
+    var spriteForm: String? { autoForm ?? visualForm ?? chosenForm }
+    /// 다이맥스는 전용 스프라이트가 없으므로 크기로 표현한다
+    var spriteScale: CGFloat { isDynamaxed ? 1.35 : 1.0 }
+    /// 자동 변신 전 원래 종족값 — 되돌릴 때 쓴다
+    var baseStatsSnapshot: [Stat: Int] = [:]
+    var baseTypesSnapshot: [PType] = []
     /// 다이맥스 해제 시 되돌릴 원래 HP 상한
     var baseMaxHP: Int = 0
 
@@ -205,14 +220,21 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     }
 
     static func make(slot: RosterSlot, species: SpeciesDef, moves: [MoveDef], level: Int,
-                     heldItem: ItemDef? = nil, ability: AbilityDef? = nil) -> Battler {
+                     heldItem: ItemDef? = nil, ability: AbilityDef? = nil,
+                     form: FormStats? = nil, formName: String? = nil) -> Battler {
         let nature = Nature.named(slot.nature)
-        let (hp, others) = computeStats(base: species, nature: nature, level: level)
-        return Battler(
+        // 폼을 골랐으면 그 폼의 종족값·타입으로 만든다 (로토무 히트 등)
+        var base = species
+        if let form {
+            base.baseStats = form.baseStats
+            base.types = form.types
+        }
+        let (hp, others) = computeStats(base: base, nature: nature, level: level)
+        var b = Battler(
             id: slot.id,
             speciesID: slot.speciesID,
-            name: species.display,
-            types: species.types,
+            name: species.display + (formName.map { " (\(FormChange.label($0)))" } ?? ""),
+            types: base.types,
             level: level,
             natureName: nature.ko,
             isShiny: slot.isShiny,
@@ -228,6 +250,10 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
             gmaxForm: species.gmaxForm,
             baseMaxHP: hp
         )
+        b.chosenForm = formName
+        b.baseStatsSnapshot = others
+        b.baseTypesSnapshot = base.types
+        return b
     }
 
     /// 메가진화 — 타입과 종족값이 바뀐다. HP 는 원작과 같이 그대로 둔다
@@ -241,6 +267,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         for s in [Stat.attack, .defense, .spAttack, .spDefense, .speed] { stats[s] = other(s) }
         types = form.types
         isMega = true
+        visualForm = form.name
         formLabel = form.suffixLabel
     }
 
@@ -252,12 +279,38 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         maxHP = max(1, Int(Double(baseMaxHP) * multiplier))
         currentHP = max(1, Int(Double(maxHP) * ratio))
         // 거다이맥스는 전용 폼의 타입을 따른다 (대개 원래와 같다)
-        if gigantamax, let form { types = form.types }
+        if gigantamax, let form {
+            types = form.types
+            visualForm = form.name          // 거다이맥스는 전용 스프라이트가 있다
+        }
         // 거다이맥스면 전용기를 부여한다
         if gigantamax { gmaxMove = GMaxMove.forSpecies(speciesID) }
         dynamaxTurnsLeft = turns
         isGigantamaxed = gigantamax
         formLabel = gigantamax ? "거다이맥스" : "다이맥스"
+    }
+
+    /// 배틀 중 자동 변신 (캐스퐁·불비달마·체리꼬·약어리).
+    /// HP 는 건드리지 않고 타입·종족값만 바꾼다.
+    mutating func applyAutoForm(_ name: String?, stats: FormStats?, nature: Nature) {
+        guard autoForm != name else { return }
+        autoForm = name
+        if let stats {
+            let iv = 31
+            for s in [Stat.attack, .defense, .spAttack, .spDefense, .speed] {
+                let inner = (2 * stats.base(s) + iv) * level / 100 + 5
+                self.stats[s] = max(1, Int(Double(inner) * nature.multiplier(for: s)))
+            }
+            types = stats.types
+        } else {
+            // 원래대로
+            stats0Restore()
+        }
+    }
+
+    private mutating func stats0Restore() {
+        if !baseStatsSnapshot.isEmpty { stats = baseStatsSnapshot }
+        if !baseTypesSnapshot.isEmpty { types = baseTypesSnapshot }
     }
 
     /// 다이맥스 해제 — HP 상한이 줄고 현재 HP 도 비율에 맞춰 줄어든다.
@@ -268,7 +321,10 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         dynamaxTurnsLeft = 0
         isGigantamaxed = false
         gmaxMove = nil
-        if !isMega { formLabel = nil }
+        if !isMega {
+            formLabel = nil
+            visualForm = nil      // 거다이맥스 스프라이트를 원래대로
+        }
         guard baseMaxHP > 0, maxHP != baseMaxHP else { return }
 
         // **쓰러진 개체는 절대 되살리지 않는다.**

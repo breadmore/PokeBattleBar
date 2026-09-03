@@ -120,11 +120,24 @@ struct BattleState: Codable, Sendable, Equatable {
     var gmaxDoT: [Int: GMaxDoT] = [:]
     /// 이번 턴 유턴 계열을 써서 물러나야 하는 진영
     var pendingPivot: Set<Int> = []
+    /// 이번 턴을 순서대로 재생하기 위한 스냅샷.
+    /// 결과만 보여주면 무슨 일이 있었는지 알 수 없어서, 단계별 HP·로그를 남긴다.
+    var steps: [TurnStep] = []
 
     func side(_ s: BattleSide) -> SideState { sides[s.rawValue] }
 }
 
 // MARK: - 행동
+
+/// 턴을 순서대로 재생하기 위한 한 단계.
+/// 로그와 그 시점의 HP·활성 인덱스를 담는다.
+struct TurnStep: Codable, Sendable, Equatable {
+    var log: [String]
+    var hostHP: [Int]
+    var guestHP: [Int]
+    var hostActive: Int
+    var guestActive: Int
+}
 
 /// G-Max 지속 피해 상태
 struct GMaxDoT: Codable, Sendable, Equatable {
@@ -171,6 +184,8 @@ struct BattleEngine {
     var zMoveCache: [String: MoveDef] = [:]
     /// 맥스 기술 정의 (거다이맥스 중 기술이 이걸로 바뀐다).
     var maxMoveCache: [String: MoveDef] = [:]
+    /// 폼 종족값 캐시 (캐스퐁·불비달마 자동 변신, 로토무 등 사전 선택 폼)
+    var formCache: [String: FormStats] = [:]
     /// 손가락흔들기가 부를 수 있는 기술 풀.
     /// 배틀 중엔 네트워크를 쓸 수 없으므로 미리 채워 넣는다.
     var metronomePool: [MoveDef] = []
@@ -182,6 +197,25 @@ struct BattleEngine {
     }
 
     private mutating func say(_ s: String) { state.log.append(s) }
+
+    /// 이번 턴이 시작될 때의 로그 길이. mark() 가 이 지점 이후만 잘라내야 한다.
+    /// 이걸 안 쓰고 steps 합계만 보면, 턴 시작에 steps 를 비운 뒤 첫 mark() 가
+    /// **배틀 전체 로그**를 한 단계에 담아버린다.
+    private var stepLogBase = 0
+
+    /// 지금까지 쌓인 로그를 한 단계로 끊어 기록한다.
+    /// UI 가 이 단계들을 순서대로 재생해서 "누가 먼저 때렸는지" 를 보여준다.
+    private mutating func mark() {
+        let already = stepLogBase + state.steps.reduce(0) { $0 + $1.log.count }
+        let newLines = Array(state.log.dropFirst(already))
+        guard !newLines.isEmpty else { return }
+        state.steps.append(TurnStep(
+            log: newLines,
+            hostHP: state.sides[0].team.map(\.currentHP),
+            guestHP: state.sides[1].team.map(\.currentHP),
+            hostActive: state.sides[0].activeIndex,
+            guestActive: state.sides[1].activeIndex))
+    }
 
     // MARK: 선봉 확정
 
@@ -354,6 +388,9 @@ struct BattleEngine {
         guard case .awaitingMoves = state.phase else { return }
 
         state.pendingPivot = []
+        // 재생용 스텝을 새로 쌓는다 (직전 턴 것은 UI 가 이미 소비했다)
+        state.steps = []
+        stepLogBase = state.log.count
 
         // 이번 턴 방어 상태를 초기화한다 (방어는 그 턴에만 유효하다)
         for side in [BattleSide.host, .guest] {
@@ -380,6 +417,8 @@ struct BattleEngine {
         zDeclared = []
         applySpecial(hostAction.special, for: .host)
         applySpecial(guestAction.special, for: .guest)
+        applyAutoForms()
+        mark()          // 변신을 별도 단계로 보여준다
 
         let order = turnOrder(hostAction: hostAction, guestAction: guestAction)
 
@@ -390,12 +429,14 @@ struct BattleEngine {
             let action = side == .host ? hostAction : guestAction
             if let idx = action.moveIndex {
                 performMove(attacker: side, moveIndex: idx)
+                mark()          // 한 쪽이 때린 직후를 한 단계로
             }
         }
 
         if case .finished = state.phase { return }
 
         endOfTurn()
+        mark()          // 턴 종료 처리(상태이상·날씨·열매) 를 한 단계로
 
         if case .finished = state.phase { return }
 
@@ -540,6 +581,43 @@ struct BattleEngine {
             }
         } else {
             state.phase = .awaitingReplacement(needs)
+        }
+    }
+
+    // MARK: 배틀 중 자동 폼 변신 (캐스퐁·불비달마·체리꼬·약어리)
+
+    /// 특성 조건에 맞춰 폼을 바꾼다. HP 는 건드리지 않고 타입·종족값만 바뀐다.
+    private mutating func applyAutoForms() {
+        guard state.rules.abilities else { return }
+        for side in [BattleSide.host, .guest] {
+            let idx = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(idx) else { continue }
+            var b = state.sides[side.rawValue].team[idx]
+            guard !b.isFainted,
+                  let ab = b.ability?.name,
+                  let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID) else { continue }
+
+            let weather = state.rules.weather && state.field.hasWeather ? state.field.weather : Weather.none
+            let ratio = Double(b.currentHP) / Double(max(1, b.maxHP))
+            var want: String?
+
+            switch rule {
+            case .byWeather(let map, let base):
+                want = map[weather] ?? base
+            case .inSun(let f, let base):
+                want = weather == .sun ? f : base
+            case .belowHP(let t, let f, let base):
+                want = ratio <= t ? f : base
+            case .aboveHP(let t, let f, let base):
+                want = ratio >= t ? f : base
+            }
+
+            guard let want, b.autoForm != want else { continue }
+            let stats = formCache[want]
+            guard stats != nil else { continue }   // 데이터가 없으면 바꾸지 않는다
+            b.applyAutoForm(want, stats: stats, nature: Nature.named(natureOf(b)))
+            state.sides[side.rawValue].team[idx] = b
+            say("\(b.name)는 \(FormChange.label(want)) 폼으로 변했다!")
         }
     }
 
@@ -2207,6 +2285,7 @@ struct BattleEngine {
         tryEatBerry(.host)
         tryEatBerry(.guest)
 
+        applyAutoForms()
         tickWeatherAndField()
         tickGMaxDoT()
         tickDynamax()
