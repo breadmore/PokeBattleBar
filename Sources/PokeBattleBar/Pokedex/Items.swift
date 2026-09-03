@@ -266,3 +266,12 @@ struct ItemReadiness: Sendable {
     var headline: String     // "메가진화 가능" / "거다이맥스 불가"
     var detail: String       // 이유 또는 부연
 }
+
+/// 로비 장비 경고
+struct LoadoutWarning: Identifiable, Sendable {
+    enum Severity: Sendable { case redundant, waste }
+    var id: String
+    var severity: Severity
+    var title: String
+    var detail: String
+}

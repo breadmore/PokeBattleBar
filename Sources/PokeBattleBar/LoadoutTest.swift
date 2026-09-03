@@ -103,7 +103,123 @@ enum LoadoutTest {
                               needle: "", "매직가드 — 독 지속피해 무효",
                               statusOnDefender: .poison, expectNoNeedle: "독 때문에") && ok
 
+        // MARK: 장비 경고 (배틀당 1회 슬롯이 겹치는지)
+        print("\n-- 장비 낭비 경고 --")
+        ok = await warningTests() && ok
+
         print(ok ? "\n✓ 전부 통과" : "\n✗ 실패 항목 있음")
+        return ok
+    }
+
+    private static func check(_ c: Bool, _ label: String, got: String = "") -> Bool {
+        print(c ? "  ✓ \(label)" : "  ✗ \(label)" + (got.isEmpty ? "" : " — 실제: \(got)"))
+        return c
+    }
+
+    /// 경고 계산은 @MainActor 의 AppModel 에 있으므로 그쪽에서 굴린다.
+    @MainActor
+    private static func warningTests() async -> Bool {
+        var ok = true
+        let m = AppModel()
+
+        // 로스터를 손으로 구성한다 (잠만보=거다이맥스O, 뮤=전용Z, 후딘=메가O, 꿀꺽몬=없음)
+        let ids = [143, 151, 65, 317]
+        var roster: [RosterSlot] = []
+        for (i, id) in ids.enumerated() {
+            guard let sp = try? await PokeAPI.shared.species(id) else { continue }
+            m.rosterSpecies[id] = sp
+            let slot = RosterSlot(id: "w\(i)", speciesID: id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+            roster.append(slot)
+            m.itemsForSpecies[id] = await ItemCatalog.shared.available(forSpecies: sp)
+            m.movesetsBySlot[slot.id] = await MovesetStore.shared.moveset(for: slot, species: sp)
+        }
+        m.roster = roster
+        m.selectedSlotIDs = Set(roster.map(\.id))
+        m.rules.maxTeamSize = 6
+
+        func setItem(_ slotIdx: Int, _ name: String?) {
+            m.loadouts[roster[slotIdx].id] = LoadoutStore.Loadout(item: name, ability: nil)
+        }
+        func titles() -> [String] { m.loadoutWarnings.map(\.title) }
+
+        // 1) 도구 없음 → 경고 없음
+        for i in roster.indices { setItem(i, nil) }
+        ok = check(m.loadoutWarnings.isEmpty, "도구가 없으면 경고 없음",
+                   got: "\(titles())") && ok
+
+        // 2) 다이맥스 도구 하나만 → 경고 없음
+        setItem(0, "max-mushrooms")            // 잠만보 = 거다이맥스
+        ok = check(m.loadoutWarnings.isEmpty, "다이맥스 도구 1개는 경고 없음",
+                   got: "\(titles())") && ok
+
+        // 3) 밴드 + 버섯 → 슬롯이 겹치므로 경고 (님이 지적한 상황)
+        setItem(1, "dynamax-band")             // 뮤 = 일반 다이맥스
+        let dynWarn = m.loadoutWarnings.contains { $0.id == "dynamax" }
+        ok = check(dynWarn, "다이맥스 밴드 + 다이버섯 → 경고", got: "\(titles())") && ok
+
+        // 4) 메가스톤 2개 → 경고. 단 자기 스톤이 아니면 슬롯 경쟁이 아니다
+        for i in roster.indices { setItem(i, nil) }
+        setItem(2, "alakazite")                // 후딘 = 자기 스톤 (작동)
+        ok = check(!m.loadoutWarnings.contains { $0.id == "mega" },
+                   "메가스톤 1개는 경고 없음", got: "\(titles())") && ok
+
+        // 5) 자격 없는 도구는 **애초에 목록에 나오지 않는다** (경고가 아니라 예방)
+        //    꿀꺽몬(거다이맥스 불가)에게 다이버섯, 메가 불가 종에게 메가스톤이 안 보여야 한다
+        // 이름 문자열로 판별하면 안 된다 — eviolite(진화의휘석) 처럼 "ite" 로 끝나는
+        // 일반 배틀 도구가 섞인다. 반드시 kind 로 본다.
+        let swalotItems = m.itemsForSpecies[317] ?? []
+        let swalotMega = swalotItems.filter { if case .megaStone = $0.kind { return true }; return false }
+        let swalotMush = swalotItems.filter { if case .maxMushroom = $0.kind { return true }; return false }
+        ok = check(swalotMush.isEmpty,
+                   "거다이맥스 불가 종에게는 다이버섯이 목록에 없다",
+                   got: "\(swalotMush.map(\.display))") && ok
+        ok = check(swalotMega.isEmpty,
+                   "메가 불가 종에게는 메가스톤이 목록에 없다",
+                   got: "\(swalotMega.map(\.display))") && ok
+
+        // 후딘은 자기 스톤만 보여야 한다
+        let alaMega = (m.itemsForSpecies[65] ?? []).compactMap { d -> String? in
+            if case .megaStone(let f) = d.kind { return f }
+            return nil
+        }
+        ok = check(alaMega == ["alakazam-mega"],
+                   "메가 가능 종은 자기 스톤만 보인다", got: "\(alaMega)") && ok
+
+        // 전용 Z크리스탈은 그 종에게만
+        let mewSig = (m.itemsForSpecies[151] ?? []).compactMap { d -> Int? in
+            if case .zCrystalSignature(let sid) = d.kind { return sid }
+            return nil
+        }
+        ok = check(mewSig == [151], "전용 Z크리스탈은 그 종에게만 보인다",
+                   got: "\(mewSig)") && ok
+
+        // 6) Z크리스탈은 모든 종에게 보이므로, 맞는 타입 공격기가 없으면 낭비 경고가 떠야 한다.
+        //    기술을 직접 지정해 확정적으로 만든다 (무작위 기술에 기대면 테스트가 흔들린다)
+        for i in roster.indices { setItem(i, nil) }
+        if let tackle = try? await PokeAPI.shared.move("tackle") {
+            m.movesetsBySlot[roster[0].id] = [tackle]      // 노말 기술만
+            setItem(0, "firium-z--held")                   // 불꽃Z → 맞는 기술 없음
+            let r = m.itemReadiness(for: roster[0])
+            ok = check(r?.ok == false, "불꽃 공격기가 없으면 불꽃Z 는 작동 불가",
+                       got: r?.headline ?? "nil") && ok
+            ok = check(m.loadoutWarnings.contains { $0.severity == .waste },
+                       "작동하지 않는 도구는 낭비 경고", got: "\(titles())") && ok
+
+            setItem(0, "normalium-z--held")                // 노말Z → 몸통박치기와 맞음
+            ok = check(m.itemReadiness(for: roster[0])?.ok == true,
+                       "노말 공격기가 있으면 노말Z 는 작동") && ok
+            ok = check(!m.loadoutWarnings.contains { $0.severity == .waste },
+                       "작동하는 도구는 낭비 경고 없음", got: "\(titles())") && ok
+        }
+
+        // 7) Z크리스탈 2개 → 경고
+        for i in roster.indices { setItem(i, nil) }
+        setItem(0, "snorlium-z--held")         // 잠만보 전용Z
+        setItem(1, "mewnium-z--held")          // 뮤 전용Z
+        ok = check(m.loadoutWarnings.contains { $0.id == "z" },
+                   "Z크리스탈 2개 → 경고", got: "\(titles())") && ok
+
         return ok
     }
 
