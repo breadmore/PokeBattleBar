@@ -18,6 +18,11 @@ enum TestAll {
                                    speciesB: [143, 130, 149, 94, 68, 131],
                                    level: 50, verbose: verbose)
             },
+            .init(flag: "--playbacktest", name: "턴 재생 연출", what: "결과 프레임 노출·로그 시점") {
+                await MainActor.run { () -> Task<Bool, Never> in
+                    Task { await PlaybackTest.run() }
+                }.value
+            },
             .init(flag: "--profiletest", name: "테스트 프로필", what: "두 인스턴스 격리·지정 팀 파싱") {
                 await TestProfileTest.run()
             },

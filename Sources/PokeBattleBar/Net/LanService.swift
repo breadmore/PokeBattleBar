@@ -69,7 +69,13 @@ final class RoomHost: @unchecked Sendable {
             )
             l.newConnectionHandler = { [weak self] conn in
                 guard let self else { conn.cancel(); return }
-                // 이미 게스트가 있으면 거절한다 (1:1 전용)
+                // 이미 게스트가 있으면 거절한다 (1:1 전용).
+                // 단 상대가 앱을 강제 종료해 TCP 만 남은 좀비 링크라면
+                // 붙잡고 있을 이유가 없다 — 그러면 방이 영구히 막힌다.
+                if let stale = self.guest, !stale.isAlive {
+                    self.setGuest(nil)
+                    stale.cancel()
+                }
                 if self.guest != nil {
                     let link = PeerLink(connection: conn)
                     // 거절 메시지가 플러시될 때까지 링크를 붙잡아 둔다
@@ -92,6 +98,11 @@ final class RoomHost: @unchecked Sendable {
                     onMessage: { [weak self] msg in self?.onGuestMessage?(msg) },
                     onState: { [weak self] st in
                         guard let self else { return }
+                        // **어느 링크의 상태인지 확인해야 한다.**
+                        // 지난 접속의 종료 콜백은 한참 뒤에 도착할 수 있고,
+                        // 그때 이미 새 게스트가 들어와 배틀을 시작했다면
+                        // 그 배틀을 끊어버린다 (양쪽이 무한 대기에 빠졌던 원인).
+                        guard self.isCurrentGuest(link) else { return }
                         switch st {
                         case .ready: self.onGuestConnected?(link)
                         case .failed, .cancelled:
@@ -139,6 +150,12 @@ final class RoomHost: @unchecked Sendable {
 
     private func setGuest(_ link: PeerLink?) {
         lock.lock(); _guest = link; lock.unlock()
+    }
+
+    /// 이 링크가 지금의 게스트인가 (지난 접속의 뒤늦은 콜백을 걸러낸다)
+    private func isCurrentGuest(_ link: PeerLink) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _guest === link
     }
 
     private func retainRejection(_ link: PeerLink) {

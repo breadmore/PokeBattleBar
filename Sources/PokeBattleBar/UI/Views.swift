@@ -134,18 +134,92 @@ struct RosterSection: View {
                 Text("PokeTokenBar 에 아직 포켓몬이 없습니다.")
                     .foregroundStyle(.secondary)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 12) {
-                        ForEach(model.roster) { slot in
-                            RosterCard(model: model, slot: slot)
-                        }
-                    }
-                }
+                RosterStrip(model: model)
                 if model.roster.count > model.rules.maxTeamSize {
                     Text("방 상한(\(model.rules.maxTeamSize)마리)보다 많이 가지고 있습니다 — 데려갈 포켓몬을 골라주세요.")
                         .font(.caption).foregroundStyle(.orange)
                 }
             }
+        }
+    }
+}
+
+/// 로스터를 좌우로 넘겨보는 띠.
+///
+/// 트랙패드 스와이프만으로는 마우스 사용자가 넘길 방법이 없고, 스크롤바를
+/// 숨겨두면 더 있다는 것도 알 수 없다. 그래서 세 가지를 다 준다:
+/// 항상 보이는 스크롤바, 좌우 버튼, 그리고 끌어서 넘기기.
+struct RosterStrip: View {
+    let model: AppModel
+
+    /// 카드 148 + 간격 12 — 한 칸 폭
+    private let stride: CGFloat = 160
+
+    @State private var firstVisible = 0
+    /// 드래그를 시작한 시점의 위치. 드래그 중에는 이 값을 기준으로 계산해야
+    /// 손을 떼지 않고 앞뒤로 움직일 때 위치가 튀지 않는다.
+    @State private var dragOrigin: Int?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 4) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 12) {
+                        ForEach(Array(model.roster.enumerated()), id: \.element.id) { i, slot in
+                            RosterCard(model: model, slot: slot).id(i)
+                        }
+                    }
+                    .padding(.bottom, 2)
+                }
+                .scrollIndicators(.visible)     // 하단 스크롤바를 항상 보여준다
+                .simultaneousGesture(
+                    // minimumDistance 를 두어 카드 안의 버튼 클릭을 삼키지 않게 한다
+                    DragGesture(minimumDistance: 10)
+                        .onChanged { v in
+                            if dragOrigin == nil { dragOrigin = firstVisible }
+                            guard let origin = dragOrigin else { return }
+                            let steps = Int((-v.translation.width / stride).rounded())
+                            go(to: origin + steps, proxy: proxy, animated: false)
+                        }
+                        .onEnded { _ in dragOrigin = nil }
+                )
+
+                if model.roster.count > 1 {
+                    HStack(spacing: 6) {
+                        Button {
+                            go(to: firstVisible - 2, proxy: proxy, animated: true)
+                        } label: { Image(systemName: "chevron.left") }
+                            .disabled(firstVisible <= 0)
+                            .help("왼쪽으로")
+                        Button {
+                            go(to: firstVisible + 2, proxy: proxy, animated: true)
+                        } label: { Image(systemName: "chevron.right") }
+                            .disabled(firstVisible >= lastIndex)
+                            .help("오른쪽으로")
+                        Text("끌어서 넘기거나 좌우로 스크롤할 수 있습니다")
+                            .font(.caption2).foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(firstVisible + 1) / \(model.roster.count)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+            }
+        }
+    }
+
+    private var lastIndex: Int { max(0, model.roster.count - 1) }
+
+    private func go(to index: Int, proxy: ScrollViewProxy, animated: Bool) {
+        let target = min(max(0, index), lastIndex)
+        guard target != firstVisible else { return }
+        firstVisible = target
+        if animated {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(target, anchor: .leading) }
+        } else {
+            proxy.scrollTo(target, anchor: .leading)
         }
     }
 }
