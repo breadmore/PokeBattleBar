@@ -45,8 +45,27 @@ SELF="${BASH_SOURCE[0]}"
 [ -f "$SELF" ] || SELF="$0"
 
 clear 2>/dev/null || true
-say "${BLD}PokeBattleBar 설치${RST}"
+
+# 이미 깔려 있으면 업데이트, 없으면 새로 설치. 같은 파일로 둘 다 된다.
+INSTALLED_V=""
+if [ -d "/Applications/PokeBattleBar.app" ]; then
+  INSTALLED_V=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+                "/Applications/PokeBattleBar.app/Contents/Info.plist" 2>/dev/null || echo "?")
+fi
+if [ -n "$INSTALLED_V" ]; then
+  MODE="업데이트"
+else
+  MODE="설치"
+fi
+
+say "${BLD}PokeBattleBar ${MODE}${RST}"
 say "────────────────────────────────────"
+if [ -n "$INSTALLED_V" ]; then
+  say "이미 v${INSTALLED_V} 가 깔려 있습니다 — 덮어씁니다."
+  say "${BLD}전적·포인트·기술/도구 설정은 그대로 유지됩니다.${RST}"
+else
+  say "처음 설치합니다."
+fi
 say ""
 
 # --- macOS 버전 확인 ---
@@ -90,12 +109,8 @@ if pgrep -f "PokeBattleBar.app/Contents/MacOS/PokeBattleBar" >/dev/null 2>&1; th
   ok "기존 앱 종료"
 fi
 
-# --- 기존 버전 확인 ---
-OLDV=""
-if [ -d "/Applications/PokeBattleBar.app" ]; then
-  OLDV=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-         "/Applications/PokeBattleBar.app/Contents/Info.plist" 2>/dev/null || echo "?")
-fi
+# --- 기존 버전 (머리말에서 이미 확인했다) ---
+OLDV="$INSTALLED_V"
 
 # --- 압축 해제 ---
 say ""
@@ -146,16 +161,27 @@ open "/Applications/PokeBattleBar.app" 2>/dev/null && ok "실행했습니다" \
 
 say ""
 say "────────────────────────────────────"
-say "${BLD}${GRN}설치가 끝났습니다.${RST}"
+if [ -n "$OLDV" ]; then
+  say "${BLD}${GRN}업데이트가 끝났습니다. (v${OLDV} → v${NEWV})${RST}"
+  say ""
+  say "${BLD}동료들도 같이 업데이트해야 합니다.${RST}"
+  say "  통신 규약이 버전마다 달라서, 한쪽만 새 버전이면 방 목록에"
+  say "  \"버전 불일치\" 로 뜨고 배틀할 수 없습니다."
+else
+  say "${BLD}${GRN}설치가 끝났습니다. (v${NEWV})${RST}"
+fi
 say ""
-say "${BLD}처음 실행할 때 꼭 해야 할 것${RST}"
-say "  \"로컬 네트워크 접근을 허용하시겠습니까?\" 가 뜨면 ${BLD}반드시 허용${RST}을 눌러주세요."
-say "  거부하면 같은 네트워크의 방을 찾지 못합니다."
-say "  실수로 거부했으면: 시스템 설정 > 개인정보 보호 및 보안 > 로컬 네트워크"
-say ""
+if [ -z "$OLDV" ]; then
+  say "${BLD}처음 실행할 때 꼭 해야 할 것${RST}"
+  say "  \"로컬 네트워크 접근을 허용하시겠습니까?\" 가 뜨면 ${BLD}반드시 허용${RST}을 눌러주세요."
+  say "  거부하면 같은 네트워크의 방을 찾지 못합니다."
+  say "  실수로 거부했으면: 시스템 설정 > 개인정보 보호 및 보안 > 로컬 네트워크"
+  say ""
+fi
 say "${BLD}배틀하는 방법${RST}"
 say "  1) 상단 메뉴바의 ${BLD}몬스터볼 아이콘${RST}으로 언제든 열 수 있습니다."
-say "  2) ${BLD}로비${RST}에 앱을 켜놓은 동료가 보입니다 — ${BLD}초대${RST}를 누르면 바로 부를 수 있습니다."
+say "  2) ${BLD}로비${RST}에 앱을 켜놓은 동료가 보입니다."
+say "     ${BLD}방을 연 뒤에${RST} 그 목록에서 ${BLD}초대${RST}를 누르면 바로 부를 수 있습니다."
 say "  3) 초대를 받으면 창이 닫혀 있어도 메뉴바에 숫자가 붙습니다."
 say "  4) 누가 방을 열면 ${BLD}새 방!${RST} 알림이 뜹니다."
 say "  ※ 양쪽 앱 버전이 같아야 합니다. 다르면 목록에 \"버전 불일치\" 로 표시됩니다."

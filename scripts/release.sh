@@ -43,6 +43,14 @@ if ! "$BIN" --testall --battles 60 2>/dev/null | sed -n '/^요약/,$p'; then
   exit 1
 fi
 
+# 업데이트가 사용자 데이터를 건드리지 않는지 확인한다.
+# **반드시 테스트 프로필 파일로만** 한다 — 실제 record.json / loadouts.json 에
+# 검증용 값을 쓰면 사용자가 설정한 내용을 지워버린다 (한 번 그랬다).
+SUP="$HOME/Library/Application Support/PokeBattleBar"
+GUARD="$SUP/loadouts-test-releasecheck.json"
+mkdir -p "$SUP"
+echo '{"guard":{"item":"life-orb","ability":"cursed-body","form":null}}' > "$GUARD"
+
 echo "==> 번들"
 VERSION="$VERSION" ./scripts/bundle.sh >/dev/null
 
@@ -109,6 +117,14 @@ sha256 (zip): $SHA
 NOTES
 
 echo
+if [ -f "$GUARD" ] && grep -q '"guard"' "$GUARD"; then
+    echo "==> 사용자 데이터 보존 확인 (테스트 프로필 파일)"
+    rm -f "$GUARD"
+else
+    echo "==> 경고: 사용자 데이터가 유지되지 않았습니다" >&2
+    exit 1
+fi
+
 echo "==> 완료"
 echo "   ${BLD:-}설치 파일 : $VINST  ($(du -h "$VINST" | cut -f1))${RST:-}"
 echo "               ↑ 동료에게 이것만 보내면 됩니다"
