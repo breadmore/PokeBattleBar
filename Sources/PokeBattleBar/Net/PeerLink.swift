@@ -15,6 +15,16 @@ final class PeerLink: @unchecked Sendable {
 
     var endpointDescription: String { "\(connection.endpoint)" }
 
+    /// 아직 살아 있는 연결인가.
+    /// 좀비 링크(상대가 앱을 강제 종료했는데 TCP 가 아직 안 끊긴 상태)를
+    /// 붙잡고 있으면 방이 영구히 막히므로 판별할 수단이 필요하다.
+    var isAlive: Bool {
+        switch connection.state {
+        case .failed, .cancelled: return false
+        default: return true
+        }
+    }
+
     init(connection: NWConnection) {
         self.connection = connection
     }

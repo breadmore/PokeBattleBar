@@ -90,6 +90,43 @@ final class AppModel {
     private let stepDuration: Duration = .milliseconds(850)
 
     /// 엔진이 넘겨준 단계들을 순서대로 재생한다.
+    /// 새 상태를 화면에 올린다. **모든 상태 갱신은 이 함수를 지나야 한다.**
+    ///
+    /// `battle` 을 먼저 대입해 버리면 재생 오버라이드가 아직 없는 한 프레임 동안
+    /// **턴이 다 끝난 상태**가 그려진다. 그 프레임에서 양쪽 HP 가 한꺼번에
+    /// 떨어지므로, 둘 다 맞는 연출이 한 번 나온 뒤에 되감아 재생되는 것처럼
+    /// 보인다. 그래서 대입과 **같은 프레임에** 턴 시작 시점으로 고정한다.
+    ///
+    /// 턴 시작 시점은 따로 저장할 필요가 없다 — 지금 화면에 그려져 있는 값이
+    /// 곧 그것이다.
+    /// (테스트에서 직접 호출한다 — private 이 아니다)
+    func present(_ st: BattleState) {
+        guard !st.steps.isEmpty else {
+            // 재생 중이던 것이 있으면 멈추고 오버라이드를 걷는다.
+            // 그대로 두면 화면이 지난 턴 값에 얼어붙고, 뒤늦게 끝난 재생이
+            // **지난 상태의** 단계 UI 를 열어버린다.
+            playbackTask?.cancel()
+            playbackTask = nil
+            clearPlayback()
+            battle = st
+            applyPhaseToUI(st)
+            return
+        }
+
+        let beforeHostHP = displayTeam(.host).map(\.currentHP)
+        let beforeGuestHP = displayTeam(.guest).map(\.currentHP)
+        let beforeHostActive = displayActiveIndex(.host)
+        let beforeGuestActive = displayActiveIndex(.guest)
+
+        battle = st
+        if !beforeHostHP.isEmpty { playbackHostHP = beforeHostHP }
+        if !beforeGuestHP.isEmpty { playbackGuestHP = beforeGuestHP }
+        playbackHostActive = beforeHostActive
+        playbackGuestActive = beforeGuestActive
+
+        playback(st)
+    }
+
     private func playback(_ st: BattleState) {
         playbackTask?.cancel()
         guard !st.steps.isEmpty else {
@@ -747,8 +784,10 @@ final class AppModel {
                     self.errorMessage = "상대가 연결을 끊었습니다."
                 }
                 self.opponentName = ""
-                self.battle = nil
-                self.engine = nil
+                // 중단된 배틀의 잔재를 전부 비운다.
+                // 남겨두면 상대가 다시 들어왔을 때 지난 배틀의 선택이
+                // 새 배틀에 섞여 양쪽이 서로를 기다리며 멈춘다.
+                self.clearBattleRemnants()
                 self.screen = .hostingRoom
                 self.status = "상대를 기다리는 중…"
             }
@@ -766,6 +805,8 @@ final class AppModel {
     private func hostHandle(_ msg: Wire) {
         switch msg {
         case .join(let name, let team):
+            // 재접속일 수 있다 — 지난 배틀의 잔재를 먼저 비운다
+            clearBattleRemnants()
             guard !team.isEmpty else {
                 host.send(.joinRejected(reason: "상대 팀이 비어 있습니다"))
                 return
@@ -798,7 +839,7 @@ final class AppModel {
             var e = BattleEngine(state: st, chart: chart, seed: UInt64.random(in: 1...UInt64.max))
             installCaches(into: &e)
             engine = e
-            battle = e.state
+            present(e.state)
             // 상대 팀의 메가/거다이맥스 폼도 필요하다 — 받아서 엔진에 다시 심는다
             Task { @MainActor in
                 await self.preloadForms(for: guestTeam)
@@ -962,12 +1003,7 @@ final class AppModel {
             resetToLobby()
 
         case .battleBegan(let st), .stateChanged(let st):
-            battle = st
-            if st.steps.isEmpty {
-                applyPhaseToUI(st)
-            } else {
-                playback(st)          // 순서대로 재생한 뒤에 UI 를 연다
-            }
+            present(st)               // 순서대로 재생한 뒤에 UI 를 연다
 
         case .chat(let from, let text):
             receiveChat(from: from, text: text)
@@ -1010,10 +1046,9 @@ final class AppModel {
         e.setLead(.guest, index: g)
         e.beginBattle()
         engine = e
-        battle = e.state
         host.send(.battleBegan(state: e.state))
         waitingForOpponent = false
-        applyPhaseToUI(e.state)
+        present(e.state)
         if rules.autoMove {
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(700))
@@ -1192,10 +1227,9 @@ final class AppModel {
         guard role == .host, var e = engine else { return }
         e.applyPivot(side, teamIndex: idx)
         engine = e
-        battle = e.state
         host.send(.stateChanged(state: e.state))
         waitingForOpponent = false
-        applyPhaseToUI(e.state)
+        present(e.state)
     }
 
     /// 유턴으로 물러날 때 내가 골라야 하는가
@@ -1210,20 +1244,18 @@ final class AppModel {
         hostPending = nil; guestPending = nil
         e.resolveTurn(hostAction: h, guestAction: g)
         engine = e
-        battle = e.state
         host.send(.stateChanged(state: e.state))
         waitingForOpponent = false
-        if e.state.steps.isEmpty { applyPhaseToUI(e.state) } else { playback(e.state) }
+        present(e.state)
     }
 
     private func applyReplacement(_ side: BattleSide, _ idx: Int) {
         guard role == .host, var e = engine else { return }
         e.applyReplacement(side, teamIndex: idx)
         engine = e
-        battle = e.state
         host.send(.stateChanged(state: e.state))
         waitingForOpponent = false
-        applyPhaseToUI(e.state)
+        present(e.state)
     }
 
     /// 자유의지 모드에서는 호스트가 양쪽 행동을 굴려 스스로 턴을 넘긴다.
@@ -1253,18 +1285,15 @@ final class AppModel {
             return
         }
         engine = e
-        battle = e.state
         host.send(.stateChanged(state: e.state))
-        if e.state.steps.isEmpty {
-            applyPhaseToUI(e.state)
-            if case .finished = e.state.phase { return }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                self.advanceAutoIfNeeded()
-            }
-        } else {
-            // 재생이 끝나면 playback 이 다음 턴을 이어서 돌린다
-            playback(e.state)
+        let hadSteps = !e.state.steps.isEmpty
+        present(e.state)
+        // 재생이 있으면 playback 이 끝난 뒤에 다음 턴을 이어서 돌린다
+        guard !hadSteps else { return }
+        if case .finished = e.state.phase { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            self.advanceAutoIfNeeded()
         }
     }
 
@@ -1359,6 +1388,26 @@ final class AppModel {
             self.lastPointsGained = gained
             self.record = await RecordStore.shared.record
         }
+    }
+
+    /// 중단된 배틀의 잔재를 비운다 (방은 유지한다).
+    ///
+    /// `resetToLobby` 와 달리 리스너와 역할은 그대로 둔다 — 상대가 나갔을 때
+    /// 방을 닫아버리면 다시 들어올 수가 없다. 대신 진행 중이던 배틀 상태는
+    /// 하나도 남기지 않아야 한다: 지난 턴의 선택이나 선봉이 남아 있으면
+    /// 새 배틀에서 양쪽이 서로를 기다리며 멈춘다.
+    private func clearBattleRemnants() {
+        playbackTask?.cancel()
+        playbackTask = nil
+        clearPlayback()
+        engine = nil
+        battle = nil
+        hostPending = nil; guestPending = nil
+        hostLead = nil; guestLead = nil
+        chosenLead = nil
+        pendingSpecial = nil
+        waitingForOpponent = false
+        lastPointsGained = nil
     }
 
     func resetToLobby() {
