@@ -928,8 +928,13 @@ struct LoadoutPickers: View {
     let model: AppModel
     let slot: RosterSlot
 
-    @State private var showItems = false
-    @State private var showAbilities = false
+    /// 열려 있는 창. **`.sheet` 를 여러 개 달면 마지막 것만 동작한다** —
+    /// 그래서 도구 창이 아예 열리지 않았다. 하나로 합쳐서 무엇을 열지 값으로 정한다.
+    private enum Which: String, Identifiable {
+        case items, abilities
+        var id: String { rawValue }
+    }
+    @State private var open: Which?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -939,7 +944,7 @@ struct LoadoutPickers: View {
             let recAbils = model.recommendedAbilityNames(for: slot)
 
             // 도구 — 아이콘과 이름을 함께. 누르면 설명이 있는 목록이 열린다.
-            Button { showItems = true } label: {
+            Button { open = .items } label: {
                 HStack(spacing: 5) {
                     if let e = equipped {
                         ItemIcon(item: e, size: 16)
@@ -989,7 +994,7 @@ struct LoadoutPickers: View {
             }
 
             // 특성
-            Button { showAbilities = true } label: {
+            Button { open = .abilities } label: {
                 HStack(spacing: 3) {
                     Text("✨").font(.system(size: 8))
                     Text(curAbil?.display ?? "특성 없음")
@@ -1018,11 +1023,11 @@ struct LoadoutPickers: View {
             }
 
         }
-        .sheet(isPresented: $showItems) {
-            ItemPickerSheet(model: model, slot: slot)
-        }
-        .sheet(isPresented: $showAbilities) {
-            AbilityPickerSheet(model: model, slot: slot)
+        .sheet(item: $open) { which in
+            switch which {
+            case .items:     ItemPickerSheet(model: model, slot: slot)
+            case .abilities: AbilityPickerSheet(model: model, slot: slot)
+            }
         }
     }
 }
