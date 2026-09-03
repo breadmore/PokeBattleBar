@@ -44,6 +44,9 @@ enum TestAll {
             .init(flag: "--bugsweep", name: "불변식 스윕", what: "무작위 배틀 \(battles)회, 매 턴 규칙 검사") {
                 await BugSweep.run(battles: battles, verbose: verbose)
             },
+            .init(flag: "--modetest", name: "게임 모드", what: "토게피 손가락흔들기·자유의지·랜덤기술·자동변신") {
+                await ModeTest.run()
+            },
             .init(flag: "--nettest", name: "네트워크", what: "Bonjour·프레이밍·직렬화·버전") {
                 await NetTest.run()
             },

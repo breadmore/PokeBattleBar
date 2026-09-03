@@ -109,15 +109,21 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         guard canMega else { return false }
         return requiringItem ? megaFormFromItem != nil : true
     }
+    /// 다이맥스 밴드 → **일반 다이맥스만.**
+    ///
+    /// 원작에서 다이맥스 밴드는 트레이너의 열쇠 아이템이고 다이버섯은 거다이맥스 인자를
+    /// 여는 요리 재료다 — 둘 다 원래는 지닌 도구가 아니다.
+    /// 이 게임은 도구 슬롯 하나로 자격을 관리하므로 각자 역할을 하나씩 맡긴다.
+    /// (예전에는 밴드가 거다이맥스까지 허용해서 다이버섯을 끼울 이유가 없었다)
     func canDynamax(requiringItem: Bool) -> Bool {
         guard canDynamax else { return false }
         return requiringItem ? hasDynamaxBand : true
     }
+
+    /// 다이버섯 → **거다이맥스만.** 전용 폼이 있는 종에게만 의미가 있다.
     func canGigantamax(requiringItem: Bool) -> Bool {
         guard canGigantamax else { return false }
-        // 원작: 거다이맥스는 다이맥스 밴드 + 거다이맥스 인자(다이버섯) 가 필요하다.
-        // 도구 슬롯이 하나뿐이므로 다이버섯 하나로 둘을 갈음한다.
-        return requiringItem ? (hasMaxMushroom || hasDynamaxBand) : true
+        return requiringItem ? hasMaxMushroom : true
     }
     func canZMove(requiringItem: Bool) -> Bool {
         guard canZMove else { return false }

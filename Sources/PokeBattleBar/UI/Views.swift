@@ -97,6 +97,10 @@ struct RosterSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if model.rules.metronomeMode {
+                Text("토게피 손가락흔들기 모드 — 아래 로스터는 사용되지 않습니다")
+                    .font(.caption.bold()).foregroundStyle(.orange)
+            }
             HStack {
                 Text("내 포켓몬 \(model.roster.count)마리").font(.headline)
                 Spacer()
@@ -176,7 +180,7 @@ struct RosterCard: View {
             LoadoutPickers(model: model, slot: slot)
         }
         .padding(8)
-        .frame(width: 136)
+        .frame(width: 148)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(selected ? Color.accentColor.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
@@ -201,7 +205,8 @@ struct LoadoutPickers: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            // 지닌 도구
+            // 지닌 도구 — 착용 여부가 한눈에 보이게
+            let equipped = model.currentItem(for: slot)
             Menu {
                 Button("없음") { Task { await model.setItem(nil, for: slot) } }
                 ForEach(groupedItems(), id: \.0) { group, list in
@@ -212,15 +217,46 @@ struct LoadoutPickers: View {
                     }
                 }
             } label: {
-                HStack(spacing: 2) {
-                    Text("🎒").font(.system(size: 8))
-                    Text(model.currentItem(for: slot)?.display ?? "도구 없음")
-                        .font(.system(size: 9)).lineLimit(1)
+                HStack(spacing: 3) {
+                    Text(equipped == nil ? "🎒" : "✅").font(.system(size: 8))
+                    Text(equipped?.display ?? "도구 없음")
+                        .font(.system(size: 9, weight: equipped == nil ? .regular : .bold))
+                        .lineLimit(1)
                 }
+                .padding(.horizontal, 4).padding(.vertical, 2)
+                .frame(width: 112, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 4)
+                    .fill(equipped == nil ? Color.clear : Color.accentColor.opacity(0.18)))
             }
             .menuStyle(.borderlessButton)
-            .frame(width: 108, alignment: .leading)
-            .help(model.currentItem(for: slot)?.shortEffect ?? "지닌 도구를 고릅니다")
+            .help(equipped?.shortEffect ?? "지닌 도구를 고릅니다")
+
+            // 끼운 도구가 이 개체에게 실제로 작동하는지
+            if let r = model.itemReadiness(for: slot) {
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 2) {
+                        Text(r.ok ? "✓" : "✗")
+                            .font(.system(size: 9, weight: .black))
+                        Text(r.headline)
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(r.ok ? Color.green : Color.red)
+                    Text(r.detail)
+                        .font(.system(size: 8))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(width: 112, alignment: .leading)
+
+                let shared = model.slotsSharingItem(slot)
+                if !shared.isEmpty {
+                    Text("중복: \(shared.joined(separator: ", "))")
+                        .font(.system(size: 8)).foregroundStyle(.orange)
+                        .frame(width: 112, alignment: .leading)
+                        .lineLimit(1)
+                }
+            }
 
             // 특성
             Menu {
@@ -331,6 +367,33 @@ struct HostSection: View {
             Text("메가스톤·Z크리스탈·다이맥스밴드를 끼워야 변신할 수 있습니다.")
                 .font(.system(size: 9)).foregroundStyle(.secondary)
 
+            Divider()
+            Text("게임 모드").font(.caption.bold()).foregroundStyle(.secondary)
+
+            Toggle("랜덤 기술", isOn: $model.rules.randomMoveset)
+                .disabled(model.rules.metronomeMode)
+            Text("배틀마다 배울 수 있는 기술에서 4개를 새로 뽑습니다.")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+
+            Toggle("자유의지", isOn: $model.rules.autoMove)
+                .disabled(model.rules.metronomeMode)
+            Text("플레이어가 고르지 않고 포켓몬이 4개 중 무작위로 씁니다.")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+
+            Toggle("변신 자동 선언", isOn: $model.rules.autoSpecial)
+                .disabled(model.rules.metronomeMode)
+            Text("도구를 끼웠다면 메가진화·다이맥스·Z기술이 무작위 시점에 발동합니다.")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+
+            Divider()
+            Toggle(isOn: $model.rules.metronomeMode) {
+                Text("토게피 손가락흔들기 1:1").fontWeight(.bold)
+            }
+            Text("양쪽 모두 토게피 1마리(보유 무관), 손가락흔들기 하나, PP 최대치, "
+                 + "생명의구슬 장착. 다른 설정은 무시됩니다.")
+                .font(.system(size: 9)).foregroundStyle(.orange)
+
+            Divider()
             Button("방 열기") { Task { await model.startHosting() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(model.roster.isEmpty)
@@ -365,6 +428,12 @@ struct JoinSection: View {
                             Text(room.name).font(.callout.bold())
                             Text("\(room.hostName) · 최대 \(room.teamCap)마리 · Lv.\(room.level)")
                                 .font(.caption2).foregroundStyle(.secondary)
+                            if room.mode != "일반" {
+                                Text(room.mode)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 4).padding(.vertical, 1)
+                                    .background(Capsule().fill(.orange.opacity(0.25)))
+                            }
                         }
                         Spacer()
                         if let note = room.versionNote {
@@ -510,6 +579,10 @@ struct BattleView: View {
         VStack(spacing: 8) {
             HStack {
                 Text("턴 \(turn)").font(.caption.bold()).foregroundStyle(.secondary)
+                Text(model.modeSummary)
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(.orange.opacity(0.25)))
                 Spacer()
                 Button("나가기") { model.leaveEverything() }.controlSize(.small)
             }
@@ -543,7 +616,9 @@ struct BattleView: View {
         if let b = model.battle {
             switch b.phase {
             case .awaitingMoves:
-                if model.waitingForOpponent {
+                if model.rules.autoMove {
+                    autoRunning
+                } else if model.waitingForOpponent {
                     waiting
                 } else {
                     VStack(spacing: 0) {
@@ -565,6 +640,21 @@ struct BattleView: View {
                 waiting
             }
         }
+    }
+
+    /// 자유의지 모드 진행 표시
+    private var autoRunning: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("자유의지 — 포켓몬이 스스로 싸웁니다")
+                    .font(.callout.bold()).foregroundStyle(.orange)
+            }
+            Text("기술은 보유한 4개 중 무작위로 선택됩니다"
+                 + (model.rules.autoSpecial ? " · 변신도 자동 발동" : ""))
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(height: 120)
     }
 
     private var waiting: some View {
@@ -602,8 +692,8 @@ struct ActiveBattlerView: View {
             }
             HStack(spacing: 4) {
                 if let it = b.heldItem {
-                    Text("🎒 \(it.display)")
-                        .font(.system(size: 9))
+                    Text("\(b.itemConsumed ? "🎒" : "✅") \(it.display)")
+                        .font(.system(size: 9, weight: b.itemConsumed ? .regular : .semibold))
                         .strikethrough(b.itemConsumed)
                         .foregroundStyle(b.itemConsumed ? .secondary : .primary)
                 }

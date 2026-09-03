@@ -2,6 +2,14 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--modetest") {
+    Task {
+        let passed = await ModeTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--testall") {
     func intVal(_ flag: String, default def: Int) -> Int {
         guard let i = args.firstIndex(of: flag), i + 1 < args.count, let v = Int(args[i + 1]) else { return def }

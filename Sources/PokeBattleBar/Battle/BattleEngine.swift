@@ -50,6 +50,19 @@ struct BattleRules: Codable, Hashable, Sendable {
     /// 켜면 조임·스텔스록 같은 효과가 교체에도 그대로 작동한다.
     var allowSwitching: Bool = false
 
+    // MARK: 게임 모드 (각각 독립 토글 — 조합해서 쓸 수 있다)
+
+    /// 랜덤 기술 모드 — 저장된 기술 대신 **배틀마다 새로 뽑은** 기술 4개로 싸운다.
+    var randomMoveset: Bool = false
+    /// 자유의지 모드 — 플레이어가 고르지 않고 보유한 4개 중 무작위로 쓴다.
+    var autoMove: Bool = false
+    /// 변신 자동 선언 — 도구를 끼웠다면 메가진화·다이맥스·Z기술을 무작위 시점에 발동한다.
+    var autoSpecial: Bool = false
+    /// 토게피 손가락흔들기 1:1 모드.
+    /// 양쪽 모두 토게피 1마리(보유 여부 무관), 기술은 손가락흔들기 하나, PP 최대치,
+    /// 생명의구슬 장착. 다른 팀 설정은 무시된다.
+    var metronomeMode: Bool = false
+
     static let `default` = BattleRules()
 }
 
@@ -154,6 +167,9 @@ struct BattleEngine {
     var zMoveCache: [String: MoveDef] = [:]
     /// 맥스 기술 정의 (거다이맥스 중 기술이 이걸로 바뀐다).
     var maxMoveCache: [String: MoveDef] = [:]
+    /// 손가락흔들기가 부를 수 있는 기술 풀.
+    /// 배틀 중엔 네트워크를 쓸 수 없으므로 미리 채워 넣는다.
+    var metronomePool: [MoveDef] = []
 
     init(state: BattleState, chart: TypeChart, seed: UInt64) {
         self.state = state
@@ -387,6 +403,55 @@ struct BattleEngine {
         }
     }
 
+    // MARK: 자동 행동 (자유의지 / 변신 자동 선언)
+
+    /// 자유의지 모드에서 그 진영의 행동을 무작위로 정한다.
+    /// 호스트가 양쪽을 모두 굴려야 결과가 갈리지 않는다.
+    mutating func autoAction(for side: BattleSide) -> BattleAction {
+        let me = state.side(side)
+        let b = me.active
+
+        var special: SpecialAction?
+        if state.rules.autoSpecial {
+            var pool: [SpecialAction] = []
+            if state.rules.allowMega, !me.usedMega,
+               b.canMega(requiringItem: state.rules.requireItems) {
+                let form = state.rules.requireItems ? b.megaFormFromItem : b.megaForms.first
+                if let form { pool.append(.mega(form: form)) }
+            }
+            if state.rules.allowDynamax, !me.usedDynamax {
+                if state.rules.allowGigantamax,
+                   b.canGigantamax(requiringItem: state.rules.requireItems) {
+                    pool.append(.gmax)
+                }
+                if b.canDynamax(requiringItem: state.rules.requireItems) {
+                    pool.append(.dynamax)
+                }
+            }
+            if state.rules.allowZMove, !me.usedZMove,
+               b.canZMove(requiringItem: state.rules.requireItems) {
+                pool.append(.zMove)
+            }
+            // 매 턴 확정 발동하면 첫 턴에 다 써버린다 — 무작위 시점에 터지게 한다
+            if !pool.isEmpty, rng.chance(35) {
+                special = pool.randomElement(using: &rng)
+            }
+        }
+
+        // 구애로 고정됐으면 그 기술만 쓸 수 있다
+        if let lock = b.lockedMoveIndex, b.moves.indices.contains(lock), b.moves[lock].usable {
+            return .useMove(index: lock, special: special)
+        }
+        let usable = b.moves.indices.filter { b.moves[$0].usable }
+        let idx = usable.randomElement(using: &rng) ?? 0
+        return .useMove(index: idx, special: special)
+    }
+
+    /// 자유의지 모드에서 쓰러진 자리에 낼 포켓몬을 무작위로 정한다.
+    mutating func autoReplacement(for side: BattleSide) -> Int? {
+        state.side(side).aliveIndices.randomElement(using: &rng)
+    }
+
     // MARK: 행동 순서
 
     private mutating func turnOrder(hostAction: BattleAction, guestAction: BattleAction) -> [BattleSide] {
@@ -486,7 +551,9 @@ struct BattleEngine {
 
         case .dynamax:
             guard b.canDynamax(requiringItem: state.rules.requireItems) else {
-                if state.rules.requireItems { say("[안내] \(b.name)는 다이맥스 밴드를 지니고 있지 않습니다.") }
+                if state.rules.requireItems {
+                    say("[안내] \(b.name)는 다이맥스 밴드를 지니고 있지 않습니다. (일반 다이맥스 전용 도구)")
+                }
                 return
             }
             b.applyDynamax(form: nil, gigantamax: false,
@@ -498,7 +565,7 @@ struct BattleEngine {
         case .gmax:
             guard b.canGigantamax(requiringItem: state.rules.requireItems) else {
                 if state.rules.requireItems, b.canGigantamax {
-                    say("[안내] \(b.name)는 다이버섯(또는 다이맥스 밴드) 을 지니고 있지 않습니다.")
+                    say("[안내] \(b.name)는 다이버섯을 지니고 있지 않습니다. (거다이맥스 전용 도구)")
                 }
                 return
             }
@@ -584,8 +651,19 @@ struct BattleEngine {
         }
 
         atk.moves[moveIndex].ppLeft -= 1
-        let baseMove = atk.moves[moveIndex].def
+        var baseMove = atk.moves[moveIndex].def
         state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
+
+        // 손가락흔들기 — 무작위 기술을 부른다.
+        // PokeAPI 는 "무작위 기술" 이라는 효과를 구조화해 주지 않으므로 직접 구현한다.
+        if baseMove.name == "metronome" {
+            guard let picked = metronomePool.randomElement(using: &rng) else {
+                say("\(atkName)의 \(baseMove.display)! …하지만 아무 기술도 나오지 않았다!")
+                return
+            }
+            say("\(atkName)의 \(baseMove.display)!")
+            baseMove = picked
+        }
 
         // Z기술 / 맥스기술 변환. 위력은 PokeAPI 가 주지 않으므로 원작 변환표를 쓴다.
         let move = transformed(baseMove, attacker: attacker)
