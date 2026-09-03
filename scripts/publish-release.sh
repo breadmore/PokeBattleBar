@@ -33,8 +33,15 @@ echo "==> 릴리스 올리기 (v$VERSION, 프로토콜 v$PROTO)"
 NOTES=$(cat <<EOF
 ## 설치 / 업데이트
 
-**\`PokeBattleBar-${VERSION}-Install.command\` 를 받아서** 터미널에 \`bash\` 를 치고
-공백 한 칸 뒤에 파일을 끌어다 놓고 엔터를 누르세요.
+터미널에 이 두 줄을 붙여넣으면 끝입니다.
+
+\`\`\`bash
+cd ~/Downloads && curl -LO https://github.com/${REPO}/releases/latest/download/PokeBattleBar-Install.command
+bash ~/Downloads/PokeBattleBar-Install.command
+\`\`\`
+
+또는 아래 **\`PokeBattleBar-Install.command\`** 를 받아서, 터미널에 \`bash\` 를 치고
+공백 한 칸 뒤에 그 파일을 끌어다 놓고 엔터를 누르세요.
 
 - 처음이면 설치, 이미 있으면 업데이트로 알아서 진행됩니다.
 - 전적·기술·도구 설정은 유지됩니다.
@@ -53,8 +60,15 @@ NOTES=$(cat <<EOF
 EOF
 )
 
+# 버전이 안 붙은 이름으로도 함께 올린다.
+# 그래야 "항상 최신" 주소가 생긴다 —
+#   .../releases/latest/download/PokeBattleBar-Install.command
+# 버전이 이름에 박혀 있으면 새 버전마다 안내 문구를 바꿔야 한다.
+STABLE="build.noindex/PokeBattleBar-Install.command"
+cp "$INSTALLER" "$STABLE"
+
 gh release create "v$VERSION" \
-    "$INSTALLER" "$ZIP" \
+    "$INSTALLER" "$STABLE" "$ZIP" \
     --repo "$REPO" \
     --title "PokeBattleBar v$VERSION" \
     --notes "$NOTES"
