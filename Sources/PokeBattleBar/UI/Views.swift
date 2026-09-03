@@ -1,9 +1,10 @@
 import SwiftUI
+import Combine
 
 // MARK: - 루트
 
 struct RootView: View {
-    @State private var model = AppModel()
+    let model: AppModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -21,7 +22,26 @@ struct RootView: View {
             content
         }
         .frame(minWidth: 720, minHeight: 560)
+        // 새 방·초대 알림은 어느 화면에서든 보여야 한다
+        .overlay(alignment: .top) {
+            if let t = model.toast {
+                NoticeToast(notice: t) { model.dismissToast() }
+                    .padding(.top, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(duration: 0.32), value: model.toast?.id)
+        .sheet(isPresented: Binding(
+            get: { model.incomingInvite != nil },
+            set: { if !$0 { model.declineInvite() } }
+        )) {
+            if let inv = model.incomingInvite {
+                InviteSheet(model: model, invite: inv)
+            }
+        }
         .task { await model.boot() }
+        .onAppear { model.applyDockPolicy() }
+        .onReceive(NSApplication.willTerminateNotification) { model.stopPresenceOnQuit() }
         .alert("문제가 발생했습니다",
                isPresented: Binding(get: { model.errorMessage != nil },
                                     set: { if !$0 { model.errorMessage = nil } })) {
@@ -45,6 +65,13 @@ struct RootView: View {
 }
 
 // MARK: - 로딩
+
+extension View {
+    /// AppKit 알림을 SwiftUI 에서 받는 짧은 헬퍼
+    func onReceive(_ name: Notification.Name, _ action: @escaping () -> Void) -> some View {
+        onReceive(NotificationCenter.default.publisher(for: name)) { _ in action() }
+    }
+}
 
 struct LoadingView: View {
     let model: AppModel
@@ -73,6 +100,10 @@ struct LobbyView: View {
 
                 Divider()
 
+                LobbyPeopleSection(model: model)
+
+                Divider()
+
                 HStack(alignment: .top, spacing: 24) {
                     HostSection(model: model)
                     Divider().frame(height: 220)
@@ -81,8 +112,7 @@ struct LobbyView: View {
             }
             .padding(22)
         }
-        .onAppear { model.startBrowsing() }
-        .onDisappear { model.stopBrowsing() }
+
     }
 
     private var header: some View {
@@ -101,8 +131,93 @@ struct LobbyView: View {
                 TextField("트레이너", text: $model.playerName)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 160)
+                    // 로비에 보이는 이름도 같이 바뀌어야 한다
+                    .onSubmit { model.presenceNameChanged() }
             }
         }
+    }
+}
+
+/// 로비에 누가 있는지 — 방을 열지 않은 사람도 보인다.
+///
+/// 방(`_pokebattle._tcp`)은 배틀을 열었을 때만 광고되므로, 이것 없이는
+/// "지금 누가 앱을 켜놨는지" 를 알 방법이 없었다.
+struct LobbyPeopleSection: View {
+    let model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                PokeBallIcon(size: 15)
+                Text("로비").font(.headline)
+                Text("\(model.lobbyPeers.count)명")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Spacer()
+                if !model.notices.isEmpty {
+                    Text("알림 \(model.notices.count)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Button("지우기") { model.clearNotices() }
+                        .font(.caption2).buttonStyle(.borderless)
+                }
+            }
+
+            if model.lobbyPeers.isEmpty {
+                Text("같은 네트워크에 켜져 있는 다른 PokeBattleBar 가 없습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        ForEach(model.lobbyPeers) { p in
+                            PeerChip(model: model, peer: p)
+                        }
+                    }
+                    .padding(.bottom, 2)
+                }
+                .scrollIndicators(.visible)
+            }
+        }
+    }
+}
+
+struct PeerChip: View {
+    let model: AppModel
+    let peer: LobbyPeer
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle().fill(dot).frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(peer.displayName).font(.callout.bold())
+                Text(note).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            if peer.status.invitable, peer.compatible {
+                if model.invitesSent.contains(peer.displayName) {
+                    Text("보냄").font(.caption2).foregroundStyle(.orange)
+                } else {
+                    Button("초대") { Task { await model.invite(peer) } }
+                        .font(.caption)
+                        .help("내 방을 열고 이 사람에게 초대를 보냅니다")
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+    }
+
+    private var dot: Color {
+        guard peer.compatible else { return .red }
+        switch peer.status {
+        case .free:     return .green
+        case .hosting:  return .blue
+        case .battling: return .orange
+        }
+    }
+
+    private var note: String {
+        guard peer.compatible else { return "버전 다름 v\(peer.protocolVersion)" }
+        if model.invitesSent.contains(peer.displayName) { return "초대 보냄 — 수락 대기" }
+        return peer.status.ko
     }
 }
 
@@ -1166,30 +1281,46 @@ struct HPBar: View {
 struct BattleView: View {
     @Bindable var model: AppModel
 
+    /// 로그·채팅은 원작 화면에 없는 것이라 접어둔다 — 필요할 때만 펼친다
+    @State private var showLog = false
+    @State private var showChat = false
+
     var body: some View {
         VStack(spacing: 0) {
             if let me = model.myState, let foe = model.foeState, let b = model.battle {
-                field(me: me, foe: foe, turn: b.turn)
-                Divider()
-                HStack(alignment: .top, spacing: 8) {
-                    LogView(lines: model.displayLog)
-                    Divider().frame(height: 140)
-                    ChatPanel(model: model, compact: true).frame(width: 240)
+                let shown = displayed(me: me, foe: foe)
+
+                ZStack(alignment: .top) {
+                    GBStage(model: model, me: shown.me, foe: shown.foe)
+                    topStrip(turn: b.turn)
                 }
-                .padding(.horizontal, 8)
-                Divider()
-                controls(me: me)
+                .frame(maxHeight: .infinity)
+
+                GBTextBox { controls(me: me) }
+
+                utilityBar
+                if showLog {
+                    LogView(lines: model.displayLog)
+                        .frame(height: 132)
+                        .background(GB.plate.opacity(0.5))
+                }
+                if showChat {
+                    ChatPanel(model: model, compact: true)
+                        .frame(height: 150)
+                        .background(GB.plate.opacity(0.5))
+                }
             } else {
                 ProgressView().frame(maxHeight: .infinity)
             }
         }
+        .background(GB.plate)
     }
 
-    private func field(me: SideState, foe: SideState, turn: Int) -> some View {
-        // 재생 중이면 그 시점의 팀·활성 개체를 그린다
+    /// 재생 중이면 그 시점의 팀·활성 개체를 그린다
+    private func displayed(me: SideState, foe: SideState) -> (me: SideState, foe: SideState) {
+        var myShown = me, foeShown = foe
         let myTeam = model.displayTeam(model.mySide)
         let foeTeam = model.displayTeam(model.mySide.other)
-        var myShown = me, foeShown = foe
         if !myTeam.isEmpty {
             myShown.team = myTeam
             myShown.activeIndex = model.displayActiveIndex(model.mySide)
@@ -1198,57 +1329,46 @@ struct BattleView: View {
             foeShown.team = foeTeam
             foeShown.activeIndex = model.displayActiveIndex(model.mySide.other)
         }
-
-        return VStack(spacing: 8) {
-            HStack {
-                Text("턴 \(turn)").font(.caption.bold()).foregroundStyle(.secondary)
-                Text(model.modeSummary)
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(.orange.opacity(0.25)))
-                Spacer()
-                Button("나가기") { model.leaveEverything() }.controlSize(.small)
-            }
-
-            // 진행 배너 — 지금 무슨 일이 벌어지는지
-            ZStack {
-                if let banner = model.playbackBanner {
-                    Text(banner)
-                        .font(.callout.bold())
-                        .padding(.horizontal, 12).padding(.vertical, 5)
-                        .background(Capsule().fill(.black.opacity(0.65)))
-                        .foregroundStyle(.white)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .id(banner)
-                }
-            }
-            .frame(height: 26)
-            .animation(.easeOut(duration: 0.25), value: model.playbackBanner)
-
-            HStack(alignment: .top) {
-                sideColumn(foeShown, isFoe: true)
-                Spacer()
-                sideColumn(myShown, isFoe: false)
-            }
-        }
-        .padding(16)
+        return (myShown, foeShown)
     }
 
-    private func sideColumn(_ s: SideState, isFoe: Bool) -> some View {
-        VStack(alignment: isFoe ? .leading : .trailing, spacing: 6) {
-            Text(isFoe ? "상대 · \(s.playerName)" : "나 · \(s.playerName)")
-                .font(.caption.bold()).foregroundStyle(.secondary)
-            ActiveBattlerView(b: s.active, mirrored: isFoe)
-            HStack(spacing: 3) {
-                ForEach(Array(s.team.enumerated()), id: \.offset) { _, m in
-                    Circle()
-                        .fill(m.isFainted ? Color.gray.opacity(0.35) : Color.green)
-                        .frame(width: 8, height: 8)
-                }
+    private func topStrip(turn: Int) -> some View {
+        HStack(spacing: 6) {
+            Text("턴 \(turn)")
+                .font(GB.face(11, .heavy).monospacedDigit())
+                .foregroundStyle(GB.plate)
+                .padding(.horizontal, 7).padding(.vertical, 2.5)
+                .background(Capsule().fill(GB.ink.opacity(0.82)))
+            if model.modeSummary != "일반" {
+                Text(model.modeSummary)
+                    .font(.system(size: 9, weight: .heavy))
+                    .foregroundStyle(GB.ink)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(GB.hpAmber.opacity(0.9)))
             }
-            Text("남은 \(s.remaining)/\(s.team.count)마리")
-                .font(.system(size: 9)).foregroundStyle(.secondary)
+            Spacer()
+            Button("나가기") { model.leaveEverything() }
+                .controlSize(.small)
         }
+        .padding(.horizontal, 10).padding(.top, 8)
+    }
+
+    private var utilityBar: some View {
+        HStack(spacing: 8) {
+            Toggle(isOn: $showLog) { Text("로그").font(.caption) }
+                .toggleStyle(.button).controlSize(.small)
+            Toggle(isOn: $showChat) { Text("채팅").font(.caption) }
+                .toggleStyle(.button).controlSize(.small)
+            if let last = model.displayLog.last, !showLog {
+                Text(last)
+                    .font(.caption).foregroundStyle(GB.inkSoft)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(GB.plate)
+        .overlay(alignment: .top) { Rectangle().fill(GB.ink.opacity(0.18)).frame(height: 1) }
     }
 
     @ViewBuilder private func controls(me: SideState) -> some View {
@@ -1262,15 +1382,7 @@ struct BattleView: View {
                 } else if model.waitingForOpponent {
                     waiting
                 } else {
-                    VStack(spacing: 0) {
-                        SpecialBar(model: model)
-                        MoveGrid(battler: me.active,
-                                 foeTypes: model.foeState?.active.types ?? [],
-                                 chart: model.typeChart,
-                                 pendingSpecial: model.pendingSpecial,
-                                 zMoveCache: model.zPreview,
-                                 megaForms: model.megaFormPreview) { model.submitMove($0) }
-                    }
+                    GBChoicePanel(model: model, me: me)
                 }
             case .awaitingReplacement:
                 if model.needsMyReplacement {

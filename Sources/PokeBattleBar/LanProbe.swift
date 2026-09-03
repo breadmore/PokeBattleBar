@@ -43,10 +43,66 @@ enum LanProbe {
             print("  ✓ 다른 프로세스의 방 \(others.count)개 발견 — 같은 맥에서 배틀 가능")
             return true
 
+        case "lobby":
+            // 서로를 발견하고 초대를 주고받는지 본다.
+            // 두 프로세스를 --lanprobe lobby 로 같이 띄워야 의미가 있다.
+            let me = LobbyPresence()
+            let seen = SeenPeers()
+            me.onError = { print("  ✗ \($0)") }
+            me.onPeers = { peers in Task { await seen.add(peers) } }
+            me.onInvite = { from, room in
+                Task { await seen.gotInvite(from: from, room: room) }
+                print("[\(tag)] 초대 받음: \(from) → \(room)")
+            }
+            me.onDeclined = { who in print("[\(tag)] 거절 회신: \(who)") }
+            me.start(displayName: "probe-\(tag)")
+            print("[\(tag)] 로비 광고: probe-\(tag) (\(me.serviceName))")
+
+            // 상대를 찾을 시간을 준다
+            try? await Task.sleep(for: .seconds(min(6, seconds)))
+            let found = await seen.names
+            for n in found { print("  · 발견: \(n)") }
+
+            // A 쪽만 초대를 보낸다 (양쪽이 보내면 누가 받았는지 헷갈린다)
+            if tag == "A", let target = await seen.first {
+                print("[\(tag)] \(target.displayName) 에게 초대 전송")
+                me.sendInvite(to: target, roomName: "probe-room-A")
+            }
+
+            try? await Task.sleep(for: .seconds(seconds))
+            let invite = await seen.invite
+            me.stop()
+
+            if found.isEmpty {
+                print("  ✗ 다른 프로세스의 로비를 찾지 못했습니다")
+                return false
+            }
+            print("  ✓ 다른 프로세스의 로비 \(found.count)개 발견")
+            if tag == "B" {
+                guard let invite else {
+                    print("  ✗ 초대를 받지 못했습니다")
+                    return false
+                }
+                print("  ✓ 초대 수신 확인: \(invite.0) → \(invite.1)")
+            }
+            return true
+
         default:
-            print("사용법: --lanprobe host|browse [--seconds N]")
+            print("사용법: --lanprobe host|browse|lobby [--seconds N]")
             return false
         }
+    }
+
+    private actor SeenPeers {
+        private var peers: [String: LobbyPeer] = [:]
+        var invite: (String, String)?
+
+        func add(_ list: [LobbyPeer]) {
+            for p in list { peers[p.id] = p }
+        }
+        func gotInvite(from: String, room: String) { invite = (from, room) }
+        var names: [String] { peers.values.map { "\($0.displayName) [\($0.status.ko)] v\($0.protocolVersion)" }.sorted() }
+        var first: LobbyPeer? { peers.values.sorted { $0.id < $1.id }.first }
     }
 
     private actor SeenRooms {

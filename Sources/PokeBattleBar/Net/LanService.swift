@@ -214,7 +214,10 @@ final class RoomBrowser: @unchecked Sendable {
                                       level: lvl, occupied: busy, endpoint: r.endpoint,
                                       protocolVersion: pv, mode: mode)
             }
-            self?.onRooms?(rooms.sorted { $0.name < $1.name })
+            // 같은 방이 인터페이스마다 따로 올라온다 — 이름으로 하나만 남긴다
+            var unique: [String: DiscoveredRoom] = [:]
+            for r in rooms where unique[r.name] == nil { unique[r.name] = r }
+            self?.onRooms?(unique.values.sorted { $0.name < $1.name })
         }
         b.stateUpdateHandler = { [weak self] st in
             if case .failed(let e) = st {

@@ -88,6 +88,7 @@ enum NetTest {
         guard let joinMsg = await waitFor(timeout: 10, label: ".join 수신", { box.hostGotJoin }) else {
             print("✗ 호스트가 .join 을 받지 못했습니다")
             host.stop(); browser.stop(); link.cancel()
+
             return false
         }
         guard case .join(let gotName, let gotTeam) = joinMsg else {
@@ -145,6 +146,26 @@ enum NetTest {
         if !box.errors.isEmpty {
             print("\n  경고/오류 로그:")
             for e in Set(box.errors) { print("    · \(e)") }
+        }
+
+        // MARK: 번들이 Bonjour 서비스 타입을 다 선언했는가
+        //
+        // 선언이 빠지면 macOS 14+ 가 광고·검색을 **조용히** 막는다.
+        // 번들 밖에서 바이너리를 직접 돌리면 제한이 없어 통과하므로
+        // (진단 도구가 통과해도 배포본이 실패할 수 있다) 여기서 잡는다.
+        print("\n-- Bonjour 서비스 선언 --")
+        let usedTypes = [pokeBattleServiceType, pokeLobbyServiceType]
+        let plistURL = Bundle.main.bundleURL.appending(path: "Contents/Info.plist")
+        if let data = try? Data(contentsOf: plistURL),
+           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+           let dict = plist as? [String: Any],
+           let declared = dict["NSBonjourServices"] as? [String] {
+            for t in usedTypes {
+                ok = check(declared.contains(t), "Info.plist 에 \(t) 선언") && ok
+            }
+        } else {
+            print("  · 번들 밖 실행이라 건너뜁니다 — 배포본은 앱 번들 안의")
+            print("    실행 파일로 검증해야 합니다")
         }
 
         print(ok ? "\n✓ 네트워크 검증 통과" : "\n✗ 네트워크 검증 실패")
