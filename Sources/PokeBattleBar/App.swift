@@ -2,9 +2,10 @@ import SwiftUI
 
 struct PokeBattleBarApp: App {
     var body: some Scene {
-        WindowGroup("PokeBattleBar") {
+        WindowGroup(TestProfile.windowTitle) {
             RootView()
         }
-        .defaultSize(width: 860, height: 640)
+        .defaultSize(width: TestProfile.windowWidth, height: 640)
+        .defaultPosition(TestProfile.windowPosition)
     }
 }

@@ -34,7 +34,8 @@ final class AppModel {
     var protocolVersion: Int { PokeBattleProtocol.version }
 
     // 내 정보
-    var playerName: String = (NSFullUserName().isEmpty ? "트레이너" : NSFullUserName())
+    var playerName: String = TestProfile.decorate(
+        playerName: NSFullUserName().isEmpty ? "트레이너" : NSFullUserName())
     var roster: [RosterSlot] = []
     var rosterSpecies: [Int: SpeciesDef] = [:]
     var selectedSlotIDs: Set<String> = []      // 방 상한을 넘을 때 내가 데려갈 포켓몬
@@ -184,8 +185,13 @@ final class AppModel {
         screen = .loading
         status = "PokeTokenBar 도감을 읽는 중…"
         do {
-            let state = try CompanionStore.load()
-            roster = RosterSlot.roster(from: state)
+            // 테스트 인스턴스가 팀을 지정했다면 PokeTokenBar 를 읽지 않는다
+            if let forced = TestProfile.overrideRoster() {
+                roster = forced
+            } else {
+                let state = try CompanionStore.load()
+                roster = RosterSlot.roster(from: state)
+            }
             guard !roster.isEmpty else {
                 errorMessage = "PokeTokenBar 에 아직 포켓몬이 없습니다. 동반 포켓몬이 생긴 뒤 다시 열어주세요."
                 screen = .lobby
@@ -1039,18 +1045,58 @@ final class AppModel {
     /// 지금 나와 있는 포켓몬이 이 변신을 쓸 수 있는가.
     /// 규칙에서 켜져 있고 + 내가 이번 배틀에서 아직 안 썼고 + 그 개체가 자격이 있어야 한다.
     func canUse(_ kind: SpecialKind) -> Bool {
-        guard let me = myState, let b = myState?.active else { return false }
+        availability(kind) == .ready
+    }
+
+    /// 변신 버튼을 왜 쓸 수 있는지/없는지.
+    ///
+    /// 예전에는 `canUse` 가 종족 자격만 봐서, 도구가 없어도 버튼이 눌렸다.
+    /// 그러면 변신은 선언되지만 엔진이 도구 없음으로 거절하고
+    /// **기술만 그대로 나가** 사용자가 속는다. 판정을 엔진과 같은 기준
+    /// (`requiringItem:`) 으로 맞춘다.
+    enum SpecialAvailability: Equatable {
+        case ready
+        case ruleOff                    // 방 설정에서 껐다
+        case usedUp                     // 이번 배틀에서 이미 씀
+        case ineligible                 // 이 종족은 애초에 안 된다
+        case missingItem(String)        // 자격은 있는데 도구가 없다
+    }
+
+    func availability(_ kind: SpecialKind) -> SpecialAvailability {
+        guard let me = myState, let b = myState?.active else { return .ineligible }
+        let needItem = rules.requireItems
+
         switch kind {
         case .mega:
-            return rules.allowMega && !me.usedMega && b.canMega
+            if !rules.allowMega { return .ruleOff }
+            if me.usedMega { return .usedUp }
+            if !b.canMega { return .ineligible }
+            if needItem && b.megaFormFromItem == nil { return .missingItem("메가스톤") }
         case .dynamax:
-            return rules.allowDynamax && !me.usedDynamax && b.canDynamax
+            if !rules.allowDynamax { return .ruleOff }
+            if me.usedDynamax { return .usedUp }
+            if !b.canDynamax { return .ineligible }
+            if needItem && !b.canDynamax(requiringItem: true) { return .missingItem("다이맥스 밴드") }
         case .gmax:
-            return rules.allowDynamax && rules.allowGigantamax
-                && !me.usedDynamax && b.canGigantamax
+            if !rules.allowDynamax || !rules.allowGigantamax { return .ruleOff }
+            if me.usedDynamax { return .usedUp }
+            if !b.canGigantamax { return .ineligible }
+            if needItem && !b.canGigantamax(requiringItem: true) { return .missingItem("다이버섯") }
         case .zMove:
-            return rules.allowZMove && !me.usedZMove && b.canZMove
+            if !rules.allowZMove { return .ruleOff }
+            if me.usedZMove { return .usedUp }
+            if !b.canZMove { return .ineligible }
+            if needItem && !b.canZMove(requiringItem: true) { return .missingItem("맞는 Z크리스탈") }
         }
+        return .ready
+    }
+
+    /// 자격은 있는데 도구가 없어 못 쓰는 경우 그 도구 이름.
+    /// 버튼을 지우지 않고 이유를 보여주기 위한 것 — 그냥 사라지면
+    /// 왜 못 쓰는지 알 수가 없다.
+    func missingItem(_ kind: SpecialKind) -> String? {
+        if case .missingItem(let name) = availability(kind) { return name }
+        return nil
     }
 
     /// 이미 써버린 변신인지 (UI 에서 "사용함" 표시)
@@ -1064,7 +1110,8 @@ final class AppModel {
     }
 
     func toggleSpecial(_ kind: SpecialKind) {
-        guard let b = myState?.active else { return }
+        // 버튼 외의 경로로 들어와도 도구 없이는 선언되지 않아야 한다
+        guard canUse(kind), let b = myState?.active else { return }
         let target: SpecialAction?
         switch kind {
         case .mega:    target = b.megaForms.first.map { SpecialAction.mega(form: $0) }

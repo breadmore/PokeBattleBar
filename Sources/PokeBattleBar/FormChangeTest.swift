@@ -37,6 +37,31 @@ enum FormChangeTest {
             print("    기본       \(sp.types.map(\.ko).joined(separator: "/"))  종족값 \(baseTotal)")
         }
 
+        // MARK: 자동폼 특성 목록과 실제 규칙이 어긋나지 않는가
+        //
+        // 목록에만 있고 규칙이 없으면 "구현됐다" 고 표시만 하고 아무 일도
+        // 일어나지 않는다 — 특성 구현률이 실제보다 부풀려진다.
+        print("\n-- 자동폼 특성 목록 --")
+        var ruleless: [String] = []
+        for name in FormChange.autoAbilityNames where FormChange.autoRule(ability: name, speciesID: 0) == nil {
+            ruleless.append(name)
+        }
+        ok = show(ruleless.isEmpty, "목록의 특성은 전부 실제 규칙이 있다",
+                  ruleless.isEmpty ? "\(FormChange.autoAbilityNames.count)종" : "\(ruleless)") && ok
+        // 규칙이 있는데 목록에 빠진 것도 없어야 한다 (UI 표기가 어긋난다)
+        var unlisted: [String] = []
+        for name in ["forecast", "flower-gift", "zen-mode", "schooling"]
+            where FormChange.autoRule(ability: name, speciesID: 0) != nil
+                  && !FormChange.isAutoAbility(name) {
+            unlisted.append(name)
+        }
+        ok = show(unlisted.isEmpty, "규칙이 있는 특성은 전부 목록에 있다", "\(unlisted)") && ok
+        ok = show(AbilityCatalog.kind(for: "zen-mode") == .autoFormChange,
+                  "달마모드는 구현된 특성으로 분류된다") && ok
+        ok = show(AbilityCatalog.kind(for: "disguise") != .autoFormChange,
+                  "규칙 없는 특성을 자동폼으로 분류하지 않는다",
+                  "\(AbilityCatalog.kind(for: "disguise"))") && ok
+
         // MARK: 지역폼이 폼 선택에 새어 들어오지 않는가
         print("\n-- 지역폼 제외 --")
         var leaked: [(String, String)] = []

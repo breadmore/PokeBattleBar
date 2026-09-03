@@ -7,6 +7,17 @@ struct RootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // 테스트로 두 개 띄웠을 때 어느 쪽인지 창이 겹쳐도 보이게
+            if let note = TestProfile.describe() {
+                HStack(spacing: 6) {
+                    Image(systemName: "hammer.fill")
+                    Text(note).font(.caption.monospaced())
+                    Spacer()
+                }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(.orange.opacity(0.22))
+                .overlay(alignment: .bottom) { Divider() }
+            }
             content
         }
         .frame(minWidth: 720, minHeight: 560)
@@ -1325,7 +1336,9 @@ struct SpecialBar: View {
     let model: AppModel
 
     var body: some View {
-        let anyRelevant = SpecialKind.allCases.contains { model.canUse($0) || model.alreadyUsed($0) }
+        let anyRelevant = SpecialKind.allCases.contains {
+            model.canUse($0) || model.alreadyUsed($0) || model.missingItem($0) != nil
+        }
         if anyRelevant {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -1363,6 +1376,7 @@ struct SpecialButton: View {
     var body: some View {
         let usable = model.canUse(kind)
         let used = model.alreadyUsed(kind)
+        let lacking = model.missingItem(kind)
         let selected = model.pendingSpecial.map { model.kindOf($0) == kind } ?? false
 
         Button {
@@ -1372,6 +1386,8 @@ struct SpecialButton: View {
                 Text(kind.icon)
                 Text(kind.ko).font(.caption.bold())
                 if used { Text("사용함").font(.system(size: 9)) }
+                // 자격은 있는데 도구가 없으면 그 이유를 버튼에 적는다
+                else if lacking != nil { Text("도구 없음").font(.system(size: 9)) }
             }
             .padding(.horizontal, 8).padding(.vertical, 4)
         }
@@ -1379,8 +1395,16 @@ struct SpecialButton: View {
         .tint(selected ? .orange : .secondary)
         .disabled(!usable)
         .opacity(usable ? 1 : 0.45)
-        .help(used ? "이번 배틀에서 이미 사용했습니다"
-                   : (usable ? "이번 턴에 \(kind.ko)을 선언합니다" : "이 포켓몬은 \(kind.ko)을 쓸 수 없습니다"))
+        .help(helpText(used: used, usable: usable, lacking: lacking))
+    }
+
+    private func helpText(used: Bool, usable: Bool, lacking: String?) -> String {
+        if used { return "이번 배틀에서 이미 사용했습니다" }
+        if usable { return "이번 턴에 \(kind.ko)을 선언합니다" }
+        if let lacking {
+            return "\(lacking)을 지니고 있지 않아 \(kind.ko)을 쓸 수 없습니다 — 로비에서 도구를 끼워주세요"
+        }
+        return "이 포켓몬은 \(kind.ko)을 쓸 수 없습니다"
     }
 }
 

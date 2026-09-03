@@ -5,6 +5,7 @@ import Foundation
 /// 핵심 규칙: 6마리를 데려가도 메가 1회, 거다이맥스 1회, Z기술 1회씩만 쓸 수 있다.
 enum FormTest {
 
+    @MainActor
     static func run(verbose: Bool) async -> Bool {
         print("=== 특수 변신 규칙 검증 ===\n")
         guard let chart = try? await PokeAPI.shared.typeChart() else {
@@ -148,6 +149,7 @@ enum FormTest {
         ok = show(FormTables.maxMove.count == 18, "맥스기술 18타입 매핑") && ok
 
         print(ok ? "\n✓ 전부 통과" : "\n✗ 실패 항목 있음")
+        ok = await itemGateBlocksButton() && ok
         return ok
     }
 
@@ -301,5 +303,106 @@ enum FormTest {
         e.zMoveCache = zCache
         e.maxMoveCache = maxCache
         return e
+    }
+
+    // MARK: 도구가 없으면 변신 버튼 자체가 눌리지 않아야 한다
+    //
+    // 예전 버그: canUse 가 종족 자격만 봤다. 그래서 다이버섯이 없어도
+    // 거다이맥스 버튼이 눌렸고, 변신은 엔진이 거절했지만 **그 자리의 기술은
+    // 그대로 나갔다**. 사용자는 거다이맥스한 줄 알고 기술을 고른 것이라
+    // 턴을 속아서 쓴 셈이 된다.
+    @MainActor
+    static func itemGateBlocksButton() async -> Bool {
+        print("\n-- 도구 없이는 변신을 선언할 수 없다 --")
+        var ok = true
+        guard let snorlax = try? await PokeAPI.shared.species(143),   // 거다이맥스 가능
+              let abra = try? await PokeAPI.shared.species(63),       // 거다이맥스 불가
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let mush = await ItemCatalog.shared.item("max-mushrooms"),
+              let band = await ItemCatalog.shared.item("dynamax-band") else {
+            print("  ✗ 준비 실패")
+            return false
+        }
+
+        func battler(_ sp: SpeciesDef, item: ItemDef?) -> Battler {
+            let slot = RosterSlot(id: "t", speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: [tackle], level: 50, heldItem: item)
+            b.moves[0].ppLeft = 99
+            return b
+        }
+
+        /// 내가 host 인 배틀 상태를 만들어 모델에 물린다
+        func model(_ me: Battler, requireItems: Bool = true) -> AppModel {
+            let m = AppModel()
+            var rules = BattleRules.default
+            rules.requireItems = requireItems
+            rules.allowMega = true
+            rules.allowDynamax = true
+            rules.allowGigantamax = true
+            rules.allowZMove = true
+            m.rules = rules
+            m.mySide = .host
+            m.battle = BattleState(rules: rules,
+                                   sides: [SideState(playerName: "나", team: [me], activeIndex: 0),
+                                           SideState(playerName: "상대", team: [me], activeIndex: 0)])
+            return m
+        }
+
+        func show(_ cond: Bool, _ label: String, _ detail: String = "") -> Bool {
+            print("  \(cond ? "✓" : "✗") \(label)\(detail.isEmpty ? "" : "  (\(detail))")")
+            return cond
+        }
+
+        // A) 다이버섯 없음 → 거다이맥스 버튼이 눌리지 않는다
+        let noItem = model(battler(snorlax, item: nil))
+        ok = show(!noItem.canUse(.gmax), "다이버섯 없으면 거다이맥스 불가") && ok
+        ok = show(noItem.availability(.gmax) == .missingItem("다이버섯"),
+                  "이유가 '도구 없음' 으로 나온다", "\(noItem.availability(.gmax))") && ok
+        ok = show(noItem.missingItem(.gmax) == "다이버섯",
+                  "버튼에 표시할 도구 이름을 알려준다") && ok
+
+        // B) 눌러도 선언되지 않는다 — 이것이 기술이 헛나가던 원인이다
+        noItem.toggleSpecial(.gmax)
+        ok = show(noItem.pendingSpecial == nil,
+                  "눌러도 변신이 선언되지 않는다", "\(String(describing: noItem.pendingSpecial))") && ok
+
+        // C) 다이맥스 밴드도 마찬가지
+        ok = show(!noItem.canUse(.dynamax), "다이맥스 밴드 없으면 다이맥스 불가") && ok
+        ok = show(noItem.availability(.dynamax) == .missingItem("다이맥스 밴드"),
+                  "다이맥스 쪽 이유도 정확하다", "\(noItem.availability(.dynamax))") && ok
+
+        // D) 도구를 끼우면 눌린다
+        let withMush = model(battler(snorlax, item: mush))
+        ok = show(withMush.canUse(.gmax), "다이버섯이 있으면 거다이맥스 가능") && ok
+        withMush.toggleSpecial(.gmax)
+        ok = show(withMush.pendingSpecial != nil, "선언된다") && ok
+        // 다이버섯은 거다이맥스 전용 — 일반 다이맥스는 안 된다
+        ok = show(!withMush.canUse(.dynamax),
+                  "다이버섯으로 일반 다이맥스는 안 된다", "\(withMush.availability(.dynamax))") && ok
+
+        let withBand = model(battler(snorlax, item: band))
+        ok = show(withBand.canUse(.dynamax), "다이맥스 밴드로 일반 다이맥스 가능") && ok
+        ok = show(!withBand.canUse(.gmax),
+                  "다이맥스 밴드로 거다이맥스는 안 된다", "\(withBand.availability(.gmax))") && ok
+
+        // E) 종족이 안 되는 경우는 '도구 없음' 이 아니라 '자격 없음'
+        let abraM = model(battler(abra, item: mush))
+        ok = show(abraM.availability(.gmax) == .ineligible,
+                  "거다이맥스 못 하는 종은 자격 없음으로 구분", "\(abraM.availability(.gmax))") && ok
+        ok = show(abraM.missingItem(.gmax) == nil,
+                  "자격 없는 종에는 도구 안내를 띄우지 않는다") && ok
+
+        // F) 도구 요구를 끈 방에서는 도구 없이도 된다
+        let relaxed = model(battler(snorlax, item: nil), requireItems: false)
+        ok = show(relaxed.canUse(.gmax), "도구 요구를 끄면 도구 없이 가능") && ok
+
+        // G) 방 설정에서 껐으면 룰 이유로 막힌다
+        let off = model(battler(snorlax, item: mush))
+        off.rules.allowGigantamax = false
+        ok = show(off.availability(.gmax) == .ruleOff,
+                  "방에서 껐으면 룰 이유", "\(off.availability(.gmax))") && ok
+
+        return ok
     }
 }

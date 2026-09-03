@@ -221,7 +221,20 @@ struct BattleEngine {
 
     /// 선봉을 정한다. 범위를 벗어난 인덱스를 **조용히 무시하면** activeIndex 가 0 에 남아
     /// "고른 포켓몬이 아니라 맨 왼쪽이 나온다"가 된다. 그래서 클램프하고 흔적을 남긴다.
+    /// 재생용 스텝을 비운다.
+    ///
+    /// UI 는 `state.steps` 가 비어 있으면 "재생할 새 사건이 없다" 로 보고
+    /// 바로 다음 화면을 열고, 비어 있지 않으면 그것을 순서대로 재생한다.
+    /// 그래서 **턴이 아닌 조작**(교체·피벗·선봉 지정)에서 비우지 않으면
+    /// 직전 턴이 통째로 다시 재생된다 — 방금 쓰러진 포켓몬이 한 번 더
+    /// 쓰러지는 연출로 보이던 것이 이것이다.
+    private mutating func clearSteps() {
+        state.steps = []
+        stepLogBase = state.log.count
+    }
+
     mutating func setLead(_ side: BattleSide, index: Int) {
+        clearSteps()
         let team = state.sides[side.rawValue].team
         guard !team.isEmpty else { return }
         if team.indices.contains(index) {
@@ -234,6 +247,7 @@ struct BattleEngine {
     }
 
     mutating func beginBattle() {
+        clearSteps()
         state.phase = .awaitingMoves
         state.turn = 1
         for s in [BattleSide.host, .guest] {
@@ -389,8 +403,7 @@ struct BattleEngine {
 
         state.pendingPivot = []
         // 재생용 스텝을 새로 쌓는다 (직전 턴 것은 UI 가 이미 소비했다)
-        state.steps = []
-        stepLogBase = state.log.count
+        clearSteps()
 
         // 이번 턴 방어 상태를 초기화한다 (방어는 그 턴에만 유효하다)
         for side in [BattleSide.host, .guest] {
@@ -494,6 +507,7 @@ struct BattleEngine {
     mutating func applyPivot(_ side: BattleSide, teamIndex: Int) {
         guard case .awaitingPivot(var pending) = state.phase,
               pending.contains(side.rawValue) else { return }
+        clearSteps()
         let team = state.side(side).team
         let cur = state.side(side).activeIndex
         guard team.indices.contains(teamIndex), teamIndex != cur,
@@ -544,6 +558,7 @@ struct BattleEngine {
     mutating func applyReplacement(_ side: BattleSide, teamIndex: Int) {
         guard case .awaitingReplacement(var needs) = state.phase else { return }
         guard needs.contains(side.rawValue) else { return }
+        clearSteps()
         let team = state.side(side).team
         guard team.indices.contains(teamIndex) else {
             say("[경고] 교체 인덱스 \(teamIndex) 가 팀 범위(0..<\(team.count))를 벗어났습니다.")

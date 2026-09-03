@@ -91,8 +91,15 @@ enum FormChange {
         }
     }
 
+    /// 배틀 중 폼을 바꾸는 특성 — **실제로 규칙이 있는 것만** 넣는다.
+    /// `autoRule` 과 이 목록이 어긋나면 "구현됐다고 표시만 하고 아무 일도
+    /// 안 하는" 특성이 생기므로, 특성 분류(AbilityKind)도 이 목록을 본다.
+    static let autoAbilityNames: Set<String> = [
+        "forecast", "flower-gift", "zen-mode", "schooling",
+    ]
+
     /// 자동 변신 특성인가 (UI 에서 "배틀 중 자동" 이라고 알려준다)
     static func isAutoAbility(_ name: String) -> Bool {
-        ["forecast", "flower-gift", "zen-mode", "schooling"].contains(name)
+        autoAbilityNames.contains(name)
     }
 }

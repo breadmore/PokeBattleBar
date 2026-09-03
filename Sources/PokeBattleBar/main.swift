@@ -2,6 +2,25 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if let i = args.firstIndex(of: "--lanprobe") {
+    let role = i + 1 < args.count ? args[i + 1] : ""
+    var secs = 8
+    if let j = args.firstIndex(of: "--seconds"), j + 1 < args.count, let v = Int(args[j + 1]) { secs = v }
+    Task {
+        let ok = await LanProbe.run(role: role, seconds: secs)
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--profiletest") {
+    Task {
+        let passed = await TestProfileTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--formchangetest") {
     Task {
         let passed = await FormChangeTest.run()
