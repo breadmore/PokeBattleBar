@@ -210,8 +210,10 @@ struct GBStageMon: View {
         VStack(spacing: -spriteSize * 0.12) {
             SpriteView(speciesID: b.speciesID, shiny: b.isShiny, size: spriteSize,
                        form: b.spriteForm, scale: b.spriteScale)
-                // 상대는 뒤돌아 있는 것처럼 좌우를 뒤집는다
-                .scaleEffect(x: isFoe ? -1 : 1, y: 1)
+                // PokéAPI 프론트 스프라이트는 기본이 **왼쪽을 보는** 방향이다.
+                // 상대(오른쪽 위)는 그대로 두면 나를 보고, 내 포켓몬(왼쪽 아래)은
+                // 뒤집어야 상대를 본다. 뒤집는 쪽이 반대면 서로 등을 돌린다.
+                .scaleEffect(x: isFoe ? 1 : -1, y: 1)
                 .opacity(b.isFainted ? 0.2 : 1)
                 .modifier(HitEffect(hp: b.currentHP, fainted: b.isFainted))
                 .overlay {
@@ -281,14 +283,21 @@ struct GBStage: View {
             }
 
             // 진행 배너 — 지금 무슨 일이 벌어지는지
-            if let banner = model.playbackBanner {
-                Text(banner)
-                    .font(GB.face(14))
-                    .foregroundStyle(GB.plate)
-                    .padding(.horizontal, 14).padding(.vertical, 7)
-                    .background(Capsule().fill(GB.ink.opacity(0.88)))
-                    .transition(.scale(scale: 0.94).combined(with: .opacity))
-                    .id(banner)
+            if !model.playbackBannerLines.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(model.playbackBannerLines.enumerated()), id: \.offset) { i, line in
+                        Text(line)
+                            // 첫 줄은 누가 무엇을 했는지, 나머지는 그 결과
+                            .font(GB.face(i == 0 ? 14 : 12, i == 0 ? .bold : .semibold))
+                            .foregroundStyle(i == 0 ? GB.plate : GB.plate.opacity(0.82))
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 12).fill(GB.ink.opacity(0.88))
+                )
+                .transition(.scale(scale: 0.94).combined(with: .opacity))
+                .id(model.playbackBanner ?? "")
             }
         }
         .animation(.easeOut(duration: 0.25), value: model.playbackBanner)

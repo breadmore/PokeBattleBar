@@ -57,6 +57,26 @@ enum LobbyTest {
         m.clearNotices()
         ok = show(m.notices.isEmpty, "알림 지우기") && ok
 
+        print("\n-- 초대는 방을 연 뒤에만 --")
+        m.screen = .lobby
+        ok = show(!m.canInvite, "로비에서는 초대할 수 없다") && ok
+        m.screen = .hostingRoom
+        ok = show(m.canInvite, "방을 열면 초대할 수 있다") && ok
+        m.screen = .battle
+        ok = show(!m.canInvite, "배틀 중에는 초대할 수 없다") && ok
+        m.screen = .chooseLead
+        ok = show(!m.canInvite, "선봉 고르는 중에는 초대할 수 없다") && ok
+
+        // 로비에서 부르면 아무 일도 없어야 한다 (방을 몰래 열어버리면 안 된다)
+        m.screen = .lobby
+        let peer = LobbyPeer(id: "z#9", displayName: "상대", status: .free,
+                             endpoint: endpoint, protocolVersion: PokeBattleProtocol.version)
+        await m.invite(peer)
+        ok = show(m.invitesSent.isEmpty, "로비에서 초대를 눌러도 보내지 않는다",
+                  "\(m.invitesSent)") && ok
+        ok = show(m.screen == .lobby, "초대가 방을 몰래 열지 않는다", "\(m.screen)") && ok
+        ok = show(m.status.contains("방을 열어주세요"), "왜 안 되는지 알려준다", m.status) && ok
+
         print("\n-- 배틀 중에는 방해하지 않는다 --")
         m.screen = .battle
         m.simulateRoomScan([("다른방", "다른사람")])

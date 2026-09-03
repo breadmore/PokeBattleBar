@@ -72,7 +72,9 @@ struct MenuBarContent: View {
             } else {
                 Menu("로비 \(model.lobbyPeers.count)명") {
                     ForEach(model.lobbyPeers) { p in
-                        if p.status.invitable && p.compatible && !model.invitesSent.contains(p.displayName) {
+                        // 초대는 방을 연 뒤에만 보낼 수 있다
+                        if model.canInvite && p.status.invitable && p.compatible
+                            && !model.invitesSent.contains(p.displayName) {
                             Button("\(p.displayName) 초대하기") {
                                 showWindow()
                                 Task { await model.invite(p) }
@@ -80,6 +82,10 @@ struct MenuBarContent: View {
                         } else {
                             Text("\(p.displayName) — \(peerNote(p))")
                         }
+                    }
+                    if !model.canInvite {
+                        Divider()
+                        Text("초대하려면 먼저 방을 열어주세요")
                     }
                 }
             }

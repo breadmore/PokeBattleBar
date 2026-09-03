@@ -117,7 +117,14 @@ final class AppModel {
     /// 재생 중인가 (행동 입력을 막는다)
     var isPlayingBack = false
     /// 지금 재생 중인 단계 설명 (상단 배너)
-    var playbackBanner: String?
+    /// 재생 배너.
+    ///
+    /// 예전에는 단계의 **첫 줄만** 보여줬다. 그러면 손가락흔들기처럼
+    /// 첫 줄이 항상 같은 기술은 무엇이 나왔고 어떻게 됐는지 알 수가 없다
+    /// (로그 패널은 접혀 있다). 그래서 그 단계에서 벌어진 일을 다 보여준다.
+    var playbackBannerLines: [String] = []
+    /// 애니메이션 비교용 키
+    var playbackBanner: String? { playbackBannerLines.first }
 
     private var playbackTask: Task<Void, Never>?
 
@@ -186,7 +193,8 @@ final class AppModel {
                 self.playbackGuestActive = step.guestActive
                 self.playbackLogCount = shown
                 // 이 단계의 첫 줄을 배너로 (누가 무엇을 했는지)
-                self.playbackBanner = step.log.first
+                // 너무 길어지면 화면을 가리므로 앞쪽 4줄까지만
+                self.playbackBannerLines = Array(step.log.prefix(4))
                 try? await Task.sleep(for: self.stepDuration)
             }
             if Task.isCancelled { return }
@@ -203,7 +211,7 @@ final class AppModel {
         playbackHostActive = nil
         playbackGuestActive = nil
         playbackLogCount = nil
-        playbackBanner = nil
+        playbackBannerLines = []
         isPlayingBack = false
     }
 
@@ -1034,16 +1042,21 @@ final class AppModel {
         }
     }
 
-    /// 상대를 초대한다. 방이 없으면 먼저 연다 — 초대만 보내면 들어올 곳이 없다.
+    /// 초대를 보낼 수 있는 상태인가.
+    /// **방을 연 뒤에만** 보낼 수 있다 — 들어올 방이 없으면 초대가 의미가 없고,
+    /// 초대를 누르는 것만으로 방이 열리면 방 설정(상한·레벨·모드)을 고를 기회가 없다.
+    var canInvite: Bool { screen == .hostingRoom }
+
+    /// 상대를 내 방으로 초대한다.
     func invite(_ peer: LobbyPeer) async {
+        guard canInvite else {
+            status = "먼저 방을 열어주세요 — 방을 연 뒤에 초대할 수 있습니다."
+            return
+        }
         guard peer.compatible else {
             errorMessage = "\(peer.displayName) 님의 앱 버전이 다릅니다 "
                 + "(상대 v\(peer.protocolVersion) / 내 v\(PokeBattleProtocol.version))."
             return
-        }
-        if screen == .lobby {
-            await startHosting()
-            guard screen == .hostingRoom else { return }   // 방 열기가 실패했다
         }
         let room = roomName.isEmpty ? "\(playerName)의 방" : roomName
         invitesSent.insert(peer.displayName)

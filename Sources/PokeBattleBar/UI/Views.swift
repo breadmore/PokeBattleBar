@@ -174,6 +174,11 @@ struct LobbyPeopleSection: View {
                     .padding(.bottom, 2)
                 }
                 .scrollIndicators(.visible)
+
+                if !model.canInvite {
+                    Text("방을 열면 여기서 바로 초대할 수 있습니다.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -193,10 +198,10 @@ struct PeerChip: View {
             if peer.status.invitable, peer.compatible {
                 if model.invitesSent.contains(peer.displayName) {
                     Text("보냄").font(.caption2).foregroundStyle(.orange)
-                } else {
+                } else if model.canInvite {
                     Button("초대") { Task { await model.invite(peer) } }
                         .font(.caption)
-                        .help("내 방을 열고 이 사람에게 초대를 보냅니다")
+                        .help("이 사람을 내 방으로 부릅니다")
                 }
             }
         }
@@ -1169,6 +1174,16 @@ struct WaitingView: View {
             Text(title).font(.title3.bold())
             ProgressView()
             Text(model.status).foregroundStyle(.secondary)
+
+            // 방을 연 뒤에 초대한다 — 여기가 초대를 보내는 자리다
+            if model.canInvite {
+                VStack(alignment: .leading, spacing: 8) {
+                    LobbyPeopleSection(model: model)
+                }
+                .frame(maxWidth: 520)
+                .padding(.top, 4)
+            }
+
             if model.role != .none {
                 ChatPanel(model: model).frame(width: 340)
             }
@@ -1442,82 +1457,6 @@ struct BattleView: View {
     }
 }
 
-struct ActiveBattlerView: View {
-    let b: Battler
-    let mirrored: Bool
-
-    var body: some View {
-        VStack(alignment: mirrored ? .leading : .trailing, spacing: 4) {
-            SpriteView(speciesID: b.speciesID, shiny: b.isShiny, size: 110,
-                       form: b.spriteForm, scale: b.spriteScale)
-                .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-                .opacity(b.isFainted ? 0.25 : 1)
-                // 피격·변신 효과
-                .modifier(HitEffect(hp: b.currentHP, fainted: b.isFainted))
-                .overlay {
-                    if b.isDynamaxed {
-                        Circle().stroke(Color.pink.opacity(0.5), lineWidth: 3)
-                            .blur(radius: 4).scaleEffect(1.1)
-                    } else if b.isMega {
-                        Circle().stroke(Color.purple.opacity(0.45), lineWidth: 3)
-                            .blur(radius: 4).scaleEffect(1.05)
-                    }
-                }
-            Text("\(b.name)\(b.isShiny ? " ✨" : "")").font(.callout.bold())
-            Text("Lv.\(b.level)").font(.caption2).foregroundStyle(.secondary)
-            HPBar(current: b.currentHP, max: b.maxHP, tall: true).frame(width: 150)
-            HStack(spacing: 4) {
-                ForEach(b.types, id: \.self) { t in
-                    Text(t.ko).font(.system(size: 9))
-                        .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Capsule().fill(.tertiary))
-                }
-                if b.status != .none {
-                    Text(b.status.ko).font(.system(size: 9))
-                        .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Capsule().fill(.orange.opacity(0.35)))
-                }
-            }
-            HStack(spacing: 4) {
-                if let it = b.heldItem {
-                    Text("\(b.itemConsumed ? "🎒" : "✅") \(it.display)")
-                        .font(.system(size: 9, weight: b.itemConsumed ? .regular : .semibold))
-                        .strikethrough(b.itemConsumed)
-                        .foregroundStyle(b.itemConsumed ? .secondary : .primary)
-                }
-                if let ab = b.ability {
-                    Text("✨ \(ab.display)").font(.system(size: 9))
-                        .foregroundStyle(ab.isImplemented ? .primary : .secondary)
-                }
-            }
-            if b.trappedTurns > 0 {
-                Text("\(b.trapMoveName ?? "묶임") \(b.trappedTurns)턴")
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .background(Capsule().fill(.purple.opacity(0.3)))
-            }
-            if let locked = b.lockedMoveIndex, b.moves.indices.contains(locked) {
-                Text("고정: \(b.moves[locked].def.display)")
-                    .font(.system(size: 9)).foregroundStyle(.orange)
-            }
-            if let label = b.formLabel {
-                Text(label + (b.isDynamaxed ? " \(b.dynamaxTurnsLeft)턴" : ""))
-                    .font(.system(size: 9, weight: .bold))
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(.orange.opacity(0.4)))
-            }
-            let ups = b.stages.filter { $0.value != 0 }
-            if !ups.isEmpty {
-                Text(ups.map { "\($0.key.ko) \($0.value > 0 ? "+" : "")\($0.value)" }
-                        .sorted().joined(separator: " "))
-                    .font(.system(size: 9)).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-/// 메가진화 / 거다이맥스 / Z기술 선언 바.
-/// **각각 배틀당 1회** — 6마리가 다 거다이맥스할 수는 없다.
 struct SpecialBar: View {
     let model: AppModel
 
