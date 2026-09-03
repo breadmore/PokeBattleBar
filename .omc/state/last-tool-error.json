@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd ~/PokeBattleBar\\nVERSION=\\\"dev\\\" ./scripts/bundle.sh >/dev/null 2>&1\\nPOKEBATTLE_NETLOG=1 ./scripts/dev-two.sh 94,386,137 555,479,351 2>&1 | head -3\\nuntil grep -q \\\"검색 결과\\\" /tmp/pokene...",
-  "error": "Exit code 1\n==> 두 인스턴스 실행\n   [A] pid 94783   팀 94,386,137\n   [B] pid 94790   팀 555,479,351\n════ A 마지막 검색 ════\n[net A] 검색 결과 7건 (나=개발자01-A#b9ac): 개발자01-A#b9ac, 개발자01-A#67d7, 개발자01-B#b217, 개발자01-B#1f6f, 개발자01-A#d0c5, 개발자01-B#2962, 개발자01-A#323e\n[net A] 검색 결과 8건 (나=개발자01-A#b9ac): 개발자01-A#b9ac, 개발자01-A#67d7, 개발자01-B#b217, 개발자01-B#2490, 개발자01-B#1f6f, 개발자01-A#d0c5, 개발자01-B#2962, 개발자01-A#323e\n════ B 마지막 검색 ════\n[net B] 검색 결과 7건 (나=개발자01-B#2490): 개발자01-A#323e, 개발자01-B#b217, 개발자01-B#2962, 개발자01-A#67d7, 개발...",
-  "timestamp": "2026-09-03T07:51:48.624Z",
+  "tool_input_preview": "{\"command\":\"cd ~/PokeBattleBar\\ncp build.noindex/PokeBattleBar-1.11.0-Install.command ~/Desktop/\\nrm -f ~/Desktop/PokeBattleBar-1.10.0-Install.command\\nls -lh ~/Desktop/PokeBattleBar-*\\necho \\\"──── 설치...",
+  "error": "Exit code 143\nCommand timed out after 6m 40s\n-rwxr-xr-x@ 1 actionfit  staff   4.6M  9월  3 17:27 /Users/actionfit/Desktop/PokeBattleBar-1.11.0-Install.command\n──── 설치본 최종 확인 ────",
+  "timestamp": "2026-09-03T08:34:17.858Z",
   "retry_count": 1
 }
