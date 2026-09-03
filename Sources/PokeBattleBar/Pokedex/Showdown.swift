@@ -30,6 +30,17 @@ struct ShowdownMove: Sendable {
     var status: String?
     /// Showdown 이 코드로만 표현한 효과가 있는 기술 (우리가 완전히 재현하지 못할 수 있다)
     var hasCustomCode: Bool = false
+    /// 자신에게 걸리는 상태 — 파괴광선의 mustrecharge 가 여기 온다
+    var selfVolatile: String?
+    var selfStatus: String?
+    /// 모으는 턴 동안 몸을 숨긴다 (땅속·공중·물속). 그 동안 대부분의 기술이 맞지 않는다.
+    var hidesUser: Bool = false
+    var target: String?
+
+    /// 솔라빔처럼 **모으는 턴**이 있는 2턴 기술
+    var isCharge: Bool { flags.contains("charge") }
+    /// 파괴광선처럼 쓴 다음 턴에 **움직일 수 없는** 기술
+    var mustRecharge: Bool { flags.contains("recharge") || selfVolatile == "mustrecharge" }
 
     var isContact: Bool { flags.contains("contact") }
     var isPunch: Bool { flags.contains("punch") }
@@ -136,6 +147,10 @@ enum Showdown {
             m.volatileStatus = d["vs"] as? String
             m.status = d["st"] as? String
             m.hasCustomCode = (d["cc"] as? Int) == 1
+            m.selfVolatile = d["sv"] as? String
+            m.selfStatus = d["ss"] as? String
+            m.hidesUser = (d["hide"] as? Int) == 1
+            m.target = d["tg"] as? String
             out[id] = m
         }
         return out

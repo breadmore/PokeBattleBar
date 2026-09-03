@@ -83,6 +83,12 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     /// 묶기 기술(바다회오리·회오리불꽃 등) 의 지속 턴수. 없으면 nil.
     /// PokeAPI 는 ailment="trap" 과 min/max_turns 로 준다.
     var trapTurns: ClosedRange<Int>?
+    /// 솔라빔처럼 모으는 턴이 있는가 (Showdown 의 charge 플래그)
+    var isCharge: Bool = false
+    /// 모으는 동안 몸을 숨기는가 (땅속·공중·물속)
+    var chargeHides: Bool = false
+    /// 파괴광선처럼 쓴 다음 턴에 못 움직이는가
+    var mustRecharge: Bool = false
     /// 쓴 뒤 자신이 교체되는 기술 (유턴·볼트체인지·퀵턴).
     /// PokeAPI 는 이걸 구조화해 주지 않아 이름으로 판정한다.
     var isPivot: Bool = false
@@ -422,6 +428,9 @@ actor PokeAPI {
             specialDamage: specialDamage,
             shortEffect: shortEffect,
             trapTurns: trapTurns,
+            isCharge: MoveFlags.isCharge(name),
+            chargeHides: MoveFlags.chargeHides(name),
+            mustRecharge: MoveFlags.mustRecharge(name),
             isPivot: MoveFlags.isSelfSwitch(name) || Self.pivotMoves.contains(name)
         )
         moves[name] = def

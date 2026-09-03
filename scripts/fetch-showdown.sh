@@ -27,7 +27,10 @@ echo "==> 추출 (node 네이티브 TS 파싱)"
 cat > "$TMP/extract.mjs" <<'JS'
 import fs from 'node:fs';
 const { Moves } = await import(process.argv[2]);
-const WANT_FLAGS = new Set(['contact','punch','bite','sound','powder','protect','metronome','heal','reflectable']);
+// charge = 솔라빔처럼 **모으는 턴**이 있는 2턴 기술.
+// 이게 빠져 있어서 솔라빔이 한 턴에 나갔다.
+const WANT_FLAGS = new Set(['contact','punch','bite','sound','powder','protect','metronome',
+                            'heal','reflectable','charge','recharge','slicing','wind','bullet']);
 const out = {};
 for (const [id, m] of Object.entries(Moves)) {
   const o = {};
@@ -42,6 +45,13 @@ for (const [id, m] of Object.entries(Moves)) {
   for (const [src, dst] of Object.entries(map)) if (m[src] !== undefined) o[dst] = m[src];
   if (m.boosts) o.bo = m.boosts;
   if (m.self?.boosts) o.sb = m.self.boosts;
+  // 파괴광선의 "다음 턴 못 움직임" 은 self.volatileStatus = 'mustrecharge' 로만 있다.
+  // 이걸 안 가져오면 반동 없는 위력 150 기술이 되어버린다.
+  if (m.self?.volatileStatus) o.sv = m.self.volatileStatus;
+  if (m.self?.status) o.ss = m.self.status;
+  if (m.target) o.tg = m.target;
+  // 모으는 턴에 어디로 숨는지 (공중·땅속·물속 — 그 동안 대부분의 기술이 맞지 않는다)
+  if (m.condition?.onImmunity) o.hide = 1;
   const secs = m.secondaries || (m.secondary ? [m.secondary] : null);
   if (secs) o.sec = secs.filter(Boolean).map(s => {
     const x = {};
