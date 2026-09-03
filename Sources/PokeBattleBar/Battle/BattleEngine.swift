@@ -775,6 +775,12 @@ struct BattleEngine {
             guard state.side(side).team.indices.contains(idx) else { continue }
             var b = state.sides[side.rawValue].team[idx]
             guard b.isDynamaxed else { continue }
+            // 쓰러진 개체는 해제 처리에서 건드리지 않는다 (부활 방지)
+            guard !b.isFainted else {
+                b.revertDynamax()
+                state.sides[side.rawValue].team[idx] = b
+                continue
+            }
             let wasGiga = b.isGigantamaxed
             b.dynamaxTurnsLeft -= 1
             if b.dynamaxTurnsLeft <= 0 {
@@ -793,6 +799,12 @@ struct BattleEngine {
         let atkName = atk.name
 
         guard atk.moves.indices.contains(moveIndex) else { return }
+        // 쓸 수 있는 기술이 하나도 없으면 발버둥을 쓴다 (원작 규칙).
+        // 이걸 안 하면 양쪽이 "PP가 없다" 만 반복해 배틀이 끝나지 않는다.
+        if !atk.moves.contains(where: \.usable) {
+            performStruggle(attacker: attacker, defender: defender)
+            return
+        }
         guard atk.moves[moveIndex].usable else {
             say("\(atkName)의 \(atk.moves[moveIndex].def.display)! …PP가 없다!")
             return
@@ -923,9 +935,9 @@ struct BattleEngine {
         let def = state.side(defender).active
         if !accuracyCheck(move: move, attacker: atk, defender: def) {
             say("\(atkName)의 공격은 빗나갔다!")
-            // 대폭발 계열은 빗나가도 쓴 쪽이 쓰러진다 (5세대 이후 원작 규칙 —
-            // 자폭이 공격 판정보다 먼저 일어나기 때문이다)
-            if move.selfKO { applySelfKO(attacker) }
+            // 대폭발 계열은 빗나가도 쓴 쪽이 쓰러진다 (자폭이 판정보다 먼저이므로).
+            // 목숨걸기 계열은 맞아야 쓰러지므로 여기서는 아무 일도 없다.
+            if move.selfKO, move.selfKOBeforeMove { applySelfKO(attacker) }
             return
         }
 
@@ -953,6 +965,12 @@ struct BattleEngine {
             return
         }
 
+        // 대폭발 계열(Showdown selfdestruct="always") 만 공격 판정보다 **먼저** 쓰러진다.
+        // 5세대 이후 원작 규칙이고, 동시 전멸 시 승패도 이 순서로 정해진다.
+        // 목숨걸기·메멘토(="ifHit") 는 효과를 낸 뒤에 쓰러져야 한다 —
+        // 먼저 쓰러지면 "자기 HP 만큼" 이 0 이 되어버린다.
+        if move.selfKO, move.selfKOBeforeMove { applySelfKO(attacker) }
+
         // 공격기 — 다단히트 지원
         let hits = hitCount(move)
         var totalDealt = 0
@@ -965,8 +983,8 @@ struct BattleEngine {
             lastMult = r.typeMultiplier
             if r.multiplier == 0 {
                 say("\(state.side(defender).active.name)에게는 효과가 없는 것 같다…")
-                // 상대가 무효 타입이어도 자폭은 일어난다
-                if move.selfKO { applySelfKO(attacker) }
+                // 무효 타입이어도 대폭발 계열은 쓴 쪽이 쓰러진다
+                if move.selfKO, move.selfKOBeforeMove { applySelfKO(attacker) }
                 return
             }
             didCrit = didCrit || r.critical
@@ -1098,9 +1116,8 @@ struct BattleEngine {
         // 구애 계열 — 처음 쓴 기술로 고정된다
         lockChoiceMove(attacker, moveIndex: moveIndex)
 
-        // 대폭발·자폭·목숨걸기 — 쓴 쪽이 쓰러진다.
-        // PokeAPI 의 meta 에는 이 정보가 없어서 예전엔 그냥 무시됐다.
-        if move.selfKO { applySelfKO(attacker) }
+        // 목숨걸기·메멘토 계열 — 효과를 낸 뒤에 쓰러진다
+        if move.selfKO, !move.selfKOBeforeMove { applySelfKO(attacker) }
     }
 
     /// 이번 턴에 실제로 쓰이는 기술. Z기술 선언이나 거다이맥스 상태면 다른 기술로 바뀐다.
@@ -1451,6 +1468,36 @@ struct BattleEngine {
         guard case .choice = b.itemKind, b.lockedMoveIndex == nil else { return }
         b.lockedMoveIndex = moveIndex
         state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+    }
+
+    /// 발버둥 — 쓸 수 있는 기술이 없을 때 강제로 쓴다.
+    /// 위력 50, 타입 상성을 받지 않으며, 준 피해의 절반(최대HP 1/4) 을 자신도 받는다.
+    private mutating func performStruggle(attacker: BattleSide, defender: BattleSide) {
+        let a = state.side(attacker).active
+        let d = state.side(defender).active
+        say("\(a.name)는 쓸 수 있는 기술이 없다! 발버둥!")
+
+        // 타입 상성·특성 면역을 무시하는 물리 50
+        let physical = true
+        let A = Double(a.effective(.attack))
+        let D = Double(d.effective(.defense))
+        var dmg = floor(floor(floor(2.0 * Double(a.level) / 5.0 + 2.0) * 50.0 * A / D) / 50.0) + 2.0
+        let rand = Double(Int.random(in: 85...100, using: &rng)) / 100.0
+        dmg = floor(dmg * rand)
+        _ = physical
+
+        let dealt = applyDamage(max(1, Int(dmg)), to: defender)
+        checkFaint(defender)
+
+        // 반동 — 최대 HP 의 1/4 (매직가드도 막지 못한다)
+        var me = state.side(attacker).active
+        if !me.isFainted {
+            me.currentHP = max(0, me.currentHP - max(1, me.maxHP / 4))
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = me
+            say("\(KO.t(me.name)) 발버둥의 반동을 받았다!")
+            checkFaint(attacker)
+        }
+        _ = dealt
     }
 
     /// 쓴 쪽을 쓰러뜨린다 (대폭발 계열).
@@ -2256,9 +2303,26 @@ struct BattleEngine {
     }
 
     private mutating func checkBattleOver() {
-        if case .finished = state.phase { return }
         let h = state.side(.host).remaining
         let g = state.side(.guest).remaining
+
+        // 이미 끝난 걸로 기록됐어도, 그 뒤 반동·자폭·유폭으로 승자까지 전멸할 수 있다.
+        // 그런 경우 기록을 바로잡는다 (전멸한 쪽이 승자로 남으면 안 된다).
+        if case .finished(let w) = state.phase {
+            guard let w else { return }
+            let winnerRemaining = state.sides[w].remaining
+            guard winnerRemaining == 0 else { return }
+            if h == 0 && g == 0 {
+                say("[정정] 양쪽 모두 쓰러졌다 — 무승부!")
+                state.phase = .finished(winner: nil)
+            } else {
+                let other = w == 0 ? 1 : 0
+                say("[정정] \(state.sides[other].playerName) 승리!")
+                state.phase = .finished(winner: other)
+            }
+            return
+        }
+
         guard h == 0 || g == 0 else { return }
 
         if h == 0 && g == 0 {

@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cd /tmp\\necho \\\"##### G-Max 기술이 PokeAPI 에 있는가 #####\\\"\\npython3 -c \\\"\\nimport json\\nd=json.load(open('/tmp/moves.json'))\\nnames=[m['name'] for m in d['results']]\\ng=[n for n in names if n.s...",
-  "error": "Exit code 1\n##### G-Max 기술이 PokeAPI 에 있는가 #####\n  g-max 기술: 0 개\n\n##### G-Max 기술 상세 (종 정보가 있는가) #####\nTraceback (most recent call last):\n  File \"<string>\", line 3, in <module>\n  File \"/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/json/__init__.py\", line 293, in load\n    return loads(fp.read(),\n  File \"/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/json/__init__.py\", line 346, i...",
-  "timestamp": "2026-09-03T01:49:30.006Z",
+  "tool_input_preview": "{\"command\":\"until [ -f ~/PokeBattleBar/build.noindex/PokeBattleBar-1.7.0-Install.command ] || grep -q \\\"중단\\\" /private/tmp/claude-501/-Users-actionfit/e38a2fb0-9b7f-448a-a6d5-7a98b07b6542/tasks/by8o46t...",
+  "error": "Exit code 1\ncp: PokeBattleBar-1.7.0-Install.command: No such file or directory\n  ✓  게임 모드         --modetest         0.0초\n  ✓  네트워크          --nettest          2.7초\n\n  13/14 통과   총 3.1초\n\n  실패: --bugsweep\n══════════════════════════════════════════════════════════════\n검증이 실패했습니다. 배포를 중단합니다.\n\n[exited with code 0]\n\n(eval):7: no matches found: /Users/actionfit/Desktop/PokeBattleBar*\nThe file /Users/actionfit/Desktop/PokeBattleBar-1.7.0-Install.command does not exist.",
+  "timestamp": "2026-09-03T05:18:51.294Z",
   "retry_count": 1
 }

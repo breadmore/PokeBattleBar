@@ -35,6 +35,8 @@ enum BugSweep {
 
             var turns = 0
             let cap = 300
+            // 한 번 쓰러진 개체가 다시 살아나는지 추적한다 (다이맥스 해제 부활 버그 회귀 방지)
+            var everFainted: Set<String> = []
             while turns < cap {
                 turns += 1
                 switch e.state.phase {
@@ -64,6 +66,20 @@ enum BugSweep {
                 }
 
                 for v in check(e.state) { violations[v, default: 0] += 1 }
+
+                for (i, side) in e.state.sides.enumerated() {
+                    for (j, b) in side.team.enumerated() {
+                        let key = "\(i)-\(j)"
+                        if b.isFainted { everFainted.insert(key) }
+                        else if everFainted.contains(key) {
+                            violations[Violation(rule: "쓰러진 포켓몬이 되살아났다",
+                                                 detail: "side\(i) team[\(j)] \(b.name) "
+                                                       + "HP=\(b.currentHP)/\(b.maxHP)"),
+                                       default: 0] += 1
+                            everFainted.remove(key)
+                        }
+                    }
+                }
                 if case .finished = e.state.phase { break }
             }
             turnsTotal += turns
@@ -110,7 +126,8 @@ enum BugSweep {
         "턴 수는 감소하지 않는다",
         "배틀은 유한 턴 안에 끝난다",
         "피벗(유턴) 단계는 활성이 살아 있고 벤치에 낼 포켓몬이 있을 때만",
-        "묶기 턴수는 0 이상 6 이하"
+        "묶기 턴수는 0 이상 6 이하",
+        "쓰러진 포켓몬은 절대 되살아나지 않는다"
     ]
 
     // MARK: 불변식 검사
