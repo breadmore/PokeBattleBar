@@ -22,13 +22,14 @@ enum Wire: Codable, Sendable {
 /// 쓰지 않으므로, 신규 필드가 하나만 늘어도 구버전이 보낸 JSON 은 디코딩이 실패한다.
 /// 버전을 함께 실어보내야 "그냥 연결이 끊겼다" 가 아니라 "버전이 다르다" 를 보여줄 수 있다.
 enum PokeBattleProtocol {
-    static let version = 4
+    static let version = 5
 
+    /// 5: 날씨·필드, G-Max 전용기, 접촉 기반 특성 추가
     /// 4: 지닌 도구 + 특성 추가 (Battler.heldItem / .ability, 규칙 토글 3개)
     /// 3: 다이맥스 추가 (usedGmax -> usedDynamax, gmaxTurnsLeft -> dynamaxTurnsLeft)
     /// 2: 메가진화/거다이맥스/Z기술 필드 추가 + 프로토콜 버전 도입
     /// 1: 최초 배포 (버전 정보 없음 — v2 이상과는 통신 불가)
-    static let changelog = "v4 — 지닌 도구·특성 추가"
+    static let changelog = "v5 — 날씨·G-Max 전용기·접촉 특성"
 }
 
 /// 버전만 먼저 읽기 위한 최소 구조체.

@@ -2,6 +2,14 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--extendedtest") {
+    Task {
+        let passed = await ExtendedTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--loadouttest") {
     let verbose = args.contains("--verbose")
     Task {

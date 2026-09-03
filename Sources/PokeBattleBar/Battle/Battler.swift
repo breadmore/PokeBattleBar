@@ -49,6 +49,10 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var dynamaxTurnsLeft: Int = 0
     /// 거다이맥스로 발동했는가 (일반 다이맥스와 표시·전용기가 다르다)
     var isGigantamaxed: Bool = false
+    /// 거다이맥스 전용기 (종별로 정해져 있다). PokeAPI 에 없어 표로 관리한다.
+    var gmaxMove: GMaxMove?
+    /// 급소율 단계 (다이맥스태클 등으로 오른다)
+    var critStage: Int = 0
     /// 변신 표시용 라벨 ("메가 X", "다이맥스", "거다이맥스")
     var formLabel: String?
     /// 다이맥스 해제 시 되돌릴 원래 HP 상한
@@ -206,6 +210,8 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         currentHP = max(1, Int(Double(maxHP) * ratio))
         // 거다이맥스는 전용 폼의 타입을 따른다 (대개 원래와 같다)
         if gigantamax, let form { types = form.types }
+        // 거다이맥스면 전용기를 부여한다
+        if gigantamax { gmaxMove = GMaxMove.forSpecies(speciesID) }
         dynamaxTurnsLeft = turns
         isGigantamaxed = gigantamax
         formLabel = gigantamax ? "거다이맥스" : "다이맥스"
@@ -218,6 +224,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     mutating func revertDynamax() {
         dynamaxTurnsLeft = 0
         isGigantamaxed = false
+        gmaxMove = nil
         if !isMega { formLabel = nil }
         guard baseMaxHP > 0, maxHP != baseMaxHP else { return }
         let ratio = maxHP > 0 ? Double(currentHP) / Double(maxHP) : 1.0

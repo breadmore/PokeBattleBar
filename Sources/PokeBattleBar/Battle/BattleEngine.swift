@@ -44,6 +44,8 @@ struct BattleRules: Codable, Hashable, Sendable {
     var itemEffects: Bool = true
     /// 특성 사용
     var abilities: Bool = true
+    /// 날씨 · 필드 사용
+    var weather: Bool = true
 
     static let `default` = BattleRules()
 }
@@ -92,11 +94,21 @@ struct BattleState: Codable, Sendable, Equatable {
     var turn: Int = 0
     var phase: BattlePhase = .chooseLead
     var log: [String] = []
+    /// 날씨 / 필드
+    var field = FieldState()
+    /// G-Max 지속 피해 (side.rawValue -> (면역타입, 남은턴))
+    var gmaxDoT: [Int: GMaxDoT] = [:]
 
     func side(_ s: BattleSide) -> SideState { sides[s.rawValue] }
 }
 
 // MARK: - 행동
+
+/// G-Max 지속 피해 상태
+struct GMaxDoT: Codable, Sendable, Equatable {
+    var immuneType: PType
+    var turnsLeft: Int
+}
 
 enum BattleAction: Codable, Sendable, Equatable {
     /// 기술을 쓴다. `special` 은 이번 턴에 함께 선언하는 특수 변신
@@ -173,6 +185,12 @@ struct BattleEngine {
         guard !b.entryAbilityFired, !b.isFainted else { return }
         b.entryAbilityFired = true
         state.sides[side.rawValue].team[idx] = b
+
+        // 날씨를 부르는 특성 (가뭄·잔비·모래날림·눈퍼뜨리기)
+        if state.rules.weather, case .weatherOnEntry(let w) = b.abilityKind {
+            state.field.setWeather(w, turns: 5)
+            say("\(b.name)의 \(b.ability?.display ?? "특성")! \(w.ko) 상태가 되었다!")
+        }
 
         guard case .intimidate = b.abilityKind else { return }
         let foe = side.other
@@ -291,6 +309,10 @@ struct BattleEngine {
             let b = state.side(side).active
             var v = Double(b.effective(.speed))
             if state.rules.itemEffects, case .choice(.speed) = b.itemKind { v *= 1.5 }
+            // 엽록소·쓱쓱·모래헤치기·눈치우기
+            if state.rules.weather, state.field.hasWeather,
+               case .weatherSpeedBoost(let w, let m) = b.abilityKind,
+               w == state.field.weather { v *= m }
             return max(1, Int(v))
         }
         let hs = speed(.host)
@@ -454,6 +476,18 @@ struct BattleEngine {
             say("\(atkName)의 \(move.display)!")
         }
 
+        // 방음 — 소리 기술 무효
+        if state.rules.abilities, MoveFlags.isSound(move.name),
+           case .soundImmunity = state.side(defender).active.abilityKind {
+            say("\(state.side(defender).active.name)는 방음으로 소리 기술을 막았다!")
+            return
+        }
+        // 가루 기술은 풀타입에게 통하지 않는다 (원작 규칙)
+        if MoveFlags.isPowder(move.name), state.side(defender).active.types.contains(.grass) {
+            say("\(state.side(defender).active.name)에게는 가루 기술이 통하지 않는다!")
+            return
+        }
+
         // 명중 판정
         let def = state.side(defender).active
         if !accuracyCheck(move: move, attacker: atk, defender: def) {
@@ -529,6 +563,17 @@ struct BattleEngine {
             checkFaint(attacker)
         }
 
+        // 접촉 기술에 대한 반격 특성 (정전기·불꽃몸·거친피부 등)
+        if state.rules.abilities, totalDealt > 0, MoveFlags.isContact(move.name) {
+            applyContactAbility(attacker: attacker, defender: defender)
+        }
+
+        // 거다이맥스 전용기 추가 효과
+        if move.name.hasPrefix("gmax-"),
+           let g = state.side(attacker).active.gmaxMove {
+            applyGMaxEffect(g, attacker: attacker, defender: defender)
+        }
+
         // 구애 계열 — 처음 쓴 기술로 고정된다
         lockChoiceMove(attacker, moveIndex: moveIndex)
 
@@ -550,6 +595,19 @@ struct BattleEngine {
                 }
                 return move
             }
+            // 거다이맥스 전용기 — 기술 타입이 전용기 타입과 같을 때 발동한다 (원작과 동일)
+            if let g = b.gmaxMove, g.type == move.type {
+                var gm = move
+                gm.name = "gmax-" + g.rawValue
+                gm.koName = g.ko
+                gm.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
+                gm.accuracy = nil
+                gm.specialDamage = .none
+                gm.selfKO = false
+                gm.ailment = .none
+                gm.statChanges = []
+                return gm
+            }
             guard let name = FormTables.maxMove[move.type],
                   var mx = maxMoveCache[name] else { return move }
             mx.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
@@ -570,6 +628,143 @@ struct BattleEngine {
         z.specialDamage = .none
         z.selfKO = false
         return z
+    }
+
+    /// 접촉했을 때 방어측 특성이 공격측에게 되돌리는 효과
+    private mutating func applyContactAbility(attacker: BattleSide, defender: BattleSide) {
+        let d = state.side(defender).active
+        guard !d.isFainted else { return }
+
+        switch d.abilityKind {
+        case .contactStatus(let ail, let percent):
+            guard rng.chance(percent) else { return }
+            inflictDirect(ail, on: attacker, source: d.ability?.display ?? "특성")
+
+        case .contactDamage(let denom):
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted, !(state.rules.abilities && isMagicGuard(a)) else { return }
+            a.currentHP = max(0, a.currentHP - max(1, a.maxHP / denom))
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            say("\(KO.t(a.name)) \(d.ability?.display ?? "특성") 때문에 피해를 입었다!")
+            checkFaint(attacker)
+
+        default:
+            break
+        }
+    }
+
+    /// 거다이맥스 전용기의 추가 효과를 적용한다.
+    /// 교체가 없는 배틀이라 스텔스록·묶기·중력 계열은 재현 대상이 아니다.
+    private mutating func applyGMaxEffect(_ g: GMaxMove, attacker: BattleSide, defender: BattleSide) {
+        let aIdx = state.side(attacker).activeIndex
+        let dIdx = state.side(defender).activeIndex
+        guard state.side(attacker).team.indices.contains(aIdx),
+              state.side(defender).team.indices.contains(dIdx) else { return }
+
+        switch g.effect {
+        case .none:
+            break
+
+        case .damageOverTime(let immune, let turns):
+            state.gmaxDoT[defender.rawValue] = GMaxDoT(immuneType: immune, turnsLeft: turns)
+            say("\(g.ko)의 여파가 상대를 감쌌다! (\(turns)턴)")
+
+        case .inflict(let ail):
+            inflictDirect(ail, on: defender, source: g.ko)
+
+        case .inflictRandom(let list):
+            if let pick = list.randomElement(using: &rng) {
+                inflictDirect(pick, on: defender, source: g.ko)
+            }
+
+        case .foeStat(let stat, let delta):
+            var f = state.sides[defender.rawValue].team[dIdx]
+            guard !f.isFainted else { break }
+            if state.rules.abilities, case .clearBody = f.abilityKind {
+                say("\(f.name)는 \(f.ability?.display ?? "특성") 때문에 능력치가 떨어지지 않는다!")
+                break
+            }
+            let cur = f.stages[stat] ?? 0
+            f.stages[stat] = max(-6, min(6, cur + delta))
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("\(f.name)의 \(KO.s(stat.ko)) \(delta > 0 ? "올라갔다" : "크게 떨어졌다")!")
+
+        case .foeEvasion(let delta):
+            var f = state.sides[defender.rawValue].team[dIdx]
+            guard !f.isFainted else { break }
+            f.evasionStage = max(-6, min(6, f.evasionStage + delta))
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("\(f.name)의 회피율이 떨어졌다!")
+
+        case .selfStat(let stat, let delta):
+            var a = state.sides[attacker.rawValue].team[aIdx]
+            let cur = a.stages[stat] ?? 0
+            a.stages[stat] = max(-6, min(6, cur + delta))
+            state.sides[attacker.rawValue].team[aIdx] = a
+            say("\(a.name)의 \(KO.s(stat.ko)) 올라갔다!")
+
+        case .selfCrit(let n):
+            var a = state.sides[attacker.rawValue].team[aIdx]
+            a.critStage = min(4, a.critStage + n)
+            state.sides[attacker.rawValue].team[aIdx] = a
+            say("\(a.name)의 급소율이 올라갔다!")
+
+        case .healSelf(let percent):
+            var a = state.sides[attacker.rawValue].team[aIdx]
+            guard a.currentHP < a.maxHP else { break }
+            a.currentHP = min(a.maxHP, a.currentHP + max(1, a.maxHP * percent / 100))
+            state.sides[attacker.rawValue].team[aIdx] = a
+            say("\(KO.t(a.name)) 체력을 회복했다!")
+
+        case .cureStatus:
+            var a = state.sides[attacker.rawValue].team[aIdx]
+            guard a.status != .none || a.confusionTurns > 0 else { break }
+            a.status = .none; a.sleepTurns = 0; a.toxicCounter = 0; a.confusionTurns = 0
+            state.sides[attacker.rawValue].team[aIdx] = a
+            say("\(KO.t(a.name)) 상태이상이 회복됐다!")
+
+        case .drainPP(let n):
+            var f = state.sides[defender.rawValue].team[dIdx]
+            guard !f.isFainted, !f.moves.isEmpty else { break }
+            let i = Int.random(in: 0..<f.moves.count, using: &rng)
+            f.moves[i].ppLeft = max(0, f.moves[i].ppLeft - n)
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("\(f.name)의 \(f.moves[i].def.display) PP가 줄었다!")
+
+        case .ignoreAbility:
+            var f = state.sides[defender.rawValue].team[dIdx]
+            guard f.ability != nil else { break }
+            f.ability = nil
+            state.sides[defender.rawValue].team[dIdx] = f
+            say("상대의 특성이 무시됐다!")
+        }
+    }
+
+    /// 확률 없이 확정으로 상태이상을 건다 (G-Max 전용기용). 면역은 그대로 존중한다.
+    private mutating func inflictDirect(_ ail: Ailment, on side: BattleSide, source: String) {
+        let idx = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(idx) else { return }
+        var t = state.sides[side.rawValue].team[idx]
+        guard !t.isFainted else { return }
+
+        if ail == .confusion {
+            guard t.confusionTurns == 0 else { return }
+            if state.rules.abilities, case .statusImmunity(.confusion) = t.abilityKind { return }
+            t.confusionTurns = Int.random(in: 2...5, using: &rng)
+            say("\(KO.t(t.name)) 혼란에 빠졌다!")
+        } else {
+            guard t.status == .none else { return }
+            if state.rules.abilities, case .statusImmunity(let imm) = t.abilityKind,
+               imm == ail || (imm == .poison && ail == .toxic) { return }
+            if ail == .burn, t.types.contains(.fire) { return }
+            if ail == .paralysis, t.types.contains(.electric) { return }
+            if ail == .poison || ail == .toxic,
+               t.types.contains(.poison) || t.types.contains(.steel) { return }
+            t.status = ail
+            if ail == .sleep { t.sleepTurns = Int.random(in: 2...4, using: &rng) }
+            say("\(KO.t(t.name)) \(ail.ko) 상태가 되었다!")
+        }
+        state.sides[side.rawValue].team[idx] = t
     }
 
     private func isMagicGuard(_ b: Battler) -> Bool {
@@ -644,7 +839,12 @@ struct BattleEngine {
         guard let acc = move.accuracy else { return true }   // nil = 필중
         let mod = Battler.accEvaMultiplier(attacker.accuracyStage)
                 / Battler.accEvaMultiplier(defender.evasionStage)
-        let final = Int((Double(acc) * mod).rounded())
+        var final = Int((Double(acc) * mod).rounded())
+        // 모래숨기·눈숨기 — 해당 날씨에서 회피율 상승
+        if state.rules.weather, state.field.hasWeather,
+           case .weatherEvasion(let w) = defender.abilityKind, w == state.field.weather {
+            final = Int(Double(final) * 0.8)
+        }
         return rng.chance(max(1, min(100, final)))
     }
 
@@ -691,7 +891,17 @@ struct BattleEngine {
 
         let power = move.power ?? 0
 
-        let critical = state.rules.criticalHits && rng.chance(move.critRateBonus > 0 ? 12 : 4)
+        // 급소율: 기본 1/24(≈4%), 기술 보너스나 다이맥스태클로 올라간다
+        var critPercent = 4
+        if move.critRateBonus > 0 { critPercent = 12 }
+        switch a.critStage {
+        case 1: critPercent = max(critPercent, 12)
+        case 2: critPercent = max(critPercent, 50)
+        case 3...: critPercent = 100
+        default: break
+        }
+        var critical = state.rules.criticalHits && rng.chance(critPercent)
+        if state.rules.abilities, case .criticalImmunity = d.abilityKind { critical = false }
 
         // 급소는 공격측 하락 랭크와 방어측 상승 랭크를 무시한다
         // 천진: 상대의 능력치 변화를 무시한다
@@ -739,9 +949,22 @@ struct BattleEngine {
                                         defenders: d.types.filter { $0 != .ghost })
             if d.types.allSatisfy({ $0 == .ghost }) { typeMult = 1.0 }
         }
+        // 틀깨기 — 상대 특성을 무시한다
+        let ignoreFoeAbility = state.rules.abilities
+            && { if case .ignoreAbility = a.abilityKind { return true }; return false }()
+        let foeAbility: AbilityKind = ignoreFoeAbility ? .none : d.abilityKind
+
         // 특성: 부유 등 타입 무효
-        if state.rules.abilities, case .typeImmunity(let t) = d.abilityKind, move.type == t {
+        if state.rules.abilities, case .typeImmunity(let t) = foeAbility, move.type == t {
             typeMult = 0
+        }
+        // 타입 흡수 계열 (저수·축전·타오르는불꽃·건조피부)
+        if state.rules.abilities, case .levitateLike(let t, let mult) = foeAbility, move.type == t {
+            typeMult *= mult
+        }
+        if state.rules.abilities, case .dryskin = foeAbility {
+            if move.type == .water { typeMult = 0 }
+            if move.type == .fire { typeMult *= 1.25 }
         }
 
         // 자기 타입 일치 — 적응력이면 2.0
@@ -775,9 +998,38 @@ struct BattleEngine {
             // 이판사판 (반동기)
             if case .reckless(let m) = a.abilityKind, move.drainPercent < 0 { extra *= m }
 
+            // 기술 종류 강화 (철주먹·옹골찬턱·펑크록·강한발톱)
+            if case .moveFlagBoost(let flag, let m) = a.abilityKind {
+                let matches: Bool
+                switch flag {
+                case .punch:   matches = MoveFlags.isPunch(move.name)
+                case .bite:    matches = MoveFlags.isBite(move.name)
+                case .sound:   matches = MoveFlags.isSound(move.name)
+                case .powder:  matches = MoveFlags.isPowder(move.name)
+                case .contact: matches = MoveFlags.isContact(move.name)
+                }
+                if matches { extra *= m }
+            }
+            // 날씨에서 공격력 상승 (태양의힘·모래의힘)
+            if state.rules.weather, state.field.hasWeather,
+               case .weatherStatBoost(let w, let st, let m) = a.abilityKind,
+               w == state.field.weather,
+               (st == .attack && physical) || (st == .spAttack && !physical) { extra *= m }
+
             // 방어측 특성
-            if case .damageTaken(let types, let m) = d.abilityKind, types.contains(move.type) { extra *= m }
-            if case .superEffectiveResist(let m) = d.abilityKind, typeMult >= 2 { extra *= m }
+            if case .damageTaken(let types, let m) = foeAbility, types.contains(move.type) { extra *= m }
+            if case .superEffectiveResist(let m) = foeAbility, typeMult >= 2 { extra *= m }
+            // 멀티스케일 — 풀피에서 받는 피해 감소
+            if case .multiscale(let m) = foeAbility, d.currentHP == d.maxHP { extra *= m }
+        }
+
+        // 날씨 — 불꽃/물 기술 배율
+        if state.rules.weather, state.field.hasWeather {
+            extra *= state.field.weather.damageMultiplier(for: move.type)
+        }
+        // 필드 — 해당 타입 강화
+        if state.rules.weather, state.field.hasTerrain {
+            extra *= state.field.terrain.boost(for: move.type)
         }
 
         if state.rules.itemEffects {
@@ -865,6 +1117,20 @@ struct BattleEngine {
 
     private mutating func applyNonDamaging(move: MoveDef, attacker: BattleSide, defender: BattleSide) {
         var acted = false
+
+        // 날씨 / 필드 기술 — PokeAPI 는 whole-field-effect 라고만 알려주므로 이름으로 판정한다
+        if state.rules.weather {
+            if let w = Weather.from(moveName: move.name) {
+                state.field.setWeather(w, turns: 5)
+                say("\(w.ko) 상태가 되었다!")
+                acted = true
+            }
+            if let t = Terrain.from(moveName: move.name) {
+                state.field.setTerrain(t, turns: 5)
+                say("\(t.ko)가 깔렸다!")
+                acted = true
+            }
+        }
 
         // 회복기
         if move.healingPercent > 0 {
@@ -987,6 +1253,14 @@ struct BattleEngine {
             var b = state.side(s).active
             guard !b.isFainted else { continue }
 
+            // 아이스바디·우비 — 해당 날씨에서 회복
+            if state.rules.weather, state.rules.abilities, state.field.hasWeather,
+               case .weatherHeal(let w, let denom) = b.abilityKind,
+               w == state.field.weather, b.currentHP < b.maxHP {
+                b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / denom))
+                say("\(KO.t(b.name)) \(b.ability?.display ?? "특성")(으)로 체력을 회복했다!")
+            }
+
             // 먹다남은음식 — 최대 HP 1/16 회복
             if state.rules.itemEffects, case .leftovers = b.itemKind, b.currentHP < b.maxHP {
                 b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / 16))
@@ -1024,8 +1298,51 @@ struct BattleEngine {
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
+        tickWeatherAndField()
+        tickGMaxDoT()
         tickDynamax()
         checkBattleOver()
+    }
+
+    /// 모래바람 지속 피해와 날씨·필드 지속시간
+    private mutating func tickWeatherAndField() {
+        guard state.rules.weather else { return }
+
+        if state.field.hasWeather, state.field.weather == .sandstorm {
+            for side in [BattleSide.host, .guest] {
+                var b = state.side(side).active
+                guard !b.isFainted else { continue }
+                if state.field.weather.isImmuneToChip(b.types) { continue }
+                if state.rules.abilities, isMagicGuard(b) { continue }
+                b.currentHP = max(0, b.currentHP - max(1, b.maxHP / 16))
+                state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+                say("\(KO.t(b.name)) 모래바람에 시달리고 있다!")
+                checkFaint(side)
+            }
+        }
+
+        let ended = state.field.tick()
+        if let w = ended.endedWeather { say("\(w.ko)이(가) 그쳤다!") }
+        if let t = ended.endedTerrain { say("\(t.ko)가 사라졌다!") }
+    }
+
+    /// G-Max 지속 피해 (다이맥스채찍·다이맥스파이어 등)
+    private mutating func tickGMaxDoT() {
+        for side in [BattleSide.host, .guest] {
+            guard var dot = state.gmaxDoT[side.rawValue] else { continue }
+            var b = state.side(side).active
+            if !b.isFainted, !b.types.contains(dot.immuneType) {
+                if !(state.rules.abilities && isMagicGuard(b)) {
+                    b.currentHP = max(0, b.currentHP - max(1, b.maxHP / 6))
+                    state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+                    say("\(KO.t(b.name)) 거다이맥스 기술의 여파로 피해를 입었다!")
+                    checkFaint(side)
+                }
+            }
+            dot.turnsLeft -= 1
+            if dot.turnsLeft <= 0 { state.gmaxDoT[side.rawValue] = nil }
+            else { state.gmaxDoT[side.rawValue] = dot }
+        }
     }
 
     private mutating func checkFaint(_ side: BattleSide) {
