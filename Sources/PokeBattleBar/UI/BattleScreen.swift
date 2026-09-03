@@ -213,10 +213,27 @@ struct GBStageMon: View {
     let isFoe: Bool
     var spriteSize: CGFloat = 112
 
+    /// 숨어 있는 동안 스프라이트가 어디로 빠지는가.
+    /// 공중날기는 위로, 땅속은 아래로, 그 외(모습감추기 등)는 사라진다.
+    private var hideOffset: CGSize {
+        guard b.chargeHidden else { return .zero }
+        switch b.chargingMoveName {
+        case "fly", "bounce", "sky-attack": return CGSize(width: 0, height: -spriteSize * 1.1)
+        case "dig":                          return CGSize(width: 0, height: spriteSize * 0.75)
+        case "dive":                         return CGSize(width: 0, height: spriteSize * 0.6)
+        default:                             return .zero
+        }
+    }
+
     var body: some View {
         VStack(spacing: -spriteSize * 0.12) {
             SpriteView(speciesID: b.speciesID, shiny: b.isShiny, size: spriteSize,
                        form: b.spriteForm, scale: b.spriteScale)
+                // 필드에서 벗어난 동안은 눈에 보이지 않아야 한다 —
+                // 그러지 않으면 왜 공격이 빗나가는지 알 수가 없다
+                .offset(hideOffset)
+                .opacity(b.chargeHidden ? 0.12 : 1)
+                .animation(.easeOut(duration: 0.4), value: b.chargeHidden)
                 // PokéAPI 프론트 스프라이트는 기본이 **왼쪽을 보는** 방향이다.
                 // 상대(오른쪽 위)는 그대로 두면 나를 보고, 내 포켓몬(왼쪽 아래)은
                 // 뒤집어야 상대를 본다. 뒤집는 쪽이 반대면 서로 등을 돌린다.
@@ -237,9 +254,20 @@ struct GBStageMon: View {
                 .id(b.id)
 
             Ellipse()
-                .fill(GB.ink.opacity(0.14))
+                .fill(GB.ink.opacity(b.chargeHidden ? 0.06 : 0.14))
                 .frame(width: spriteSize * 0.86, height: spriteSize * 0.2)
         }
+        .overlay {
+            if b.chargeHidden, let note = b.hiddenNote {
+                Text(note)
+                    .font(GB.face(11))
+                    .foregroundStyle(GB.plate)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(GB.ink.opacity(0.8)))
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.3), value: b.chargeHidden)
     }
 }
 

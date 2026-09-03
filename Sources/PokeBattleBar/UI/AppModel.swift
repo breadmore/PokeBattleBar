@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI      // withAnimation
 import AppKit
 import Observation
 import Network
@@ -135,7 +136,13 @@ final class AppModel {
     private var playbackTask: Task<Void, Never>?
 
     /// 한 단계당 머무는 시간
-    private let stepDuration: Duration = .milliseconds(850)
+    /// 한 단계의 기본 길이
+    private let stepDuration: Duration = .milliseconds(900)
+    /// 로그 한 줄당 더해주는 시간. 벌어진 일이 많은 단계는 더 오래 보여준다 —
+    /// 손가락흔들기처럼 양쪽이 주고받는 턴은 짧으면 눈이 못 따라간다.
+    private let perLineDuration: Duration = .milliseconds(320)
+    /// 체력이 깎이는 데 걸리는 시간
+    static let hpDrainDuration: Double = 0.5
 
     /// 엔진이 넘겨준 단계들을 순서대로 재생한다.
     /// 새 상태를 화면에 올린다. **모든 상태 갱신은 이 함수를 지나야 한다.**
@@ -193,15 +200,22 @@ final class AppModel {
                 if Task.isCancelled { return }
                 shown += step.log.count
                 // 애니메이션은 뷰가 값 변화를 보고 처리한다 (HPBar 의 .animation)
-                self.playbackHostHP = step.hostHP
-                self.playbackGuestHP = step.guestHP
+                // **명시적으로 애니메이션을 건다.** 뷰의 .animation(value:) 에만
+                // 맡기면 값이 한꺼번에 갱신될 때 그냥 툭 바뀐다 — 체력이 깎이는
+                // 것을 눈으로 볼 수 없었던 이유다.
+                withAnimation(.easeOut(duration: AppModel.hpDrainDuration)) {
+                    self.playbackHostHP = step.hostHP
+                    self.playbackGuestHP = step.guestHP
+                }
                 self.playbackHostActive = step.hostActive
                 self.playbackGuestActive = step.guestActive
                 self.playbackLogCount = shown
-                // 이 단계의 첫 줄을 배너로 (누가 무엇을 했는지)
                 // 너무 길어지면 화면을 가리므로 앞쪽 4줄까지만
                 self.playbackBannerLines = Array(step.log.prefix(4))
-                try? await Task.sleep(for: self.stepDuration)
+                // 벌어진 일이 많은 단계는 더 오래 보여준다 — 손가락흔들기처럼
+                // 양쪽이 주고받는 턴은 짧으면 눈이 못 따라간다
+                let extra = self.perLineDuration * max(0, step.log.count - 1)
+                try? await Task.sleep(for: self.stepDuration + extra)
             }
             if Task.isCancelled { return }
             self.clearPlayback()

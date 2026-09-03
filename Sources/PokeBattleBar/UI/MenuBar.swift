@@ -65,7 +65,32 @@ struct MenuBarContent: View {
                 Divider()
             }
 
+            // 지금 상태 — 창을 닫아둬도 무슨 일이 벌어지는지 알 수 있어야 한다
             Text(statusLine)
+            if let extra = detailLine { Text(extra) }
+
+            Divider()
+
+            Text("전적 \(model.record.wins)승 \(model.record.losses)패"
+                 + (model.record.draws > 0 ? " \(model.record.draws)무" : "")
+                 + " · \(model.record.points)P"
+                 + (model.record.currentStreak > 1 ? " · \(model.record.currentStreak)연승" : ""))
+            Text("내 포켓몬 \(model.roster.count)마리 · 데려갈 수 있는 최대 \(model.effectiveTeamSize)마리")
+            if model.rules.metronomeMode {
+                Text("토게피 손가락흔들기 모드")
+            } else if model.modeSummary != "일반" {
+                Text("모드: \(model.modeSummary)")
+            }
+
+            if let u = model.availableUpdate {
+                Divider()
+                Button("업데이트 v\(u.version) 받기") {
+                    showWindow()
+                    Task { await model.downloadAndRunUpdate() }
+                }
+            }
+
+            Divider()
 
             if model.lobbyPeers.isEmpty {
                 Text("로비에 다른 사람이 없습니다")
@@ -114,12 +139,34 @@ struct MenuBarContent: View {
             }
 
             Divider()
+            Text("v\(model.appVersion) · 프로토콜 v\(model.protocolVersion)")
             Toggle("Dock 아이콘 숨기기", isOn: Binding(
                 get: { model.hideDockIcon },
                 set: { model.setHideDockIcon($0) }
             ))
             Button("종료") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
+        }
+    }
+
+    /// 상태에 딸린 한 줄 더 — 배틀 중이면 누가 어떤 포켓몬으로 몇 턴째인지
+    private var detailLine: String? {
+        switch model.screen {
+        case .battle:
+            guard let b = model.battle, let me = model.myState, let foe = model.foeState
+            else { return nil }
+            return "턴 \(b.turn) · \(me.active.name) \(me.active.currentHP)/\(me.active.maxHP)"
+                 + " vs \(foe.active.name) · 남은 \(me.remaining):\(foe.remaining)"
+        case .hostingRoom:
+            let name = model.roomName.isEmpty ? "\(model.playerName)의 방" : model.roomName
+            return "\(name) · 최대 \(model.rules.maxTeamSize)마리 · Lv.\(model.rules.level)"
+        case .lobby:
+            if model.discovered.isEmpty { return nil }
+            return "열린 방 \(model.discovered.count)개"
+        case .result:
+            if let p = model.lastPointsGained { return "+\(p)P 획득" }
+            return nil
+        default: return nil
         }
     }
 
