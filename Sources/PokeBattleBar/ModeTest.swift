@@ -63,6 +63,19 @@ enum ModeTest {
             if e.state.log.contains(where: { $0.contains("손가락흔들기") }) { sawMetronome = true }
             if e.state.log.contains(where: { $0.contains("생명의구슬") }) { sawOrb = true }
         }
+        // 무슨 기술이 나왔고 그게 어떤 기술인지(타입·위력)까지 로그에 남아야 한다.
+        // 손가락흔들기 대전에서는 모르는 기술이 나오므로 이름만으로는 알 수 없다.
+        var sawDetail = false
+        do {
+            var e = engine(togepi, mv, orb, chart, pool, seed: 4242, maxHP: nil)
+            for _ in 0..<12 {
+                guard case .awaitingMoves = e.state.phase else { break }
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            }
+            sawDetail = e.state.log.contains { $0.contains("위력") && $0.hasPrefix("(") }
+        }
+        ok = show(sawDetail, "불려나온 기술의 타입·위력도 알려준다") && ok
+
         ok = show(called.count >= 20, "손가락흔들기가 여러 기술을 부른다",
                   "서로 다른 로그 \(called.count)종") && ok
         ok = show(sawMetronome, "로그에 손가락흔들기가 남는다") && ok

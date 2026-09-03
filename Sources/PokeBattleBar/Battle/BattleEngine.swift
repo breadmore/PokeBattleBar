@@ -942,6 +942,8 @@ struct BattleEngine {
         }
         atk.moves[moveIndex].ppLeft = max(0, atk.moves[moveIndex].ppLeft - ppCost)
         var baseMove = atk.moves[moveIndex].def
+        /// 손가락흔들기로 불려나온 기술이면 원래 기술 이름
+        var calledByMetronome: String?
         state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
 
         // 손가락흔들기 — 무작위 기술을 부른다.
@@ -952,6 +954,7 @@ struct BattleEngine {
                 return
             }
             say("\(atkName)의 \(baseMove.display)!")
+            calledByMetronome = baseMove.display
             baseMove = picked
         }
 
@@ -959,6 +962,12 @@ struct BattleEngine {
         let move = transformed(baseMove, attacker: attacker)
         if move.name != baseMove.name {
             say("\(atkName)의 \(baseMove.display) → \(move.display)!")
+        } else if calledByMetronome != nil {
+            // 손가락흔들기 대전에서는 **무슨 기술이 나왔는지** 가 전부다.
+            // 이름은 원작과 같은 형태로 두고, 모르는 기술이므로 타입·위력을
+            // 다음 줄에 붙여준다.
+            say("\(atkName)의 \(move.display)!")
+            say("(\(move.type.ko) · 위력 \(move.power.map(String.init) ?? "-"))")
         } else {
             say("\(atkName)의 \(move.display)!")
         }
