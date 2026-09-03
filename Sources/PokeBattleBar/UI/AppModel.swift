@@ -341,6 +341,11 @@ final class AppModel {
             if let g = b.gmaxForm, gmaxCache[g] == nil {
                 gmaxCache[g] = try? await PokeAPI.shared.form(named: g)
             }
+            // 원시회귀 폼도 미리 받아둬야 등장할 때 바뀔 수 있다
+            if case .primalOrb(let form, let sid) = b.itemKind, sid == b.speciesID,
+               megaCache[form] == nil {
+                megaCache[form] = try? await PokeAPI.shared.form(named: form)
+            }
         }
     }
 

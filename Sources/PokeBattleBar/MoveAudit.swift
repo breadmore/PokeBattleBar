@@ -139,6 +139,23 @@ enum MoveAudit {
         //
         // 추천 세팅이 알려주는 도구가 우리 도구 목록에 없으면 조용히 넘어간다.
         // "실전 추천"을 눌렀는데 도구만 안 바뀌는 이유가 그것이다.
+        // MARK: 위력이 없는 공격기 — 데이터가 null 이면 데미지가 0 이 된다
+        //
+        // PokéAPI 는 위력이 상황에 따라 바뀌는 기술을 power: null 로 준다
+        // (은혜갚기·자이로볼·풀묶기 …). 계산에서 0 이 되어 **아무 데미지도
+        // 들어가지 않는다.** 어떤 기술이 그런지 목록으로 본다.
+        print("\n-- 위력이 없는 공격기 --")
+        var nilPower: [(String, String)] = []
+        for name in pool.sorted() {
+            guard let mv = try? await PokeAPI.shared.move(name) else { continue }
+            guard mv.damageClass != .status else { continue }     // 변화기는 위력이 없어도 정상
+            guard mv.power == nil else { continue }
+            guard mv.specialDamage == .none else { continue }     // 고정 데미지는 따로 처리한다
+            nilPower.append((mv.display, name))
+        }
+        for (ko, id) in nilPower { print("  · \(ko)  (\(id))") }
+        print("  총 \(nilPower.count)개")
+
         print("\n-- 추천 도구를 적용할 수 있는가 --")
         var wanted: [String: Int] = [:]
         var appliable = 0, total = 0

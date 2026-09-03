@@ -85,6 +85,24 @@ struct SideState: Codable, Sendable, Equatable {
     /// 이 진영에 설치된 장애물. 등장하는 포켓몬이 피해를 받는다.
     var hazards: Set<Hazard> = []
 
+    // MARK: 화면 (리플렉터 · 빛의장막 · 오로라베일)
+    //
+    // 진영 전체에 걸리고 턴이 지나면 사라진다. 데이터에는 지속 턴수가 없어
+    // 원작 값(5턴, 빛의점토면 8턴)을 직접 쓴다.
+
+    /// 리플렉터 — 물리 데미지 절반
+    var reflectTurns: Int = 0
+    /// 빛의장막 — 특수 데미지 절반
+    var lightScreenTurns: Int = 0
+    /// 오로라베일 — 물리·특수 둘 다 절반. 눈·싸라기눈일 때만 쓸 수 있다.
+    var auroraVeilTurns: Int = 0
+
+    /// 이 진영에 물리 데미지를 줄이는 화면이 있는가
+    var halvesPhysical: Bool { reflectTurns > 0 || auroraVeilTurns > 0 }
+    /// 이 진영에 특수 데미지를 줄이는 화면이 있는가
+    var halvesSpecial: Bool { lightScreenTurns > 0 || auroraVeilTurns > 0 }
+    var hasAnyScreen: Bool { reflectTurns > 0 || lightScreenTurns > 0 || auroraVeilTurns > 0 }
+
     func hasUsed(_ a: SpecialAction) -> Bool {
         switch a {
         case .mega:            usedMega
@@ -326,7 +344,23 @@ struct BattleEngine {
     }
 
     /// 등장 시 발동하는 특성 (위협)
+    /// 원시회귀 — 구슬을 지닌 그란돈·가이오가는 **등장할 때 자동으로** 바뀐다.
+    /// 메가와 달리 배틀당 1회 제한이 없고 고를 필요도 없다.
+    private mutating func applyPrimalIfNeeded(_ side: BattleSide) {
+        guard state.rules.itemEffects else { return }
+        let idx = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(idx) else { return }
+        var b = state.sides[side.rawValue].team[idx]
+        guard !b.isPrimal, !b.isFainted else { return }
+        guard case .primalOrb(let form, let sid) = b.itemKind, sid == b.speciesID else { return }
+        guard let stats = formCache[form] ?? megaCache[form] else { return }
+        b.applyPrimal(form: stats, nature: Nature.named(natureOf(b)))
+        state.sides[side.rawValue].team[idx] = b
+        say("\(b.name)의 모습이 원시의 것으로 되돌아갔다!")
+    }
+
     private mutating func fireEntryAbility(_ side: BattleSide) {
+        applyPrimalIfNeeded(side)
         guard state.rules.abilities else { return }
         let idx = state.side(side).activeIndex
         guard state.side(side).team.indices.contains(idx) else { return }
@@ -1836,6 +1870,12 @@ struct BattleEngine {
 
         var power = move.power ?? 0
 
+        // 위력이 상황에 따라 바뀌는 기술 — PokéAPI 가 power: null 로 주므로
+        // **직접 계산하지 않으면 데미지가 0 이 된다.** 원작 공식을 쓴다.
+        if move.power == nil {
+            power = variablePower(move, attacker: a, defender: d)
+        }
+
         // 연속으로 쓰면 세지는 기술 — 데이터에 없어 직접 처리한다.
         // 연속자르기·데구르르는 두 배씩, 에코보이스·울음소리는 더해진다.
         switch move.name {
@@ -1953,6 +1993,14 @@ struct BattleEngine {
 
         let rand = Double(Int.random(in: 85...100, using: &rng)) / 100.0
         var extra = 1.0
+
+        // 화면 — 리플렉터·빛의장막·오로라베일이 데미지를 절반으로 줄인다.
+        // **급소에는 무시된다** (원작 규칙).
+        if !critical {
+            let foeSide = s(defender)
+            if move.damageClass == .physical, foeSide.halvesPhysical { extra *= 0.5 }
+            if move.damageClass == .special, foeSide.halvesSpecial { extra *= 0.5 }
+        }
 
         if state.rules.abilities {
             // 궁지 강화 (맹화·급류·신록·벌레의야망)
@@ -2431,6 +2479,25 @@ struct BattleEngine {
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
+        // 화면 — 진영마다 남은 턴을 줄이고 끝나면 알려준다
+        for side in [BattleSide.host, .guest] {
+            var sd = state.sides[side.rawValue]
+            let who = sd.playerName
+            if sd.reflectTurns > 0 {
+                sd.reflectTurns -= 1
+                if sd.reflectTurns == 0 { say("\(who) 쪽의 리플렉터가 사라졌다!") }
+            }
+            if sd.lightScreenTurns > 0 {
+                sd.lightScreenTurns -= 1
+                if sd.lightScreenTurns == 0 { say("\(who) 쪽의 빛의장막이 사라졌다!") }
+            }
+            if sd.auroraVeilTurns > 0 {
+                sd.auroraVeilTurns -= 1
+                if sd.auroraVeilTurns == 0 { say("\(who) 쪽의 오로라베일이 사라졌다!") }
+            }
+            state.sides[side.rawValue] = sd
+        }
+
         // 픽업 — 상대가 소비한 도구를 주워온다
         if state.rules.abilities, state.rules.itemEffects {
             for side in [BattleSide.host, .guest] {
@@ -2759,6 +2826,67 @@ extension BattleEngine {
             say("\(d.name)에게 \(add.ko) 타입이 추가되었다!")
             return true
 
+        // 리플렉터 · 빛의장막 · 오로라베일 — 내 진영에 화면을 세운다.
+        //
+        // 지속 턴수가 데이터에 없어 원작 값을 쓴다: 5턴, 빛의점토를 들면 8턴.
+        // 오로라베일은 **눈·싸라기눈일 때만** 쓸 수 있다 — 그래서 아무 효과가
+        // 없어 보이기 쉽다.
+        case "reflect", "light-screen", "aurora-veil":
+            let turns = screenTurns(for: a)
+            var side = state.sides[attacker.rawValue]
+
+            if move.name == "aurora-veil" {
+                let snowy = state.rules.weather
+                    && state.field.weather == .snow
+                guard snowy else {
+                    say("\(aName)의 오로라베일! …하지만 눈이 내리지 않아 실패했다!")
+                    return true
+                }
+                guard side.auroraVeilTurns == 0 else {
+                    say("\(aName)의 오로라베일! …하지만 이미 걸려 있다!")
+                    return true
+                }
+                side.auroraVeilTurns = turns
+                state.sides[attacker.rawValue] = side
+                say("\(s(attacker).playerName) 쪽에 오로라베일이 펼쳐졌다! "
+                    + "물리·특수 데미지가 절반이 된다 (\(turns)턴)")
+                return true
+            }
+
+            if move.name == "reflect" {
+                guard side.reflectTurns == 0 else {
+                    say("\(aName)의 리플렉터! …하지만 이미 걸려 있다!")
+                    return true
+                }
+                side.reflectTurns = turns
+                state.sides[attacker.rawValue] = side
+                say("\(s(attacker).playerName) 쪽에 리플렉터가 펼쳐졌다! "
+                    + "물리 데미지가 절반이 된다 (\(turns)턴)")
+                return true
+            }
+
+            guard side.lightScreenTurns == 0 else {
+                say("\(aName)의 빛의장막! …하지만 이미 걸려 있다!")
+                return true
+            }
+            side.lightScreenTurns = turns
+            state.sides[attacker.rawValue] = side
+            say("\(s(attacker).playerName) 쪽에 빛의장막이 펼쳐졌다! "
+                + "특수 데미지가 절반이 된다 (\(turns)턴)")
+            return true
+
+        // 깨뜨리다 · 사이코팽 — 상대 화면을 부순다 (데미지는 평소대로 들어간다)
+        case "brick-break", "psychic-fangs", "raging-bull":
+            var foe = state.sides[defender.rawValue]
+            if foe.hasAnyScreen {
+                foe.reflectTurns = 0
+                foe.lightScreenTurns = 0
+                foe.auroraVeilTurns = 0
+                state.sides[defender.rawValue] = foe
+                say("\(aName)가 상대의 화면을 부쉈다!")
+            }
+            return false   // 데미지 계산은 평소 경로로
+
         // 앙코르 — 상대가 마지막에 쓴 기술만 3턴 동안 쓰게 만든다
         case "encore":
             guard let li = d.lastMoveIndex, d.moves.indices.contains(li),
@@ -2858,6 +2986,92 @@ extension BattleEngine {
             return false
         }
     }
+
+    /// 위력이 상황에 따라 바뀌는 기술의 위력.
+    ///
+    /// PokéAPI 는 이런 기술을 `power: null` 로 준다 (효과 설명은 프랑스어 산문뿐).
+    /// 계산에서 0 이 되어 **아무 데미지도 들어가지 않았다.**
+    ///
+    /// 친밀도는 **최대**로 본다 — PokeTokenBar 에서 직접 키운 동반 포켓몬이므로.
+    /// 그래서 은혜갚기는 최대(102), 화풀이는 최소(1)다.
+    private func variablePower(_ move: MoveDef, attacker a: Battler, defender d: Battler) -> Int {
+        switch move.name {
+
+        // 친밀도 — 최대로 본다
+        case "return", "return-physical": return 102
+        case "frustration":               return 1
+
+        // 스피드 비율
+        case "gyro-ball":
+            // 25 × 상대 스피드 / 내 스피드 (최대 150). 느릴수록 세다.
+            let mine = max(1, a.effective(.speed))
+            let theirs = max(1, d.effective(.speed))
+            return max(1, min(150, 25 * theirs / mine))
+        case "electro-ball":
+            // 빠를수록 세다
+            let mine = max(1, a.effective(.speed))
+            let theirs = max(1, d.effective(.speed))
+            let ratio = Double(mine) / Double(theirs)
+            if ratio >= 4 { return 150 }
+            if ratio >= 3 { return 120 }
+            if ratio >= 2 { return 80 }
+            if ratio > 1  { return 60 }
+            return 40
+
+        // 무게 기반(안다리걸기·풀묶기·헤비봄버·히트스탬프)은
+        // weightBasedPower 가 먼저 처리하므로 여기까지 오지 않는다.
+
+        // 내 남은 HP 비율이 낮을수록 세다 (바둥바둥·기사회생)
+        case "flail", "reversal":
+            let p = max(1, a.currentHP * 48 / max(1, a.maxHP))
+            if p < 2  { return 200 }
+            if p < 5  { return 150 }
+            if p < 10 { return 100 }
+            if p < 17 { return 80 }
+            if p < 33 { return 40 }
+            return 20
+
+        // 상대 남은 HP 비율에 비례 (쥐어짜기)
+        case "wring-out", "crush-grip":
+            let ratio = Double(d.currentHP) / Double(max(1, d.maxHP))
+            return max(1, Int(120 * ratio))
+
+        // 사이코웨이브 — 레벨의 0.5~1.5 배 (고정 데미지처럼 쓰이지만 위력으로 다룬다)
+        case "psywave":
+            return max(1, a.level)
+
+        // 토해내기는 비축 단계로 정한다 (위에서 따로 처리)
+        case "spit-up":
+            return 100 * max(0, a.stockpile)
+
+        // 집단구타 — 원작은 팀 인원만큼 때린다. 1대1 이라 남은 마리 수로 본다.
+        case "beat-up":
+            return 30
+
+        // 내던지기 — 도구 종류마다 다르다. 도구가 없으면 실패한다.
+        case "fling":
+            guard a.heldItem != nil, !a.itemConsumed else { return 0 }
+            return 30
+
+        // 자연의은혜 — 나무열매 종류마다 다르다. 열매가 없으면 실패한다.
+        case "natural-gift":
+            guard let it = a.heldItem, it.isBerry, !a.itemConsumed else { return 0 }
+            return 80
+
+        default:
+            // 여기 오면 아직 손대지 않은 기술이다. 0 보다는 약하게라도 나가는
+            // 편이 낫다 — 0 이면 "아무 일도 안 일어난다" 로 보인다.
+            return 50
+        }
+    }
+
+    /// 화면 지속 턴수. 빛의점토를 들면 길어진다 (원작 5 → 8).
+    private func screenTurns(for b: Battler) -> Int {
+        if state.rules.itemEffects, b.heldItem?.name == "light-clay" { return 8 }
+        return 5
+    }
+
+    private func s(_ side: BattleSide) -> SideState { state.side(side) }
 
     private mutating func commit(_ b: Battler, _ side: BattleSide) {
         state.sides[side.rawValue].team[state.side(side).activeIndex] = b

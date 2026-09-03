@@ -13,6 +13,34 @@ if let i = args.firstIndex(of: "--lanprobe") {
     RunLoop.main.run()
 }
 
+if args.contains("--formaudit") {
+    func intVal(_ flag: String, default def: Int) -> Int {
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count, let v = Int(args[i + 1]) else { return def }
+        return v
+    }
+    let upTo = intVal("--upto", default: 649)
+    let verbose = args.contains("--verbose")
+    Task {
+        let ok = await FormAudit.run(upTo: upTo, verbose: verbose)
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+if args.contains("--setsweep") {
+    func intVal(_ flag: String, default def: Int) -> Int {
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count, let v = Int(args[i + 1]) else { return def }
+        return v
+    }
+    let limit = intVal("--limit", default: 0)
+    let verbose = args.contains("--verbose")
+    Task {
+        let ok = await SetSweepTest.run(limitSpecies: limit, verbose: verbose)
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--settest") {
     Task { @MainActor in
         let ok = await SmogonSetTest.run()

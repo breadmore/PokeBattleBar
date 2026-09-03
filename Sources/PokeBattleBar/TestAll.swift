@@ -18,6 +18,10 @@ enum TestAll {
                                    speciesB: [143, 130, 149, 94, 68, 131],
                                    level: 50, verbose: verbose)
             },
+            .init(flag: "--formaudit", name: "특수 개체·폼", what: "도감 범위 특수 폼 지원 여부") {
+                // 전 범위는 오래 걸리므로 스위트에서는 400 까지만 본다
+                await FormAudit.run(upTo: 400, verbose: false)
+            },
             .init(flag: "--settest", name: "실전 세팅", what: "도구 포함·중복 방지·성격 불변") {
                 await MainActor.run { () -> Task<Bool, Never> in
                     Task { await SmogonSetTest.run() }
