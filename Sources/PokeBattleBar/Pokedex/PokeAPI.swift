@@ -166,6 +166,9 @@ struct SpeciesDef: Codable, Sendable {
     var abilitySlots: [AbilitySlot] = []
     /// 무게 (헥토그램). 헤비메탈·저울짓기·헤비봄버 계산에 쓴다.
     var weight: Int = 0
+    /// 기본형이 아닌 모든 폼 이름 (메가·거다이맥스 포함).
+    /// 폼 선택은 PokeBattleBar 안에서만 관리하고 PokeTokenBar 는 건드리지 않는다.
+    var altForms: [String] = []
 
     var canMega: Bool { !megaForms.isEmpty }
     /// 거다이맥스 전용 폼이 있는가 (다이맥스는 종족 제한이 없다)
@@ -279,12 +282,15 @@ actor PokeAPI {
         // 메가 / 거다이맥스 폼은 species 의 varieties 에 별도 pokemon 으로 들어 있다
         var megaForms: [String] = []
         var gmaxForm: String?
+        var altForms: [String] = []
         if let vs = sp["varieties"] as? [[String: Any]] {
             for v in vs {
                 guard let p = v["pokemon"] as? [String: Any],
                       let n = p["name"] as? String else { continue }
                 if n.contains("-mega") { megaForms.append(n) }
                 if n.hasSuffix("-gmax") { gmaxForm = n }
+                let isDefault = (v["is_default"] as? Bool) ?? false
+                if !isDefault { altForms.append(n) }
             }
         }
 
@@ -298,7 +304,8 @@ actor PokeAPI {
             megaForms: megaForms.sorted(),
             gmaxForm: gmaxForm,
             abilitySlots: abilitySlots,
-            weight: poke["weight"] as? Int ?? 0
+            weight: poke["weight"] as? Int ?? 0,
+            altForms: altForms.sorted()
         )
         species[id] = def
         return def

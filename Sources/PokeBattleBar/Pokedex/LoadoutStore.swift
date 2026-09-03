@@ -8,6 +8,9 @@ actor LoadoutStore {
     struct Loadout: Codable, Hashable, Sendable {
         var item: String?        // 도구 slug
         var ability: String?     // 특성 slug
+        /// 폼 이름 (로토무 히트 등). **PokeTokenBar 에는 기록하지 않는다** —
+        /// 도감은 그쪽 소유이고, 어떤 폼으로 싸울지는 여기서만 정한다.
+        var form: String?
     }
 
     private let fileURL: URL
@@ -37,6 +40,13 @@ actor LoadoutStore {
     func setItem(_ item: String?, for slot: RosterSlot) {
         var l = table[key(slot)] ?? Loadout()
         l.item = item
+        table[key(slot)] = l
+        persist()
+    }
+
+    func setForm(_ form: String?, for slot: RosterSlot) {
+        var l = table[key(slot)] ?? Loadout()
+        l.form = form
         table[key(slot)] = l
         persist()
     }

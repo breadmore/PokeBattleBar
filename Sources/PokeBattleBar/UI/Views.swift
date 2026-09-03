@@ -152,7 +152,8 @@ struct RosterCard: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            SpriteView(speciesID: slot.speciesID, shiny: slot.isShiny, size: 72)
+            SpriteView(speciesID: slot.speciesID, shiny: slot.isShiny, size: 72,
+                       form: model.currentForm(for: slot))
             Text(species?.display ?? "#\(slot.speciesID)")
                 .font(.caption.bold()).lineLimit(1)
             if let sp = species {
@@ -210,6 +211,38 @@ struct RosterCard: View {
             }
             if let r = recommendation {
                 Text("적용: \(r)").font(.system(size: 8)).foregroundStyle(.green)
+                    .frame(width: 112, alignment: .leading).lineLimit(2)
+            }
+
+            // 폼 선택 (로토무 히트 등) — PokeTokenBar 는 건드리지 않는다
+            let forms = model.selectableForms(for: slot)
+            if !forms.isEmpty {
+                Menu {
+                    Button("기본") { Task { await model.setForm(nil, for: slot) } }
+                    ForEach(forms, id: \.self) { f in
+                        Button(FormChange.label(f)) { Task { await model.setForm(f, for: slot) } }
+                    }
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("🔀").font(.system(size: 8))
+                        Text(model.currentForm(for: slot).map(FormChange.label) ?? "기본 폼")
+                            .font(.system(size: 9, weight: model.currentForm(for: slot) == nil
+                                          ? .regular : .bold))
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 4).padding(.vertical, 2)
+                    .frame(width: 112, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 4)
+                        .fill(model.currentForm(for: slot) == nil
+                              ? Color.clear : Color.teal.opacity(0.18)))
+                }
+                .menuStyle(.borderlessButton)
+                .help("폼을 고르면 타입과 종족값이 바뀝니다")
+            }
+            // 배틀 중 자동으로 변신하는 종은 알려준다
+            if let ab = model.currentAbility(for: slot), FormChange.isAutoAbility(ab.name) {
+                Text("\(ab.display) — 배틀 중 자동 폼 변화")
+                    .font(.system(size: 8)).foregroundStyle(.teal)
                     .frame(width: 112, alignment: .leading).lineLimit(2)
             }
 
@@ -273,6 +306,42 @@ struct LoadoutWarningBanner: View {
             .overlay(RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.orange.opacity(0.35), lineWidth: 1))
         }
+    }
+}
+
+/// 피격 효과.
+///
+/// 실제 기술 애니메이션은 없다 — 원작 이펙트 리소스가 없기 때문이다.
+/// 대신 **HP 가 줄어든 순간을 감지해** 흔들림과 붉은 섬광을 준다.
+/// 쓰러지면 회색으로 가라앉는다.
+struct HitEffect: ViewModifier, Animatable {
+    let hp: Int
+    let fainted: Bool
+
+    @State private var lastHP: Int?
+    @State private var shake: CGFloat = 0
+    @State private var flash: Double = 0
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: shake)
+            .overlay {
+                Color.red.opacity(flash * 0.45)
+                    .blendMode(.plusLighter)
+                    .allowsHitTesting(false)
+            }
+            .saturation(fainted ? 0 : 1)
+            .onChange(of: hp) { old, new in
+                guard new < old else { return }
+                // 맞은 만큼 세게 흔든다 (최대 HP 를 모르므로 절대량으로 대략)
+                let magnitude = min(10.0, max(3.0, Double(old - new) / 8.0))
+                withAnimation(.easeOut(duration: 0.06)) {
+                    shake = CGFloat(magnitude); flash = 1
+                }
+                withAnimation(.easeIn(duration: 0.06).delay(0.06)) { shake = -CGFloat(magnitude) }
+                withAnimation(.easeOut(duration: 0.10).delay(0.12)) { shake = 0 }
+                withAnimation(.easeOut(duration: 0.30).delay(0.06)) { flash = 0 }
+            }
     }
 }
 
@@ -951,7 +1020,8 @@ struct BattlerCard: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            SpriteView(speciesID: battler.speciesID, shiny: battler.isShiny, size: 76)
+            SpriteView(speciesID: battler.speciesID, shiny: battler.isShiny, size: 76,
+                       form: battler.spriteForm)
                 .opacity(battler.isFainted ? 0.3 : 1)
             Text(battler.name).font(.caption.bold())
             Text("Lv.\(battler.level) · \(battler.natureName)")
@@ -974,21 +1044,34 @@ struct BattlerCard: View {
 struct HPBar: View {
     let current: Int
     let max: Int
+    var tall = false
 
     private var ratio: Double { max <= 0 ? 0 : Double(current) / Double(max) }
     private var color: Color { ratio > 0.5 ? .green : (ratio > 0.2 ? .yellow : .red) }
+
+    /// 숫자도 부드럽게 올라가고 내려가게
+    @State private var shownHP: Int = -1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(.quaternary)
-                    Capsule().fill(color).frame(width: geo.size.width * ratio)
+                    Capsule().fill(color)
+                        .frame(width: geo.size.width * ratio)
+                        // HP 가 깎이는 것을 눈으로 볼 수 있게
+                        .animation(.easeOut(duration: 0.55), value: ratio)
                 }
             }
-            .frame(height: 6)
-            Text("\(current)/\(max)").font(.system(size: 8)).foregroundStyle(.secondary)
+            .frame(height: tall ? 9 : 6)
+            Text("\(shownHP < 0 ? current : shownHP)/\(max)")
+                .font(.system(size: tall ? 10 : 8, weight: tall ? .semibold : .regular))
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+                .animation(.easeOut(duration: 0.55), value: shownHP)
         }
+        .onAppear { shownHP = current }
+        .onChange(of: current) { _, new in shownHP = new }
     }
 }
 
@@ -1003,7 +1086,7 @@ struct BattleView: View {
                 field(me: me, foe: foe, turn: b.turn)
                 Divider()
                 HStack(alignment: .top, spacing: 8) {
-                    LogView(lines: b.log)
+                    LogView(lines: model.displayLog)
                     Divider().frame(height: 140)
                     ChatPanel(model: model, compact: true).frame(width: 240)
                 }
@@ -1017,7 +1100,20 @@ struct BattleView: View {
     }
 
     private func field(me: SideState, foe: SideState, turn: Int) -> some View {
-        VStack(spacing: 8) {
+        // 재생 중이면 그 시점의 팀·활성 개체를 그린다
+        let myTeam = model.displayTeam(model.mySide)
+        let foeTeam = model.displayTeam(model.mySide.other)
+        var myShown = me, foeShown = foe
+        if !myTeam.isEmpty {
+            myShown.team = myTeam
+            myShown.activeIndex = model.displayActiveIndex(model.mySide)
+        }
+        if !foeTeam.isEmpty {
+            foeShown.team = foeTeam
+            foeShown.activeIndex = model.displayActiveIndex(model.mySide.other)
+        }
+
+        return VStack(spacing: 8) {
             HStack {
                 Text("턴 \(turn)").font(.caption.bold()).foregroundStyle(.secondary)
                 Text(model.modeSummary)
@@ -1027,10 +1123,26 @@ struct BattleView: View {
                 Spacer()
                 Button("나가기") { model.leaveEverything() }.controlSize(.small)
             }
+
+            // 진행 배너 — 지금 무슨 일이 벌어지는지
+            ZStack {
+                if let banner = model.playbackBanner {
+                    Text(banner)
+                        .font(.callout.bold())
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().fill(.black.opacity(0.65)))
+                        .foregroundStyle(.white)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .id(banner)
+                }
+            }
+            .frame(height: 26)
+            .animation(.easeOut(duration: 0.25), value: model.playbackBanner)
+
             HStack(alignment: .top) {
-                sideColumn(foe, isFoe: true)
+                sideColumn(foeShown, isFoe: true)
                 Spacer()
-                sideColumn(me, isFoe: false)
+                sideColumn(myShown, isFoe: false)
             }
         }
         .padding(16)
@@ -1057,7 +1169,9 @@ struct BattleView: View {
         if let b = model.battle {
             switch b.phase {
             case .awaitingMoves:
-                if model.rules.autoMove {
+                if model.isPlayingBack {
+                    playingBack
+                } else if model.rules.autoMove {
                     autoRunning
                 } else if model.waitingForOpponent {
                     waiting
@@ -1093,6 +1207,19 @@ struct BattleView: View {
         }
     }
 
+    /// 턴 재생 중 표시
+    private var playingBack: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("배틀 진행 중…").font(.callout.bold())
+            }
+            Text("순서대로 재생하고 있습니다")
+                .font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(height: 120)
+    }
+
     /// 자유의지 모드 진행 표시
     private var autoRunning: some View {
         VStack(spacing: 6) {
@@ -1123,12 +1250,24 @@ struct ActiveBattlerView: View {
 
     var body: some View {
         VStack(alignment: mirrored ? .leading : .trailing, spacing: 4) {
-            SpriteView(speciesID: b.speciesID, shiny: b.isShiny, size: 110)
+            SpriteView(speciesID: b.speciesID, shiny: b.isShiny, size: 110,
+                       form: b.spriteForm, scale: b.spriteScale)
                 .scaleEffect(x: mirrored ? -1 : 1, y: 1)
                 .opacity(b.isFainted ? 0.25 : 1)
+                // 피격·변신 효과
+                .modifier(HitEffect(hp: b.currentHP, fainted: b.isFainted))
+                .overlay {
+                    if b.isDynamaxed {
+                        Circle().stroke(Color.pink.opacity(0.5), lineWidth: 3)
+                            .blur(radius: 4).scaleEffect(1.1)
+                    } else if b.isMega {
+                        Circle().stroke(Color.purple.opacity(0.45), lineWidth: 3)
+                            .blur(radius: 4).scaleEffect(1.05)
+                    }
+                }
             Text("\(b.name)\(b.isShiny ? " ✨" : "")").font(.callout.bold())
             Text("Lv.\(b.level)").font(.caption2).foregroundStyle(.secondary)
-            HPBar(current: b.currentHP, max: b.maxHP).frame(width: 130)
+            HPBar(current: b.currentHP, max: b.maxHP, tall: true).frame(width: 150)
             HStack(spacing: 4) {
                 ForEach(b.types, id: \.self) { t in
                     Text(t.ko).font(.system(size: 9))

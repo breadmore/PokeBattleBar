@@ -2,6 +2,14 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--formchangetest") {
+    Task {
+        let passed = await FormChangeTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--berrytest") {
     Task {
         let passed = await BerryTest.run()
