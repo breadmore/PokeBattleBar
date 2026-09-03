@@ -158,6 +158,26 @@ enum MoveEffectTest {
         ok = await residualCheck("맹독", chart, status: .toxic, verbose: verbose) && ok; checked += 1
         ok = await toxicEscalates(chart) && ok; checked += 1
 
+        // MARK: 묶기 기술 (지속 데미지)
+        print("\n-- 묶기 기술 (지속 데미지) --")
+        for (mv, label) in [("whirlpool", "바다회오리"), ("fire-spin", "회오리불꽃"),
+                            ("bind", "조이기"), ("infestation", "엉겨붙기"),
+                            ("sand-tomb", "모래지옥"), ("magma-storm", "마그마스톰")] {
+            ok = await trapCheck(mv, label, chart) && ok; checked += 1
+        }
+        ok = await trapDoesNotStack(chart) && ok; checked += 1
+
+        // MARK: 유턴 계열
+        print("\n-- 유턴 계열 (쓴 뒤 물러난다) --")
+        for (mv, label) in [("u-turn", "유턴"), ("volt-switch", "볼트체인지"),
+                            ("flip-turn", "퀵턴")] {
+            ok = await pivotCheck(mv, label, chart) && ok; checked += 1
+        }
+
+        // MARK: 상태이상이 만드는 부가 효과 전수 점검
+        print("\n-- 상태이상 부가 효과 --")
+        ok = await statusSideEffects(chart, &checked) && ok
+
         print("\n\(checked)개 항목 점검")
         print(ok ? "✓ 전부 통과" : "✗ 실패 항목 있음")
         return ok
@@ -278,6 +298,255 @@ enum MoveEffectTest {
         print(escalating ? "  ✓ 맹독 데미지 누적 증가 \(deltas)"
                          : "  ✗ 맹독이 누적 증가하지 않는다 \(deltas) — 일반 독으로 걸렸을 가능성")
         return escalating
+    }
+
+    /// 묶기 기술이 붙잡고 턴마다 피해를 주는가
+    private static func trapCheck(_ move: String, _ label: String,
+                                  _ chart: TypeChart) async -> Bool {
+        guard var e = await Harness.engine(att: 143, def: 143,
+                                           attMoves: [move], defMoves: ["splash"],
+                                           chart: chart, seed: 8291) else {
+            print("  ✗ \(label) — 준비 실패"); return false
+        }
+        e.state.sides[1].team[0].maxHP = 99999
+        e.state.sides[1].team[0].currentHP = 99999
+
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let trapped = e.state.sides[1].team[0].trappedTurns
+        let bound = e.state.log.contains { $0.contains("붙잡혔다") }
+        guard trapped > 0, bound else {
+            print("  ✗ \(label) — 붙잡지 못했다 (turns=\(trapped))")
+            for l in e.state.log.prefix(5) { print("      \(l)") }
+            return false
+        }
+
+        // 다음 턴에 공격을 안 해도 지속 피해가 들어가야 한다
+        let hpBefore = e.state.sides[1].team[0].currentHP
+        guard case .awaitingMoves = e.state.phase else {
+            print("  ✗ \(label) — 다음 턴으로 못 감"); return false
+        }
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let hpAfter = e.state.sides[1].team[0].currentHP
+        let residual = e.state.log.contains { $0.contains("시달리고 있다") }
+        let pass = hpAfter < hpBefore && residual
+        print(pass ? "  ✓ \(label) — \(trapped)턴 묶고 지속 피해 (\(hpBefore - hpAfter))"
+                   : "  ✗ \(label) — 지속 피해 없음 (\(hpBefore) → \(hpAfter))")
+        return pass
+    }
+
+    /// 이미 묶인 상대에게 또 걸어도 턴수가 겹쳐 늘어나지 않는다
+    /// 이미 묶인 상대에게 다시 걸어도 턴수가 늘어나지 않는다.
+    /// 바다회오리는 명중 85 라 빗나갈 수 있다 — 첫 타격이 **실제로 명중한 시드**에서만 판정한다.
+    private static func trapDoesNotStack(_ chart: TypeChart) async -> Bool {
+        for seed in 1...40 {
+            guard var e = await Harness.engine(att: 143, def: 143,
+                                               attMoves: ["whirlpool"], defMoves: ["splash"],
+                                               chart: chart, seed: UInt64(seed) * 97) else { return false }
+            e.state.sides[1].team[0].maxHP = 999999
+            e.state.sides[1].team[0].currentHP = 999999
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            let first = e.state.sides[1].team[0].trappedTurns
+            guard first > 0 else { continue }        // 빗나갔으면 다음 시드
+
+            guard case .awaitingMoves = e.state.phase else { continue }
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            let second = e.state.sides[1].team[0].trappedTurns
+            // 두 번째 사용은 새로 걸리지 않으므로 턴수가 1 줄어야 한다
+            let pass = second == first - 1
+            print(pass ? "  ✓ 묶기는 중첩되지 않는다 (남은 \(first)턴 → \(second)턴)"
+                       : "  ✗ 묶기가 중첩됐다 (\(first) → \(second), 기대 \(first - 1))")
+            return pass
+        }
+        print("  ✗ 묶기 중첩 — 40시드 모두 첫 타격이 빗나갔다")
+        return false
+    }
+
+    /// 유턴 계열을 쓰면 자신이 물러나는 단계로 넘어가는가
+    private static func pivotCheck(_ move: String, _ label: String,
+                                   _ chart: TypeChart) async -> Bool {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let mv = try? await PokeAPI.shared.move(move),
+              let splash = try? await PokeAPI.shared.move("splash") else {
+            print("  ✗ \(label) — 준비 실패"); return false
+        }
+        func mk(_ tag: String, _ m: [MoveDef]) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: 143, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: m, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.maxHP = 99999; b.currentHP = 99999
+            return b
+        }
+        var a1 = mk("a1", [mv]); a1.stats[.speed] = 999
+        let a2 = mk("a2", [splash])
+        var d = mk("b", [splash]); d.stats[.speed] = 1
+
+        var rules = BattleRules(maxTeamSize: 6, level: 50)
+        rules.requireItems = false
+        var st = BattleState(rules: rules,
+                             sides: [SideState(playerName: "A", team: [a1, a2], activeIndex: 0),
+                                     SideState(playerName: "B", team: [d], activeIndex: 0)])
+        st.phase = .awaitingMoves
+        st.turn = 1
+        var e = BattleEngine(state: st, chart: chart, seed: 4747)
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+
+        guard case .awaitingPivot(let pending) = e.state.phase, pending.contains(0) else {
+            print("  ✗ \(label) — 물러나는 단계로 가지 않았다 (phase=\(e.state.phase))")
+            for l in e.state.log.prefix(5) { print("      \(l)") }
+            return false
+        }
+        e.applyPivot(.host, teamIndex: 1)
+        let switched = e.state.sides[0].activeIndex == 1
+        let logged = e.state.log.contains { $0.contains("뒤로 물러났다") }
+        let pass = switched && logged
+        print(pass ? "  ✓ \(label) — 공격 후 물러나고 다음 포켓몬이 나온다"
+                   : "  ✗ \(label) — 교체되지 않았다 (activeIndex=\(e.state.sides[0].activeIndex))")
+        return pass
+    }
+
+    /// 상태이상이 실제로 만들어내는 부가 효과들을 하나씩 확인한다.
+    /// 로그만 나오고 수치가 안 바뀌는 종류의 버그를 잡기 위한 것이다.
+    private static func statusSideEffects(_ chart: TypeChart, _ checked: inout Int) async -> Bool {
+        var ok = true
+
+        // 마비 — 스피드 절반 + 행동 불가 발생
+        if var e = await Harness.engine(att: 143, def: 143,
+                                        attMoves: ["splash"], defMoves: ["splash"],
+                                        chart: chart, seed: 21) {
+            // Harness 가 스피드를 1 로 고정하므로 그대로 재면 1 → 1 이라 아무것도 검증되지 않는다.
+            // 의미 있는 값을 넣고 잰다.
+            var b = e.state.sides[1].team[0]
+            b.stats[.speed] = 200
+            let normal = b.effective(.speed)
+            b.status = .paralysis
+            e.state.sides[1].team[0] = b
+            let para = e.state.sides[1].team[0].effective(.speed)
+            ok = show(normal == 200 && para == 100,
+                      "마비 — 스피드 정확히 절반", "\(normal) → \(para)") && ok
+            checked += 1
+        }
+        var paralyzedBlocked = false
+        for seed in 1...40 {
+            guard var e = await Harness.engine(att: 143, def: 143,
+                                               attMoves: ["splash"], defMoves: ["body-slam"],
+                                               chart: chart, seed: UInt64(seed) * 17) else { break }
+            e.state.sides[1].team[0].status = .paralysis
+            e.state.sides[1].team[0].maxHP = 99999
+            e.state.sides[1].team[0].currentHP = 99999
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            if e.state.log.contains(where: { $0.contains("몸이 굳어") }) { paralyzedBlocked = true; break }
+        }
+        ok = show(paralyzedBlocked, "마비 — 확률로 행동 불가") && ok; checked += 1
+
+        // 화상 — 물리 공격 절반 (특수 불변) 은 --edgetest 에서 확인, 여기선 지속 피해
+        if var e = await Harness.engine(att: 143, def: 143,
+                                        attMoves: ["splash"], defMoves: ["splash"],
+                                        chart: chart, seed: 33) {
+            e.state.sides[1].team[0].status = .burn
+            let before = e.state.sides[1].team[0].currentHP
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            let after = e.state.sides[1].team[0].currentHP
+            ok = show(after < before, "화상 — 턴 종료 지속 피해", "\(before) → \(after)") && ok
+            checked += 1
+        }
+
+        // 얼음 — 행동 불가, 그리고 해제됨
+        var frozenBlocked = false
+        for seed in 1...20 {
+            guard var e = await Harness.engine(att: 143, def: 143,
+                                               attMoves: ["splash"], defMoves: ["body-slam"],
+                                               chart: chart, seed: UInt64(seed) * 29) else { break }
+            e.state.sides[1].team[0].status = .freeze
+            e.state.sides[1].team[0].maxHP = 99999
+            e.state.sides[1].team[0].currentHP = 99999
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            if e.state.log.contains(where: { $0.contains("얼어붙어") }) { frozenBlocked = true; break }
+        }
+        ok = show(frozenBlocked, "얼음 — 행동 불가") && ok; checked += 1
+
+        // 잠듦 — 행동 불가
+        var asleepBlocked = false
+        for seed in 1...20 {
+            guard var e = await Harness.engine(att: 143, def: 143,
+                                               attMoves: ["splash"], defMoves: ["body-slam"],
+                                               chart: chart, seed: UInt64(seed) * 37) else { break }
+            e.state.sides[1].team[0].status = .sleep
+            e.state.sides[1].team[0].sleepTurns = 3
+            e.state.sides[1].team[0].maxHP = 99999
+            e.state.sides[1].team[0].currentHP = 99999
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            if e.state.log.contains(where: { $0.contains("쿨쿨") }) { asleepBlocked = true; break }
+        }
+        ok = show(asleepBlocked, "잠듦 — 행동 불가") && ok; checked += 1
+
+        // 혼란 — 자신을 공격하는 경우가 발생
+        var confusedSelfHit = false
+        for seed in 1...60 {
+            guard var e = await Harness.engine(att: 143, def: 143,
+                                               attMoves: ["splash"], defMoves: ["body-slam"],
+                                               chart: chart, seed: UInt64(seed) * 43) else { break }
+            e.state.sides[1].team[0].confusionTurns = 5
+            e.state.sides[1].team[0].maxHP = 99999
+            e.state.sides[1].team[0].currentHP = 99999
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            if e.state.log.contains(where: { $0.contains("자신을 공격") }) { confusedSelfHit = true; break }
+        }
+        ok = show(confusedSelfHit, "혼란 — 자신을 공격") && ok; checked += 1
+
+        // 상태이상은 중복으로 걸리지 않는다
+        if var e = await Harness.engine(att: 143, def: 143,
+                                        attMoves: ["thunder-wave"], defMoves: ["splash"],
+                                        chart: chart, seed: 55) {
+            e.state.sides[1].team[0].status = .burn
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            ok = show(e.state.sides[1].team[0].status == .burn,
+                      "이미 상태이상이면 다른 상태이상이 안 걸린다",
+                      "\(e.state.sides[1].team[0].status.ko)") && ok
+            checked += 1
+        }
+
+        // 근성 — 상태이상일 때 공격 상승 (특성과 상태이상의 상호작용)
+        if let guts = await AbilityCatalog.shared.ability("guts") {
+            func dealt(_ burned: Bool, _ ab: AbilityDef?) async -> Int? {
+                guard let sp = try? await PokeAPI.shared.species(143),
+                      let mv = try? await PokeAPI.shared.move("body-slam"),
+                      let splash = try? await PokeAPI.shared.move("splash"),
+                      let chartOK = try? await PokeAPI.shared.typeChart() else { return nil }
+                let slot = RosterSlot(id: "g", speciesID: 143, nature: "serious",
+                                      rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+                var a = Battler.make(slot: slot, species: sp, moves: [mv], level: 50, ability: ab)
+                a.stats[.speed] = 999
+                if burned { a.status = .burn }
+                var d = Battler.make(slot: RosterSlot(id: "d", speciesID: 143, nature: "serious",
+                                                      rarity: "common", isShiny: false,
+                                                      origin: .dex, fullyEvolved: true),
+                                     species: sp, moves: [splash], level: 50)
+                d.stats[.speed] = 1; d.maxHP = 99999; d.currentHP = 99999
+                var rules = BattleRules(maxTeamSize: 1, level: 50)
+                rules.requireItems = false
+                var st = BattleState(rules: rules,
+                                     sides: [SideState(playerName: "A", team: [a], activeIndex: 0),
+                                             SideState(playerName: "B", team: [d], activeIndex: 0)])
+                st.phase = .awaitingMoves
+                var e2 = BattleEngine(state: st, chart: chartOK, seed: 606)
+                let before = e2.state.sides[1].team[0].currentHP
+                e2.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                return before - e2.state.sides[1].team[0].currentHP
+            }
+            if let plain = await dealt(true, nil), let withGuts = await dealt(true, guts) {
+                ok = show(withGuts > plain, "근성 — 화상 중에도 공격이 오른다",
+                          "\(plain) → \(withGuts)") && ok
+                checked += 1
+            }
+        }
+        return ok
+    }
+
+    private static func show(_ c: Bool, _ l: String, _ d: String = "") -> Bool {
+        print(c ? "  ✓ \(l)\(d.isEmpty ? "" : "  (\(d))")"
+                : "  ✗ \(l)\(d.isEmpty ? "" : "  — \(d)")")
+        return c
     }
 
     private static func battler(_ sp: SpeciesDef, moves: [MoveDef], id: String) -> Battler {

@@ -49,6 +49,14 @@ enum BugSweep {
                         guard let pick = alive.randomElement(using: &rng) else { continue }
                         e.applyReplacement(side, teamIndex: pick)
                     }
+                case .awaitingPivot(let pending):
+                    for raw in pending {
+                        guard let side = BattleSide(rawValue: raw) else { continue }
+                        let alive = e.state.side(side).aliveIndices
+                            .filter { $0 != e.state.side(side).activeIndex }
+                        guard let pick = alive.randomElement(using: &rng) else { continue }
+                        e.applyPivot(side, teamIndex: pick)
+                    }
                 case .chooseLead:
                     e.setLead(.host, index: 0); e.setLead(.guest, index: 0); e.beginBattle()
                 case .finished:
@@ -100,7 +108,9 @@ enum BugSweep {
         "혼란 턴수는 0 이상 5 이하",
         "구애 고정 인덱스는 기술 범위 안",
         "턴 수는 감소하지 않는다",
-        "배틀은 유한 턴 안에 끝난다"
+        "배틀은 유한 턴 안에 끝난다",
+        "피벗(유턴) 단계는 활성이 살아 있고 벤치에 낼 포켓몬이 있을 때만",
+        "묶기 턴수는 0 이상 6 이하"
     ]
 
     // MARK: 불변식 검사
@@ -158,6 +168,9 @@ enum BugSweep {
                 if b.confusionTurns < 0 || b.confusionTurns > 5 {
                     bad("혼란 턴수 범위 위반", "\(tag) \(b.confusionTurns)")
                 }
+                if b.trappedTurns < 0 || b.trappedTurns > 6 {
+                    bad("묶기 턴수 범위 위반", "\(tag) \(b.trappedTurns)")
+                }
                 if let lock = b.lockedMoveIndex, !b.moves.indices.contains(lock) {
                     bad("구애 고정 인덱스가 범위를 벗어남", "\(tag) \(lock)")
                 }
@@ -194,6 +207,20 @@ enum BugSweep {
             if a != 0 && b != 0 { bad("종료됐는데 양쪽 다 생존", "A=\(a) B=\(b)") }
             if let w, st.sides[w].remaining == 0 {
                 bad("전멸한 쪽이 승자로 기록됨", "winner=\(w)")
+            }
+        case .awaitingPivot(let pending):
+            for raw in pending {
+                guard let s = BattleSide(rawValue: raw), st.sides.indices.contains(raw) else {
+                    bad("피벗 대상이 잘못됨", "raw=\(raw)"); continue
+                }
+                let side = st.side(s)
+                if side.team.indices.contains(side.activeIndex), side.active.isFainted {
+                    bad("피벗 단계인데 활성이 쓰러져 있음", "side\(raw)")
+                }
+                let benchAlive = side.aliveIndices.contains { $0 != side.activeIndex }
+                if !benchAlive {
+                    bad("낼 포켓몬이 없는데 피벗 단계", "side\(raw)")
+                }
             }
         case .chooseLead:
             break

@@ -45,25 +45,31 @@ enum ModeTest {
               let orb = await ItemCatalog.shared.item("life-orb") else {
             print("  ✗ 토게피/생명의구슬 로드 실패"); return false
         }
+        // HP 를 크게 잡으면 생명의구슬 반동(최대HP의 10%) 도 같이 커져 금방 자멸한다.
+        // 실제 HP 로 짧은 배틀을 여러 번 돌려 표본을 모은다.
         var called = Set<String>()
-        var e = engine(togepi, mv, orb, chart, pool, seed: 4242, maxHP: 999999)
-        for _ in 0..<40 {
-            guard case .awaitingMoves = e.state.phase else { break }
-            let before = e.state.log.count
-            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
-            for line in e.state.log[before...] where line.contains("의 ") && line.hasSuffix("!") {
-                called.insert(line)
+        var sawMetronome = false, sawOrb = false
+        for seed in 1...25 {
+            var e = engine(togepi, mv, orb, chart, pool,
+                           seed: UInt64(seed) * 5171, maxHP: nil)
+            for _ in 0..<12 {
+                guard case .awaitingMoves = e.state.phase else { break }
+                let before = e.state.log.count
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                for line in e.state.log[before...] where line.contains("의 ") && line.hasSuffix("!") {
+                    called.insert(line)
+                }
             }
+            if e.state.log.contains(where: { $0.contains("손가락흔들기") }) { sawMetronome = true }
+            if e.state.log.contains(where: { $0.contains("생명의구슬") }) { sawOrb = true }
         }
-        ok = show(called.count >= 10, "손가락흔들기가 여러 기술을 부른다",
+        ok = show(called.count >= 20, "손가락흔들기가 여러 기술을 부른다",
                   "서로 다른 로그 \(called.count)종") && ok
-        ok = show(e.state.log.contains { $0.contains("손가락흔들기") },
-                  "로그에 손가락흔들기가 남는다") && ok
-        ok = show(e.state.log.contains { $0.contains("생명의구슬") },
-                  "생명의구슬 반동이 작동한다") && ok
+        ok = show(sawMetronome, "로그에 손가락흔들기가 남는다") && ok
+        ok = show(sawOrb, "생명의구슬 반동이 작동한다") && ok
 
         // PP 가 최대치에서 시작해 줄어드는가
-        var e2 = engine(togepi, mv, orb, chart, pool, seed: 77, maxHP: 999999)
+        var e2 = engine(togepi, mv, orb, chart, pool, seed: 77, maxHP: nil)
         let ppStart = e2.state.sides[0].team[0].moves[0].ppLeft
         e2.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
         let ppAfter = e2.state.sides[0].team[0].moves[0].ppLeft
@@ -122,7 +128,7 @@ enum ModeTest {
     /// 토게피 1:1 엔진
     private static func engine(_ sp: SpeciesDef, _ mv: MoveDef, _ orb: ItemDef,
                                _ chart: TypeChart, _ pool: [MoveDef],
-                               seed: UInt64, maxHP: Int) -> BattleEngine {
+                               seed: UInt64, maxHP: Int?) -> BattleEngine {
         func mk(_ tag: String) -> Battler {
             let slot = RosterSlot(id: tag, speciesID: sp.id,
                                   nature: GameModes.Metronome.nature, rarity: "common",
@@ -130,7 +136,7 @@ enum ModeTest {
             var b = Battler.make(slot: slot, species: sp, moves: [mv], level: 50,
                                  heldItem: orb, ability: nil)
             b.moves[0].ppLeft = mv.pp
-            b.maxHP = maxHP; b.currentHP = maxHP     // 오래 굴려서 다양한 기술을 보게
+            if let maxHP { b.maxHP = maxHP; b.currentHP = maxHP }
             return b
         }
         var rules = BattleRules(maxTeamSize: 1, level: 50)

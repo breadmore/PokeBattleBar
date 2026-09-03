@@ -43,6 +43,14 @@ actor MovesetStore {
         return picked
     }
 
+    /// 사용자가 직접 고른 기술로 고정한다.
+    func setMoves(_ names: [String], for slot: RosterSlot) async -> [MoveDef] {
+        let picked = Array(names.prefix(4))
+        assigned[key(slot)] = picked
+        persist()
+        return await resolve(picked)
+    }
+
     /// 다시 뽑기 (사용자가 원할 때만)
     func reroll(for slot: RosterSlot, species: SpeciesDef) async -> [MoveDef] {
         assigned[key(slot)] = nil

@@ -21,6 +21,12 @@ fi
 PROTO=$(grep -oE 'static let version = [0-9]+' Sources/PokeBattleBar/Net/Wire.swift | grep -oE '[0-9]+$')
 echo "==> 버전 $VERSION / 프로토콜 v$PROTO"
 
+# Showdown 데이터가 없으면 빌드가 안 된다 (생성 파일)
+if [ ! -f Sources/PokeBattleBar/Generated/ShowdownData.swift ]; then
+  echo "==> Showdown 데이터 생성"
+  ./scripts/fetch-showdown.sh
+fi
+
 echo "==> 검증 먼저"
 swift build -c release >/dev/null
 BIN="$(swift build -c release --show-bin-path)/PokeBattleBar"
