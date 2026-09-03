@@ -46,7 +46,18 @@ struct ItemDef: Codable, Hashable, Sendable, Identifiable {
     var koName: String
     var category: String
     var shortEffect: String
+    /// PokéAPI 의 한글 설명 (flavor_text). 영문 short_effect 보다 읽기 좋고,
+    /// 가끔 프랑스어가 섞여 오는 effect_entries 보다 믿을 만하다.
+    var koFlavor: String = ""
     var kind: ItemKind
+
+    /// 도구 이미지. 이름에서 바로 만들 수 있다 (PokeAPI 스프라이트 저장소).
+    var iconURL: URL? {
+        URL(string: "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/items/\(name).png")
+    }
+
+    /// 화면에 보여줄 설명 — 한글이 있으면 한글
+    var description: String { koFlavor.isEmpty ? shortEffect : koFlavor }
 
     var display: String { koName.isEmpty ? name : koName }
 
@@ -63,6 +74,20 @@ struct ItemDef: Codable, Hashable, Sendable, Identifiable {
         switch kind {
         case .megaStone, .zCrystalType, .zCrystalSignature, .dynamaxBand, .maxMushroom: true
         default: false
+        }
+    }
+
+    /// 배틀당 1회뿐인 변신 슬롯 이름. 변신 도구가 아니면 nil.
+    ///
+    /// 팀에서 이 슬롯이 겹치면 한쪽은 반드시 낭비된다 —
+    /// 그래서 세팅을 적용할 때 같은 슬롯을 두 번 주지 않는다.
+    var transformSlot: String? {
+        switch kind {
+        case .megaStone:                        "메가진화"
+        case .zCrystalType, .zCrystalSignature: "Z기술"
+        case .dynamaxBand:                      "다이맥스"
+        case .maxMushroom:                      "거다이맥스"
+        default:                                nil
         }
     }
 
@@ -211,6 +236,20 @@ actor ItemCatalog {
         return nil
     }
 
+    /// 한글 flavor text. 여러 버전이 쌓여 있어 **가장 최근 것**을 쓴다.
+    private static func koFlavor(_ raw: Any?) -> String {
+        guard let arr = raw as? [[String: Any]] else { return "" }
+        var last = ""
+        for e in arr {
+            guard let l = e["language"] as? [String: Any],
+                  let n = l["name"] as? String, n == "ko",
+                  let t = e["text"] as? String else { continue }
+            last = t.replacingOccurrences(of: "\n", with: " ")
+                    .replacingOccurrences(of: "\u{0c}", with: " ")
+        }
+        return last
+    }
+
     private static func shortEffect(_ raw: Any?) -> String {
         guard let arr = raw as? [[String: Any]] else { return "" }
         for e in arr {
@@ -229,6 +268,7 @@ actor ItemCatalog {
         let eff = Self.shortEffect(j["effect_entries"])
         let cat = ((j["category"] as? [String: Any])?["name"] as? String) ?? ""
         return ItemDef(name: slug, koName: ko, category: cat, shortEffect: eff,
+                       koFlavor: Self.koFlavor(j["flavor_text_entries"]),
                        kind: Self.kind(for: slug, category: cat, effect: eff))
     }
 

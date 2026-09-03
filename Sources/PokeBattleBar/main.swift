@@ -13,6 +13,14 @@ if let i = args.firstIndex(of: "--lanprobe") {
     RunLoop.main.run()
 }
 
+if args.contains("--settest") {
+    Task { @MainActor in
+        let ok = await SmogonSetTest.run()
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--scriptedtest") {
     let verbose = args.contains("--verbose")
     Task {

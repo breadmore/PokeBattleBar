@@ -148,8 +148,16 @@ enum ShowdownTest {
             } else {
                 let why = m.recommendationUnavailableReason(for: slot)
                 ok = show(why != nil, "\(ko) 추천이 없으면 이유를 알려준다", why ?? "nil") && ok
-                ok = show(abils.isEmpty && item == nil && moves.isEmpty,
-                          "\(ko) 추천이 없으면 조회도 비어 있다") && ok
+                // 세팅이 없어도 **도구는** 규칙으로 추천한다 (의도된 것).
+                // 기술·특성은 세팅에서만 오므로 비어 있어야 한다.
+                ok = show(abils.isEmpty && moves.isEmpty,
+                          "\(ko) 세팅이 없으면 추천 기술·특성은 비어 있다",
+                          "특성 \(abils.count) / 기술 \(moves.count)") && ok
+                if let item {
+                    let avail = Set((m.itemsForSpecies[id] ?? []).map(\.name))
+                    ok = show(avail.contains(item),
+                              "\(ko) 세팅이 없어도 도구는 규칙으로 추천한다", item) && ok
+                }
             }
         }
         return ok

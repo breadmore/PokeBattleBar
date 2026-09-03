@@ -153,6 +153,19 @@ enum NetTest {
         // 선언이 빠지면 macOS 14+ 가 광고·검색을 **조용히** 막는다.
         // 번들 밖에서 바이너리를 직접 돌리면 제한이 없어 통과하므로
         // (진단 도구가 통과해도 배포본이 실패할 수 있다) 여기서 잡는다.
+        // MARK: 업데이트 버전 비교
+        //
+        // 문자열로 비교하면 "1.10.0" < "1.9.0" 이 되어 업데이트를 놓친다.
+        print("\n-- 업데이트 버전 비교 --")
+        ok = check(UpdateChecker.isNewer("1.11.0", than: "1.10.0"), "1.11.0 > 1.10.0") && ok
+        ok = check(UpdateChecker.isNewer("1.10.0", than: "1.9.0"),
+                   "1.10.0 > 1.9.0 (문자열 비교로는 틀린다)") && ok
+        ok = check(UpdateChecker.isNewer("2.0.0", than: "1.99.99"), "2.0.0 > 1.99.99") && ok
+        ok = check(!UpdateChecker.isNewer("1.10.0", than: "1.10.0"), "같은 버전은 업데이트 아님") && ok
+        ok = check(!UpdateChecker.isNewer("1.9.0", than: "1.10.0"), "구버전은 업데이트 아님") && ok
+        ok = check(UpdateChecker.normalize("v1.11.0") == "1.11.0", "태그의 v 를 떼어낸다") && ok
+        ok = check(UpdateChecker.isNewer("1.11", than: "1.10.5"), "자리 수가 달라도 비교된다") && ok
+
         print("\n-- Bonjour 서비스 선언 --")
         let usedTypes = [pokeBattleServiceType, pokeLobbyServiceType]
         let plistURL = Bundle.main.bundleURL.appending(path: "Contents/Info.plist")

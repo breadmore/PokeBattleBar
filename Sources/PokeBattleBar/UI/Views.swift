@@ -91,50 +91,61 @@ struct LobbyView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
 
-                RosterSection(model: model)
+                GBPanel("내 포켓몬") { RosterSection(model: model) }
 
                 LoadoutWarningBanner(model: model)
 
-                Divider()
+                GBPanel("로비") { LobbyPeopleSection(model: model) }
 
-                LobbyPeopleSection(model: model)
-
-                Divider()
-
-                HStack(alignment: .top, spacing: 24) {
-                    HostSection(model: model)
-                    Divider().frame(height: 220)
-                    JoinSection(model: model)
+                HStack(alignment: .top, spacing: 14) {
+                    GBPanel("방 만들기") { HostSection(model: model) }
+                    GBPanel("방 찾기") { JoinSection(model: model) }
                 }
             }
-            .padding(22)
+            .padding(18)
         }
-
+        .background(GB.field.opacity(0.35))
     }
 
     private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("PokeBattleBar").font(.title2.bold())
+        HStack(alignment: .center, spacing: 12) {
+            PokeBallIcon(size: 34)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("PokeBattleBar")
+                    .font(GB.face(24)).foregroundStyle(GB.ink)
                 Text("같은 네트워크의 동료와 도감 포켓몬으로 배틀")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(GB.inkSoft)
                 Text("v\(model.appVersion) · 프로토콜 v\(model.protocolVersion)")
-                    .font(.system(size: 9)).foregroundStyle(.tertiary)
+                    .font(.system(size: 9)).foregroundStyle(GB.inkSoft.opacity(0.7))
             }
             Spacer()
+            UpdateButton(model: model)
             RecordBadge(record: model.record)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("내 이름").font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 3) {
+                Text("내 이름").font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(GB.inkSoft)
                 TextField("트레이너", text: $model.playerName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 160)
+                    .textFieldStyle(.plain)
+                    .font(GB.face(13, .semibold))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 150)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.75)))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .stroke(GB.ink.opacity(0.3), lineWidth: 1.5))
                     // 로비에 보이는 이름도 같이 바뀌어야 한다
                     .onSubmit { model.presenceNameChanged() }
             }
         }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(GB.plate)
+                .shadow(color: GB.ink.opacity(0.18), radius: 0, x: 3, y: 3)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(GB.ink, lineWidth: 2.5))
     }
 }
 
@@ -148,10 +159,9 @@ struct LobbyPeopleSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                PokeBallIcon(size: 15)
-                Text("로비").font(.headline)
                 Text("\(model.lobbyPeers.count)명")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .font(GB.face(13, .semibold).monospacedDigit())
+                    .foregroundStyle(GB.inkSoft)
                 Spacer()
                 if !model.notices.isEmpty {
                     Text("알림 \(model.notices.count)")
@@ -237,7 +247,8 @@ struct RosterSection: View {
                     .font(.caption.bold()).foregroundStyle(.orange)
             }
             HStack {
-                Text("내 포켓몬 \(model.roster.count)마리").font(.headline)
+                Text("\(model.roster.count)마리")
+                    .font(GB.face(13, .semibold)).foregroundStyle(GB.inkSoft)
                 Spacer()
                 Text("데려갈 수 있는 최대: \(model.effectiveTeamSize)마리")
                     .font(.caption).foregroundStyle(.secondary)
@@ -883,58 +894,56 @@ struct LoadoutPickers: View {
     let model: AppModel
     let slot: RosterSlot
 
-    private var items: [ItemDef] { model.itemsForSpecies[slot.speciesID] ?? [] }
-    private var abilities: [AbilityDef] { model.abilitiesForSpecies[slot.speciesID] ?? [] }
+    @State private var showItems = false
+    @State private var showAbilities = false
+    @State private var showSets = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            // 지닌 도구 — 착용 여부가 한눈에 보이게
             let equipped = model.currentItem(for: slot)
             let recItem = model.recommendedItemName(for: slot)
-            Menu {
-                Button("없음") { Task { await model.setItem(nil, for: slot) } }
-                ForEach(groupedItems(), id: \.0) { group, list in
-                    Section(group) {
-                        ForEach(list) { it in
-                            Button((recItem == it.name ? "⭐ " : "") + it.display) {
-                                Task { await model.setItem(it, for: slot) }
-                            }
-                        }
+            let curAbil = model.currentAbility(for: slot)
+            let recAbils = model.recommendedAbilityNames(for: slot)
+
+            // 도구 — 아이콘과 이름을 함께. 누르면 설명이 있는 목록이 열린다.
+            Button { showItems = true } label: {
+                HStack(spacing: 5) {
+                    if let e = equipped {
+                        ItemIcon(item: e, size: 16)
+                    } else {
+                        Image(systemName: "bag").font(.system(size: 10))
+                            .foregroundStyle(.secondary).frame(width: 16)
                     }
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Text(equipped == nil ? "🎒" : "✅").font(.system(size: 8))
                     Text(equipped?.display ?? "도구 없음")
                         .font(.system(size: 9, weight: equipped == nil ? .regular : .bold))
                         .lineLimit(1)
                     if let e = equipped, recItem == e.name {
                         Text("⭐").font(.system(size: 7))
                     }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.system(size: 7))
+                        .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 4).padding(.vertical, 2)
                 .frame(width: 112, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 4)
                     .fill(equipped == nil ? Color.clear : Color.accentColor.opacity(0.18)))
+                .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .help(equipped?.shortEffect ?? "지닌 도구를 고릅니다")
+            .buttonStyle(.plain)
+            .help(equipped?.description ?? "지닌 도구를 고릅니다")
 
             // 끼운 도구가 이 개체에게 실제로 작동하는지
             if let r = model.itemReadiness(for: slot) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 2) {
-                        Text(r.ok ? "✓" : "✗")
-                            .font(.system(size: 9, weight: .black))
-                        Text(r.headline)
-                            .font(.system(size: 9, weight: .bold))
+                        Text(r.ok ? "✓" : "✗").font(.system(size: 9, weight: .black))
+                        Text(r.headline).font(.system(size: 9, weight: .bold))
                     }
                     .foregroundStyle(r.ok ? Color.green : Color.red)
                     Text(r.detail)
-                        .font(.system(size: 8))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .font(.system(size: 8)).foregroundStyle(.secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(width: 112, alignment: .leading)
 
@@ -942,27 +951,13 @@ struct LoadoutPickers: View {
                 if !shared.isEmpty {
                     Text("중복: \(shared.joined(separator: ", "))")
                         .font(.system(size: 8)).foregroundStyle(.orange)
-                        .frame(width: 112, alignment: .leading)
-                        .lineLimit(1)
+                        .frame(width: 112, alignment: .leading).lineLimit(1)
                 }
             }
 
-            // 특성 — 추천에는 ⭐ 를 붙인다
-            let recAbils = model.recommendedAbilityNames(for: slot)
-            let curAbil = model.currentAbility(for: slot)
-            Menu {
-                ForEach(abilities) { a in
-                    Button {
-                        Task { await model.setAbility(a, for: slot) }
-                    } label: {
-                        Text((recAbils.contains(a.name) ? "⭐ " : "")
-                             + a.display
-                             + (a.isHidden ? " (숨겨진)" : "")
-                             + (a.statusTag.map { " · \($0)" } ?? ""))
-                    }
-                }
-            } label: {
-                HStack(spacing: 2) {
+            // 특성
+            Button { showAbilities = true } label: {
+                HStack(spacing: 3) {
                     Text("✨").font(.system(size: 8))
                     Text(curAbil?.display ?? "특성 없음")
                         .font(.system(size: 9, weight: curAbil == nil ? .regular : .bold))
@@ -970,31 +965,56 @@ struct LoadoutPickers: View {
                     if let a = curAbil, recAbils.contains(a.name) {
                         Text("⭐").font(.system(size: 7))
                     }
-                    if let a = curAbil, let tag = a.statusTag {
-                        Text(tag).font(.system(size: 7)).foregroundStyle(.secondary)
-                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.system(size: 7))
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.horizontal, 4).padding(.vertical, 2)
+                .frame(width: 112, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 4)
+                    .fill(curAbil == nil ? Color.clear : Color.purple.opacity(0.16)))
+                .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton)
-            .frame(width: 112, alignment: .leading)
-            .help(curAbil?.shortEffect ?? "특성을 고릅니다")
+            .buttonStyle(.plain)
+            .help(curAbil?.description ?? "특성을 고릅니다")
 
-            // 고른 특성이 실제로 무슨 일을 하는지
-            if let a = curAbil {
-                Text(a.isDoublesOnly ? "더블배틀 전용 — 1대1 에서는 발동하지 않습니다"
-                     : (a.isImplemented ? abilitySummary(a) : "이 특성은 배틀에 반영되지 않습니다"))
-                    .font(.system(size: 8))
-                    .foregroundStyle(a.isImplemented ? .secondary : .tertiary)
+            if let a = curAbil, let tag = a.statusTag {
+                Text(tag)
+                    .font(.system(size: 8)).foregroundStyle(.secondary)
                     .frame(width: 112, alignment: .leading)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+
+            // 실전 세팅 — 종마다 여러 개 중에서 골라 쓴다
+            let setCount = model.smogonSets(for: slot).count
+            if setCount > 0 {
+                Button {
+                    showSets = true
+                    Task { await model.preloadSetMoveNames(for: slot) }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "list.star").font(.system(size: 8))
+                        Text("실전 세팅 \(setCount)종")
+                            .font(.system(size: 9, weight: .bold))
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 4).padding(.vertical, 2)
+                    .frame(width: 112, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.16)))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Smogon 분석 세팅 중에서 골라 적용합니다 (성격·노력치는 제외)")
             }
         }
-    }
-
-    private func groupedItems() -> [(String, [ItemDef])] {
-        Dictionary(grouping: items, by: \.group)
-            .map { ($0.key, $0.value.sorted { $0.display < $1.display }) }
-            .sorted { $0.0 < $1.0 }
+        .sheet(isPresented: $showSets) {
+            SmogonSetSheet(model: model, slot: slot)
+        }
+        .sheet(isPresented: $showItems) {
+            ItemPickerSheet(model: model, slot: slot)
+        }
+        .sheet(isPresented: $showAbilities) {
+            AbilityPickerSheet(model: model, slot: slot)
+        }
     }
 }
 

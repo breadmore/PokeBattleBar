@@ -6,6 +6,8 @@
 #
 # 로컬 네트워크(Bonjour) 권한 선언이 Info.plist 에 반드시 있어야 macOS 14+ 에서 방 검색이 된다.
 set -euo pipefail
+# 배포 설정 (REPO 등). 없으면 기본값으로 간다.
+[ -f "$(dirname "$0")/config.sh" ] && . "$(dirname "$0")/config.sh"
 
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
@@ -52,6 +54,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
          이 두 키가 없으면 macOS 14+ 에서 방 검색이 조용히 실패한다. -->
     <key>NSLocalNetworkUsageDescription</key>
     <string>같은 네트워크에 있는 동료의 배틀 방을 찾고 접속하기 위해 로컬 네트워크를 사용합니다.</string>
+    <!-- 업데이트를 확인할 저장소. scripts/config.sh 의 REPO 에서 온다.
+         비어 있으면 앱이 업데이트 확인을 하지 않는다. -->
+    <key>PBBUpdateRepo</key><string>${REPO:-}</string>
+
     <key>NSBonjourServices</key>
     <array>
         <string>_pokebattle._tcp</string>

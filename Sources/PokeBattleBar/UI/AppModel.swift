@@ -73,6 +73,12 @@ final class AppModel {
     var chatLines: [ChatLine] = []
     var chatDraft: String = ""
 
+    // 업데이트
+    var availableUpdate: UpdateChecker.Update?
+    /// 설치 파일을 받는 중인가
+    var updateDownloading = false
+    var updateStatus: String?
+
     // 로비 (누가 있는지 / 초대 / 새 방 알림)
     var lobbyPeers: [LobbyPeer] = []
     struct Invite: Equatable, Sendable {
@@ -298,6 +304,9 @@ final class AppModel {
             // 로비에 누가 있는지 알리고, 새 방이 열리는 것도 계속 지켜본다
             startPresence()
             startBrowsing()
+            // 업데이트가 있으면 우측 상단 버튼이 켜진다.
+            // 프로토콜이 다르면 배틀이 안 되므로 알려주는 편이 낫다.
+            Task { await checkForUpdate() }
         } catch {
             errorMessage = describe(error)
             screen = .lobby
@@ -547,6 +556,11 @@ final class AppModel {
 
     /// 로비에서 띄울 장비 경고.
     /// 변신은 **종류별로 배틀당 1회**뿐이라, 같은 슬롯을 노리는 도구를 여러 마리가 끼면
+    /// 개체의 표시 이름 (한글). 화면 여러 곳에서 쓴다.
+    func displayName(for slot: RosterSlot) -> String {
+        rosterSpecies[slot.speciesID]?.display ?? "#\(slot.speciesID)"
+    }
+
     /// 한 쪽은 반드시 낭비된다. 배틀에 들어가기 전에 알려줘야 한다.
     var loadoutWarnings: [LoadoutWarning] {
         var out: [LoadoutWarning] = []
@@ -714,36 +728,206 @@ final class AppModel {
     // MARK: 추천 세팅 (6번)
 
     /// 실전에서 많이 쓰이는 기술·도구·특성이 있는가
+    /// 추천이 있는가.
+    ///
+    /// 출처가 둘이다 — Smogon 분석 세팅(도구 포함)과 9세대 랜덤배틀 세팅.
+    /// 한쪽만 보면 실제와 어긋난다 (후딘은 랜덤배틀 세팅이 없지만
+    /// Smogon 세팅은 있다).
     func hasRecommendation(for slot: RosterSlot) -> Bool {
         guard let sp = rosterSpecies[slot.speciesID] else { return false }
+        if !smogonSets(for: slot).isEmpty { return true }
         return Showdown.set(forSpeciesName: sp.name) != nil
     }
 
     /// 추천이 없는 이유. 버튼이 그냥 안 보이면 왜 없는지 알 수 없다.
     func recommendationUnavailableReason(for slot: RosterSlot) -> String? {
-        guard let sp = rosterSpecies[slot.speciesID] else { return nil }
-        if Showdown.set(forSpeciesName: sp.name) != nil { return nil }
-        // 원본은 9세대 랜덤배틀 세팅이라, 9세대에 없거나 미진화면 빠져 있다
+        guard rosterSpecies[slot.speciesID] != nil else { return nil }
+        if hasRecommendation(for: slot) { return nil }
+        // Smogon 분석은 실전에서 쓰이는 종만 다루고,
+        // 랜덤배틀 세팅은 9세대에 등장하는 종만 있다
         if !slot.fullyEvolved { return "아직 진화가 끝나지 않았습니다" }
-        if sp.id > 1025 { return "실전 세팅 데이터에 없는 종입니다" }
-        return "9세대에 등장하지 않거나 미진화 종이라 실전 세팅이 없습니다"
+        return "실전에서 거의 쓰이지 않는 종이라 분석 세팅이 없습니다"
     }
 
     /// 추천 특성 이름들 (그 종이 실제로 가질 수 있는 것만)
     func recommendedAbilityNames(for slot: RosterSlot) -> [String] {
-        guard let sp = rosterSpecies[slot.speciesID],
-              let rec = Showdown.set(forSpeciesName: sp.name) else { return [] }
+        guard let sp = rosterSpecies[slot.speciesID] else { return [] }
         let owned = Set((abilitiesForSpecies[slot.speciesID] ?? []).map(\.name))
-        return rec.abilities.filter { owned.contains($0) }
+        // Smogon 분석 세팅이 알려주는 것을 먼저 모은다
+        var out: [String] = []
+        for set in smogonSets(for: slot) {
+            guard let a = set.abilityID, owned.contains(a), !out.contains(a) else { continue }
+            out.append(a)
+        }
+        if let rec = Showdown.set(forSpeciesName: sp.name) {
+            for a in rec.abilities where owned.contains(a) && !out.contains(a) { out.append(a) }
+        }
+        return out
     }
 
     /// 추천 도구 이름 (그 종에게 노출되는 것만)
+    /// 추천 도구.
+    ///
+    /// 추천 세팅 데이터에는 도구가 **없다** (Showdown 은 팀 생성 알고리즘으로
+    /// 고른다). 그래서 데이터에 있으면 그것을 쓰고, 없으면 종족값·기술 구성으로
+    /// 규칙에 따라 고른다 — 그러지 않으면 "실전 추천"을 눌러도 도구만 안 바뀐다.
     func recommendedItemName(for slot: RosterSlot) -> String? {
-        guard let sp = rosterSpecies[slot.speciesID],
-              let rec = Showdown.set(forSpeciesName: sp.name),
-              let want = rec.item else { return nil }
+        recommendedItem(for: slot)?.itemName
+    }
+
+    /// 기술·특성의 한글 이름 (세팅 화면에서 영문 대신 보여준다)
+    func moveKoName(_ id: String) -> String? { moveKoNames[id] }
+    func abilityKoName(_ id: String) -> String? {
+        abilitiesForSpecies.values.flatMap { $0 }.first { $0.name == id }?.display
+    }
+    /// 세팅 화면에서 쓰는 기술 한글 이름 표. 필요할 때 채운다.
+    var moveKoNames: [String: String] = [:]
+
+    /// 세팅 화면을 열기 전에 이름을 받아둔다 (영문으로 보이면 알아보기 어렵다)
+    func preloadSetMoveNames(for slot: RosterSlot) async {
+        for set in smogonSets(for: slot) {
+            for opts in set.allMoveOptions {
+                for id in opts where moveKoNames[id] == nil {
+                    if let m = try? await PokeAPI.shared.move(id) {
+                        moveKoNames[id] = m.display
+                    }
+                }
+            }
+        }
+    }
+
+    /// 팀원(나 자신 제외)이 이미 든 도구 이름
+    func itemsTakenByTeam(excluding slot: RosterSlot) -> Set<String> {
+        Set(teamSlots.compactMap { other -> String? in
+            guard other.id != slot.id else { return nil }
+            return loadouts[other.id]?.item
+        })
+    }
+
+    /// 팀원이 이미 차지한 변신 슬롯 (메가진화·다이맥스·거다이맥스·Z기술).
+    /// 배틀당 각각 1회뿐이라 겹치면 한쪽은 반드시 낭비된다.
+    func transformSlotsClaimedByTeam(excluding slot: RosterSlot) -> Set<String> {
+        var out: Set<String> = []
+        for other in teamSlots where other.id != slot.id {
+            guard let name = loadouts[other.id]?.item,
+                  let it = (itemsForSpecies[other.speciesID] ?? []).first(where: { $0.name == name }),
+                  let s = it.transformSlot else { continue }
+            out.insert(s)
+        }
+        return out
+    }
+
+    // MARK: 실전 세팅 (Smogon 분석 세팅)
+
+    /// 이 개체가 고를 수 있는 실전 세팅. 배울 수 있는 기술이 하나도 없는
+    /// 세팅은 걸러낸다 (다른 세대 전용 기술로만 짜인 경우가 있다).
+    func smogonSets(for slot: RosterSlot) -> [SmogonSet] {
+        guard let sp = rosterSpecies[slot.speciesID] else { return [] }
+        let learnable = Set(sp.learnableMoves)
+        return SmogonSets.sets(forSpeciesName: sp.name).filter { set in
+            set.allMoveOptions.contains { opts in opts.contains { learnable.contains($0) } }
+        }
+    }
+
+    /// 세팅 하나를 이 개체에 적용한다.
+    ///
+    /// **성격과 노력치는 건드리지 않는다** — 성격은 PokeTokenBar 를 따르고
+    /// 노력치는 전원 0 이다. 기술은 배울 수 있는 것만, 도구·특성은 이 개체가
+    /// 실제로 가질 수 있는 것만 적용한다.
+    @discardableResult
+    func applySmogonSet(_ set: SmogonSet, to slot: RosterSlot) async -> String? {
+        guard let sp = rosterSpecies[slot.speciesID] else { return nil }
+        let learnable = Set(sp.learnableMoves)
+        var applied: [String] = []
+
+        // 기술 — 칸마다 배울 수 있는 첫 후보를 고른다
+        var moves: [String] = []
+        for opts in set.allMoveOptions {
+            if let pick = opts.first(where: { learnable.contains($0) }), !moves.contains(pick) {
+                moves.append(pick)
+            }
+        }
+        if !moves.isEmpty {
+            await setMoves(Array(moves.prefix(4)), for: slot)
+            applied.append("기술 \(min(4, moves.count))개")
+        }
+
+        // 도구 — 팀원이 이미 든 것이나, 이미 차지한 변신 슬롯과 겹치는 것은 주지 않는다.
+        // (메가스톤·Z크리스탈·다이버섯은 배틀당 1회뿐이라 겹치면 한쪽이 낭비된다)
+        let taken = itemsTakenByTeam(excluding: slot)
+        let claimed = transformSlotsClaimedByTeam(excluding: slot)
         let avail = itemsForSpecies[slot.speciesID] ?? []
-        return avail.contains { $0.name == want } ? want : nil
+
+        func acceptable(_ it: ItemDef) -> Bool {
+            if taken.contains(it.name) { return false }
+            if let s = it.transformSlot, claimed.contains(s) { return false }
+            return true
+        }
+
+        if let want = set.itemID, let it = avail.first(where: { $0.name == want }) {
+            if acceptable(it) {
+                await setItem(it, for: slot)
+                applied.append("도구 \(it.display)")
+            } else if let alt = ItemAdvice.recommend(species: sp, moves: [], available: avail,
+                                                     fullyEvolved: slot.fullyEvolved,
+                                                     taken: taken, claimedSlots: claimed),
+                      let altItem = avail.first(where: { $0.name == alt.itemName }) {
+                await setItem(altItem, for: slot)
+                let why = it.transformSlot != nil
+                    ? "\(it.display)은 팀에서 이미 \(it.transformSlot!) 슬롯을 쓰고 있어"
+                    : "\(it.display)은 팀원이 이미 들고 있어"
+                applied.append("도구 \(altItem.display) (\(why) 대신)")
+            } else {
+                applied.append("도구 없음 (\(it.display)이 팀에서 겹칩니다)")
+            }
+        }
+
+        if let want = set.abilityID,
+           let ab = (abilitiesForSpecies[slot.speciesID] ?? []).first(where: { $0.name == want }) {
+            await setAbility(ab, for: slot)
+            applied.append("특성 \(ab.display)")
+        }
+
+        return applied.isEmpty ? nil : applied.joined(separator: ", ")
+    }
+
+    /// 추천 도구와 **그 이유**. 이유를 보여주지 않으면 왜 그걸 끼우는지 알 수 없다.
+    func recommendedItem(for slot: RosterSlot) -> ItemAdvice.Pick? {
+        guard let sp = rosterSpecies[slot.speciesID] else { return nil }
+        let avail = itemsForSpecies[slot.speciesID] ?? []
+
+        // 팀에서 겹치는 도구와 이미 찬 변신 슬롯은 후보에서 뺀다
+        let taken = itemsTakenByTeam(excluding: slot)
+        let claimed = transformSlotsClaimedByTeam(excluding: slot)
+        func free(_ name: String) -> Bool {
+            guard let it = avail.first(where: { $0.name == name }) else { return false }
+            if taken.contains(name) { return false }
+            if let s = it.transformSlot, claimed.contains(s) { return false }
+            return true
+        }
+
+        // Smogon 분석 세팅에 도구가 있으면 그것이 1순위
+        for set in smogonSets(for: slot) {
+            guard let want = set.itemID, free(want) else { continue }
+            return ItemAdvice.Pick(itemName: want,
+                                   reason: "\(set.formatLabel) 「\(set.name)」 세팅에서 쓰는 도구입니다")
+        }
+        // 랜덤배틀 세팅에 있으면 그다음 (여기에는 대체로 도구가 없다)
+        if let rec = Showdown.set(forSpeciesName: sp.name), let want = rec.item, free(want) {
+            return ItemAdvice.Pick(itemName: want, reason: "실전 세팅에서 쓰이는 도구입니다")
+        }
+
+        // 지금 든 기술로 판단한다. 없으면 추천 기술로.
+        var moves = movesetsBySlot[slot.id] ?? []
+        if moves.isEmpty {
+            let names = recommendedMoveNames(for: slot)
+            // 기술 정의가 아직 없으면 종족값만으로 판단한다 (도구는 대체로 종족값이 정한다)
+            moves = []
+            _ = names
+        }
+        return ItemAdvice.recommend(species: sp, moves: moves, available: avail,
+                                    fullyEvolved: slot.fullyEvolved,
+                                    taken: taken, claimedSlots: claimed)
     }
 
     /// 추천 기술 이름들 (그 개체가 배울 수 있는 것만)
@@ -770,13 +954,13 @@ final class AppModel {
             applied.append("기술 \(min(4, moves.count))개")
         }
 
-        // 도구 — 그 종에게 노출되는 것 중에 있으면
-        if let want = rec.item {
-            let avail = itemsForSpecies[slot.speciesID] ?? []
-            if let it = avail.first(where: { $0.name == want }) {
-                await setItem(it, for: slot)
-                applied.append("도구 \(it.display)")
-            }
+        // 도구 — 팀에서 겹치지 않는 것만.
+        // 예전에는 그냥 끼워서 여섯 마리가 같은 도구를 들거나 메가스톤이
+        // 두 개가 되는 일이 있었다 (한쪽은 반드시 낭비된다).
+        if let pick = recommendedItem(for: slot),
+           let it = (itemsForSpecies[slot.speciesID] ?? []).first(where: { $0.name == pick.itemName }) {
+            await setItem(it, for: slot)
+            applied.append("도구 \(it.display)")
         }
 
         // 특성 — 그 종이 가질 수 있는 것 중에 있으면
@@ -1101,6 +1285,58 @@ final class AppModel {
             try? await Task.sleep(for: .seconds(6))
             guard let self, self.toast?.id == n.id else { return }
             self.toast = nil
+        }
+    }
+
+    // MARK: 업데이트
+
+    func checkForUpdate() async {
+        guard UpdateChecker.isConfigured else { return }
+        availableUpdate = await UpdateChecker.check(current: appVersion)
+        if let u = availableUpdate {
+            notify(.info, "새 버전 v\(u.version) 이 있습니다 — 우측 상단에서 업데이트하세요")
+        }
+    }
+
+    /// 설치 파일을 받아 실행한다. 설치 파일이 기존 앱을 종료하고 새로 띄운다.
+    func downloadAndRunUpdate() async {
+        guard let u = availableUpdate else { return }
+        guard let asset = u.installerURL else {
+            // 설치 파일을 못 찾으면 릴리스 페이지를 연다
+            NSWorkspace.shared.open(u.pageURL)
+            return
+        }
+        updateDownloading = true
+        updateStatus = "설치 파일을 받는 중…"
+        defer { updateDownloading = false }
+
+        let dest = FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Downloads/PokeBattleBar-\(u.version)-Install.command")
+        do {
+            let (tmp, resp) = try await URLSession.shared.download(from: asset)
+            guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+                updateStatus = "받기 실패 — 릴리스 페이지를 엽니다"
+                NSWorkspace.shared.open(u.pageURL)
+                return
+            }
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.moveItem(at: tmp, to: dest)
+        } catch {
+            updateStatus = "받기 실패: \(error.localizedDescription)"
+            NSWorkspace.shared.open(u.pageURL)
+            return
+        }
+
+        updateStatus = "설치를 시작합니다…"
+        // 전송 과정에서 실행 권한이 벗겨지므로 bash 로 실행한다 (설치 파일 안내와 같다)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [dest.path]
+        do {
+            try p.run()
+        } catch {
+            updateStatus = "실행 실패 — 받은 파일을 직접 실행해주세요: \(dest.path)"
+            NSWorkspace.shared.selectFile(dest.path, inFileViewerRootedAtPath: "")
         }
     }
 
