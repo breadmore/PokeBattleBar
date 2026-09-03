@@ -22,6 +22,10 @@ struct RootView: View {
             content
         }
         .frame(minWidth: 720, minHeight: 560)
+        // 창 전체를 밝은 판으로 두고 글자색도 함께 지정한다.
+        // 배경만 밝게 하면 다크모드 기본 글자색(흰색)이 그대로 나와
+        // 흰 판에 흰 글씨가 된다.
+        .gbSurface()
         // 새 방·초대 알림은 어느 화면에서든 보여야 한다
         .overlay(alignment: .top) {
             if let t = model.toast {
@@ -107,7 +111,6 @@ struct LobbyView: View {
             }
             .padding(18)
         }
-        .background(GB.field.opacity(0.35))
     }
 
     private var header: some View {
@@ -356,6 +359,9 @@ struct RosterStrip: View {
 }
 
 struct RosterCard: View {
+    /// 실전 세팅 고르기 창
+    @State private var showSets = false
+
     @Bindable var model: AppModel
     let slot: RosterSlot
     @State private var moves: [MoveDef] = []
@@ -416,14 +422,39 @@ struct RosterCard: View {
                     .frame(width: 112, alignment: .leading)
                     .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             }
+            // 실전 세팅 — 여러 개 중에서 고르는 쪽을 먼저 보여준다.
+            // (카드 맨 아래에 묻혀 있어서 있는 줄도 몰랐다)
+            let setCount = model.smogonSets(for: slot).count
+            if setCount > 0 {
+                Button {
+                    showSets = true
+                    Task { await model.preloadSetMoveNames(for: slot) }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "list.star").font(.system(size: 8))
+                        Text("실전 세팅 \(setCount)종 고르기")
+                            .font(.system(size: 9, weight: .heavy))
+                    }
+                    .foregroundStyle(GB.plate)
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .frame(width: 112, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(GB.hpGreen))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Smogon 분석 세팅 \(setCount)개 중에서 골라 적용합니다")
+            }
             if model.hasRecommendation(for: slot) {
-                Button("실전 추천 적용") {
+                Button("한 번에 추천 적용") {
                     Task {
                         recommendation = await model.applyRecommendation(for: slot)
                         moves = await model.moveset(for: slot)
                     }
                 }
-                .font(.system(size: 9)).buttonStyle(.link).tint(.green)
+                .font(.system(size: 9, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(GB.hpGreen)
+                .frame(width: 112, alignment: .leading)
             }
             if let r = recommendation {
                 Text("적용: \(r)").font(.system(size: 8)).foregroundStyle(.green)
@@ -467,6 +498,9 @@ struct RosterCard: View {
         }
         .padding(8)
         .frame(width: 148)
+        .sheet(isPresented: $showSets) {
+            SmogonSetSheet(model: model, slot: slot)
+        }
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(selected ? Color.accentColor.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
@@ -896,7 +930,6 @@ struct LoadoutPickers: View {
 
     @State private var showItems = false
     @State private var showAbilities = false
-    @State private var showSets = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -984,30 +1017,6 @@ struct LoadoutPickers: View {
                     .frame(width: 112, alignment: .leading)
             }
 
-            // 실전 세팅 — 종마다 여러 개 중에서 골라 쓴다
-            let setCount = model.smogonSets(for: slot).count
-            if setCount > 0 {
-                Button {
-                    showSets = true
-                    Task { await model.preloadSetMoveNames(for: slot) }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "list.star").font(.system(size: 8))
-                        Text("실전 세팅 \(setCount)종")
-                            .font(.system(size: 9, weight: .bold))
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 4).padding(.vertical, 2)
-                    .frame(width: 112, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.green.opacity(0.16)))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Smogon 분석 세팅 중에서 골라 적용합니다 (성격·노력치는 제외)")
-            }
-        }
-        .sheet(isPresented: $showSets) {
-            SmogonSetSheet(model: model, slot: slot)
         }
         .sheet(isPresented: $showItems) {
             ItemPickerSheet(model: model, slot: slot)
@@ -1211,6 +1220,7 @@ struct WaitingView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .gbSurface()
     }
 }
 

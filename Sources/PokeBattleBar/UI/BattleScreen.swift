@@ -7,8 +7,15 @@ import SwiftUI
 /// ▼ 커서. 그리고 원작의 규칙 하나 — **내 HP 만 숫자로 보이고 상대는
 /// 막대만 보인다.**
 enum GB {
-    // 판·상자 (밝은 판 위 남색 선)
-    static let plate = Color(red: 0.992, green: 0.980, blue: 0.941)
+    // 판·상자 (부드러운 베이지 판 위 남색 선).
+    //
+    // **완전한 흰색을 쓰지 않는다** — 눈이 피로하고, 원작의 종이 같은 질감과도
+    // 멀다. 판은 살짝 따뜻한 베이지, 그 위는 짙은 남색 잉크다.
+    static let plate = Color(red: 0.965, green: 0.941, blue: 0.878)
+    /// 판보다 한 단 밝은 면 (입력칸·행 강조)
+    static let plateHi = Color(red: 0.984, green: 0.969, blue: 0.925)
+    /// 판보다 한 단 어두운 면 (창 바탕)
+    static let ground = Color(red: 0.925, green: 0.894, blue: 0.816)
     static let ink = Color(red: 0.110, green: 0.169, blue: 0.290)
     static let inkSoft = Color(red: 0.420, green: 0.463, blue: 0.537)
     static let hilite = Color(red: 0.784, green: 0.220, blue: 0.180)
@@ -311,6 +318,7 @@ struct GBTextBox<Content: View>: View {
 
     var body: some View {
         content
+            .foregroundStyle(GB.ink)
             .padding(.horizontal, 18).padding(.vertical, 13)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(GB.plate)
@@ -593,7 +601,31 @@ struct GBSpecialChip: View {
     }
 }
 
-/// 로비의 판. 배틀 화면과 같은 문법 — 밝은 판, 남색 선, 그림자 없는 오프셋.
+/// 밝은 판 위에 올리는 화면에 붙인다.
+///
+/// **글자색을 반드시 함께 지정해야 한다.** 배경만 밝게 하면 다크모드에서
+/// 시스템 기본 글자색(흰색)이 그대로 나와 흰 판에 흰 글씨가 된다 —
+/// 실제로 그렇게 만들어서 아무것도 안 보였다.
+struct GBSurface: ViewModifier {
+    var ground: Color = GB.ground
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(GB.ink)        // ← 이것이 빠지면 흰 글씨가 된다
+            .tint(GB.hilite)
+            .background(ground)
+            .environment(\.colorScheme, .light)   // 컨트롤(체크박스·버튼)도 밝은 판에 맞춘다
+    }
+}
+
+extension View {
+    /// 밝은 베이지 판 위의 화면
+    func gbSurface(_ ground: Color = GB.ground) -> some View {
+        modifier(GBSurface(ground: ground))
+    }
+}
+
+/// 로비의 판. 배틀 화면과 같은 문법 — 베이지 판, 남색 선, 그림자 없는 오프셋.
 struct GBPanel<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
@@ -617,6 +649,7 @@ struct GBPanel<Content: View>: View {
             }
             content
         }
+        .foregroundStyle(GB.ink)
         .padding(.horizontal, 14).padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(

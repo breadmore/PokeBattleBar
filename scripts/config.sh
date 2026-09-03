@@ -5,4 +5,4 @@
 #        비워두면 업데이트 확인을 하지 않는다 (버튼도 안 나온다).
 #
 #   예:  REPO="younghoon/PokeBattleBar"
-REPO=""
+REPO="breadmore/PokeBattleBar"

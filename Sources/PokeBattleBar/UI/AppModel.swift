@@ -550,7 +550,8 @@ final class AppModel {
 
         default:
             return ItemReadiness(ok: true, headline: "상시 효과",
-                                 detail: item.shortEffect.isEmpty ? item.display : item.shortEffect)
+                                 // 한글 설명을 쓴다 — shortEffect 는 영어(가끔 프랑스어)다
+                                 detail: item.description.isEmpty ? item.display : item.description)
         }
     }
 

@@ -216,14 +216,15 @@ struct InviteSheet: View {
             Text("수락하면 바로 그 방으로 들어갑니다.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: 10) {
-                Button("거절") { model.declineInvite() }
-                Button("수락") { Task { await model.acceptInvite() } }
-                    .keyboardShortcut(.defaultAction)
-                    .buttonStyle(.borderedProminent)
+                GBSheetButton("거절", kind: .plain) { model.declineInvite() }
+                GBSheetButton("수락", kind: .primary) {
+                    Task { await model.acceptInvite() }
+                }
             }
         }
         .padding(26)
-        .frame(minWidth: 320)
+        .frame(minWidth: 340)
+        .gbSurface(GB.plate)
     }
 }
 
@@ -321,5 +322,6 @@ struct UpdatePopover: View {
         }
         .padding(16)
         .frame(width: 330)
+        .gbSurface(GB.plate)
     }
 }
