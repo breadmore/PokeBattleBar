@@ -77,6 +77,12 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
     var specialDamage: SpecialDamage
     /// PokeAPI 의 영문 short_effect — UI 툴팁과 미구현 판정에 쓴다
     var shortEffect: String
+    /// 묶기 기술(바다회오리·회오리불꽃 등) 의 지속 턴수. 없으면 nil.
+    /// PokeAPI 는 ailment="trap" 과 min/max_turns 로 준다.
+    var trapTurns: ClosedRange<Int>?
+    /// 쓴 뒤 자신이 교체되는 기술 (유턴·볼트체인지·퀵턴).
+    /// PokeAPI 는 이걸 구조화해 주지 않아 이름으로 판정한다.
+    var isPivot: Bool = false
 
     struct StatChange: Codable, Hashable, Sendable {
         var stat: Stat
@@ -346,9 +352,19 @@ actor PokeAPI {
 
         // PokeAPI 는 자폭을 구조화해서 주지 않는다. 영문 effect 텍스트와 명시 목록을 함께 본다.
         let shortEffect = Self.shortEffect(j["effect_entries"])
-        let selfKO = Self.selfKOMoves.contains(name)
+        // 자폭 판정은 Showdown 의 selfdestruct 를 1순위로 쓴다.
+        // PokeAPI 는 이 정보를 구조화해 주지 않아 예전엔 수기 목록 + 텍스트 매칭이었다.
+        let selfKO = MoveFlags.isSelfDestruct(name)
+            || Self.selfKOMoves.contains(name)
             || shortEffect.lowercased().contains("user faints")
         let specialDamage = Self.specialDamage(for: name)
+
+        // 묶기 기술 — ailment 가 "trap" 이면 min/max_turns 동안 지속 피해를 준다
+        var trapTurns: ClosedRange<Int>?
+        if ((meta["ailment"] as? [String: Any])?["name"] as? String) == "trap",
+           let lo = meta["min_turns"] as? Int, let hi = meta["max_turns"] as? Int, lo > 0 {
+            trapTurns = lo...max(lo, hi)
+        }
 
         let ailmentName = ((meta["ailment"] as? [String: Any])?["name"] as? String) ?? "none"
         var ailment = Ailment(apiName: ailmentName)
@@ -387,7 +403,9 @@ actor PokeAPI {
             critRateBonus: meta["crit_rate"] as? Int ?? 0,
             selfKO: selfKO,
             specialDamage: specialDamage,
-            shortEffect: shortEffect
+            shortEffect: shortEffect,
+            trapTurns: trapTurns,
+            isPivot: MoveFlags.isSelfSwitch(name) || Self.pivotMoves.contains(name)
         )
         moves[name] = def
         return def
@@ -420,6 +438,13 @@ actor PokeAPI {
     }
 
     // MARK: 유틸
+
+    /// 쓴 뒤 자신이 교체되는 기술.
+    /// PokeAPI 는 "User must switch out after attacking" 을 텍스트로만 주므로 목록으로 둔다.
+    static let pivotMoves: Set<String> = [
+        "u-turn", "volt-switch", "flip-turn", "parting-shot", "baton-pass",
+        "chilly-reception", "shed-tail"
+    ]
 
     /// 맹독(누적 증가) 을 거는 기술. PokeAPI 는 일반 독과 구분해주지 않는다.
     static let badlyPoisonMoves: Set<String> = ["toxic", "poison-fang"]

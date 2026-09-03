@@ -137,71 +137,37 @@ struct FieldState: Codable, Sendable, Equatable {
     }
 }
 
-/// 기술 플래그. **PokeAPI 가 주지 않는 정보**라 직접 표로 관리한다.
-/// 접촉 판정은 정전기·불꽃몸·거친피부 같은 특성 다수가 요구한다.
+/// 기술 플래그.
+///
+/// **예전에는 PokeAPI 가 주지 않아 손으로 목록을 관리했다.**
+/// 이제 Showdown 데이터(954개 기술, 접촉 278·펀치 24·물기 10·소리 33·가루 8)를 쓴다 —
+/// 수기 목록은 빠뜨리면 조용히 버그가 되지만, 이건 원본 그대로다.
 enum MoveFlags {
-    /// 접촉하는 기술. 원작 접촉 기술 중 이 엔진에서 실제로 쓰일 만한 것들.
-    static let contact: Set<String> = [
-        "tackle", "body-slam", "double-edge", "take-down", "quick-attack", "extreme-speed",
-        "scratch", "cut", "slash", "night-slash", "false-swipe", "fury-cutter", "x-scissor",
-        "pound", "slam", "strength", "headbutt", "skull-bash", "zen-headbutt", "iron-head",
-        "bite", "crunch", "fire-fang", "thunder-fang", "ice-fang", "poison-fang", "psychic-fangs",
-        "punch", "mega-punch", "fire-punch", "ice-punch", "thunder-punch", "drain-punch",
-        "mach-punch", "bullet-punch", "shadow-punch", "dynamic-punch", "focus-punch",
-        "close-combat", "brick-break", "karate-chop", "cross-chop", "hammer-arm", "superpower",
-        "low-kick", "high-jump-kick", "jump-kick", "double-kick", "blaze-kick", "triple-kick",
-        "mega-kick", "rolling-kick", "aerial-ace", "wing-attack", "brave-bird", "drill-peck",
-        "peck", "fury-attack", "horn-attack", "megahorn", "gore", "wild-charge", "volt-tackle",
-        "flare-blitz", "u-turn", "flame-wheel", "flame-charge", "leech-life", "giga-drain-no",
-        "waterfall", "aqua-tail", "aqua-jet", "dive", "dragon-claw", "dragon-rush", "outrage",
-        "play-rough", "poison-jab", "gunk-shot-no", "seismic-toss", "vine-whip", "power-whip",
-        "petal-blizzard-no", "leaf-blade", "wood-hammer", "seed-bomb-no", "bullet-seed-no",
-        "shadow-claw", "shadow-force", "phantom-force", "sucker-punch", "pursuit", "knock-off",
-        "thief", "covet", "double-slap", "comet-punch", "arm-thrust", "rock-climb",
-        "steel-wing", "metal-claw", "bullet-punch-no", "iron-tail", "double-iron-bash",
-        "avalanche", "ice-shard-no", "icicle-crash-no", "liquidation", "crabhammer",
-        "first-impression", "lunge", "smart-strike", "zing-zap", "assurance", "revenge",
-        "counter", "reversal", "flail", "return", "frustration", "facade", "retaliate",
-        "giga-impact", "explosion-no", "self-destruct-no", "struggle"
-    ].filter { !$0.hasSuffix("-no") }.reduce(into: Set<String>()) { $0.insert($1) }
+    static func isContact(_ name: String) -> Bool { Showdown.move(name)?.isContact ?? false }
+    static func isPunch(_ name: String) -> Bool { Showdown.move(name)?.isPunch ?? false }
+    static func isBite(_ name: String) -> Bool { Showdown.move(name)?.isBite ?? false }
+    static func isSound(_ name: String) -> Bool { Showdown.move(name)?.isSound ?? false }
+    static func isPowder(_ name: String) -> Bool { Showdown.move(name)?.isPowder ?? false }
 
-    /// 펀치 기술 (철주먹)
-    static let punch: Set<String> = [
-        "mega-punch", "fire-punch", "ice-punch", "thunder-punch", "drain-punch",
-        "mach-punch", "bullet-punch", "shadow-punch", "dynamic-punch", "focus-punch",
-        "comet-punch", "dizzy-punch", "hammer-arm", "sky-uppercut", "power-up-punch",
-        "meteor-mash", "double-iron-bash", "plasma-fists", "ice-hammer"
-    ]
-
-    /// 물기 기술 (옹골찬턱)
-    static let bite: Set<String> = [
-        "bite", "crunch", "fire-fang", "thunder-fang", "ice-fang", "poison-fang",
-        "psychic-fangs", "hyper-fang", "super-fang", "fishious-rend", "jaw-lock"
-    ]
-
-    /// 소리 기술 (방음)
-    static let sound: Set<String> = [
-        "hyper-voice", "boomburst", "bug-buzz", "snarl", "round", "echoed-voice",
-        "uproar", "screech", "growl", "roar", "sing", "supersonic", "metal-sound",
-        "disarming-voice", "overdrive", "clanging-scales", "sparkling-aria"
-    ]
-
-    /// 가루 기술 (방진·풀타입 면역)
-    static let powder: Set<String> = [
-        "sleep-powder", "stun-spore", "poison-powder", "spore", "cotton-spore",
-        "rage-powder", "powder", "magic-powder"
-    ]
-
-    /// 방어 기술 (다이맥스일격/연격이 관통한다)
-    static let protect: Set<String> = [
+    /// 방어 기술 자체인가 (우선도 +4 로 자신을 지킨다)
+    static func isProtect(_ name: String) -> Bool {
+        // Showdown 은 방어 계열을 stallingMove 로 표시하지만 축약 데이터에 넣지 않았다.
+        // 종류가 적고 확정적이라 목록으로 둔다.
+        protectMoves.contains(name)
+    }
+    static let protectMoves: Set<String> = [
         "protect", "detect", "spiky-shield", "kings-shield", "baneful-bunker",
-        "obstruct", "silk-trap", "burning-bulwark"
+        "obstruct", "silk-trap", "burning-bulwark", "max-guard"
     ]
 
-    static func isProtect(_ name: String) -> Bool { protect.contains(name) }
-    static func isContact(_ name: String) -> Bool { contact.contains(name) }
-    static func isPunch(_ name: String) -> Bool { punch.contains(name) }
-    static func isBite(_ name: String) -> Bool { bite.contains(name) }
-    static func isSound(_ name: String) -> Bool { sound.contains(name) }
-    static func isPowder(_ name: String) -> Bool { powder.contains(name) }
+    /// 이 기술이 상대의 방어를 뚫는가 (Showdown 의 protect 플래그가 없으면 관통)
+    static func bypassesProtect(_ name: String) -> Bool {
+        guard let m = Showdown.move(name) else { return false }
+        return !m.blockedByProtect
+    }
+
+    /// 쓴 뒤 자신이 교체되는 기술 (유턴·볼트체인지·퀵턴·배턴터치)
+    static func isSelfSwitch(_ name: String) -> Bool { Showdown.move(name)?.selfSwitch ?? false }
+    /// 쓴 쪽이 쓰러지는 기술 (대폭발·자폭)
+    static func isSelfDestruct(_ name: String) -> Bool { Showdown.move(name)?.selfDestruct ?? false }
 }

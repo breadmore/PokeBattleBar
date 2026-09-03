@@ -102,7 +102,9 @@ struct SideState: Codable, Sendable, Equatable {
 enum BattlePhase: Codable, Sendable, Equatable {
     case chooseLead                       // 선봉 선택
     case awaitingMoves                    // 양쪽 기술 선택 대기
-    case awaitingReplacement([Int])       // 교체가 필요한 side raw 값들
+    case awaitingReplacement([Int])       // 쓰러져서 교체가 필요한 side raw 값들
+    /// 유턴 계열로 **스스로 물러나는** 경우. 쓰러진 게 아니라 살아서 교체한다.
+    case awaitingPivot([Int])
     case finished(winner: Int?)           // nil = 무승부
 }
 
@@ -116,6 +118,8 @@ struct BattleState: Codable, Sendable, Equatable {
     var field = FieldState()
     /// G-Max 지속 피해 (side.rawValue -> (면역타입, 남은턴))
     var gmaxDoT: [Int: GMaxDoT] = [:]
+    /// 이번 턴 유턴 계열을 써서 물러나야 하는 진영
+    var pendingPivot: Set<Int> = []
 
     func side(_ s: BattleSide) -> SideState { sides[s.rawValue] }
 }
@@ -314,6 +318,8 @@ struct BattleEngine {
     mutating func resolveTurn(hostAction: BattleAction, guestAction: BattleAction) {
         guard case .awaitingMoves = state.phase else { return }
 
+        state.pendingPivot = []
+
         // 이번 턴 방어 상태를 초기화한다 (방어는 그 턴에만 유효하다)
         for side in [BattleSide.host, .guest] {
             let i = state.side(side).activeIndex
@@ -359,15 +365,82 @@ struct BattleEngine {
         if case .finished = state.phase { return }
 
         // 쓰러진 쪽은 다음 포켓몬을 골라야 한다 (교체 없음 — 쓰러져야 등장)
+        advancePhaseAfterTurn()
+    }
+
+    /// 턴이 끝난 뒤 다음 단계를 정한다.
+    /// 쓰러진 쪽의 교체가 먼저고, 그다음이 유턴 계열의 자발적 후퇴다.
+    private mutating func advancePhaseAfterTurn() {
         var needs: [Int] = []
         for s in [BattleSide.host, .guest] where state.side(s).active.isFainted {
             needs.append(s.rawValue)
+            state.pendingPivot.remove(s.rawValue)   // 쓰러졌으면 피벗은 무의미
         }
-        if needs.isEmpty {
+        if !needs.isEmpty {
+            state.phase = .awaitingReplacement(needs)
+            return
+        }
+        // 낼 수 있는 포켓몬이 남아 있어야 물러날 수 있다
+        let pivots = state.pendingPivot.filter { raw in
+            guard let s = BattleSide(rawValue: raw) else { return false }
+            return state.side(s).aliveIndices.contains { $0 != state.side(s).activeIndex }
+        }
+        if !pivots.isEmpty {
+            state.pendingPivot = pivots
+            state.phase = .awaitingPivot(pivots.sorted())
+            return
+        }
+        state.pendingPivot = []
+        state.turn += 1
+        state.phase = .awaitingMoves
+    }
+
+    /// 유턴 계열로 물러나 다른 포켓몬을 낸다. 쓰러진 게 아니므로 상태만 초기화한다.
+    mutating func applyPivot(_ side: BattleSide, teamIndex: Int) {
+        guard case .awaitingPivot(var pending) = state.phase,
+              pending.contains(side.rawValue) else { return }
+        let team = state.side(side).team
+        let cur = state.side(side).activeIndex
+        guard team.indices.contains(teamIndex), teamIndex != cur,
+              !team[teamIndex].isFainted else { return }
+
+        var out = team[cur]
+        out.stages = [:]
+        out.accuracyStage = 0
+        out.evasionStage = 0
+        out.confusionTurns = 0
+        out.mustFlinch = false
+        out.lockedMoveIndex = nil
+        out.lastMoveIndex = nil
+        out.tormented = false
+        out.isProtecting = false
+        out.protectStreak = 0
+        out.trappedTurns = 0
+        out.trapMoveName = nil
+        if out.isDynamaxed { out.revertDynamax() }
+        state.sides[side.rawValue].team[cur] = out
+        state.gmaxDoT[side.rawValue] = nil
+
+        state.sides[side.rawValue].activeIndex = teamIndex
+        say("\(out.name)는 뒤로 물러났다! \(state.side(side).playerName): 가라, \(team[teamIndex].name)!")
+
+        applyHazards(to: side)
+        pending.removeAll { $0 == side.rawValue }
+        state.pendingPivot.remove(side.rawValue)
+
+        if state.side(side).active.isFainted {
+            checkBattleOver()
+            if case .finished = state.phase { return }
+            state.phase = .awaitingReplacement([side.rawValue])
+            return
+        }
+        fireEntryAbility(side)
+
+        if pending.isEmpty {
             state.turn += 1
             state.phase = .awaitingMoves
         } else {
-            state.phase = .awaitingReplacement(needs)
+            state.phase = .awaitingPivot(pending)
         }
     }
 
@@ -396,8 +469,20 @@ struct BattleEngine {
 
         needs.removeAll { $0 == side.rawValue }
         if needs.isEmpty {
-            state.turn += 1
-            state.phase = .awaitingMoves
+            // 쓰러진 자리를 다 채웠으면, 유턴으로 물러날 쪽이 남았는지 본다
+            let pivots = state.pendingPivot.filter { raw in
+                guard let s = BattleSide(rawValue: raw) else { return false }
+                return !state.side(s).active.isFainted
+                    && state.side(s).aliveIndices.contains { $0 != state.side(s).activeIndex }
+            }
+            if !pivots.isEmpty {
+                state.pendingPivot = pivots
+                state.phase = .awaitingPivot(pivots.sorted())
+            } else {
+                state.pendingPivot = []
+                state.turn += 1
+                state.phase = .awaitingMoves
+            }
         } else {
             state.phase = .awaitingReplacement(needs)
         }
@@ -821,6 +906,23 @@ struct BattleEngine {
             state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
             say("\(a2.name)는 생명의구슬의 반동을 받았다!")
             checkFaint(attacker)
+        }
+
+        // 묶기 기술 — 여러 턴 붙잡고 지속 피해를 준다 (바다회오리·회오리불꽃 등)
+        if let range = move.trapTurns, totalDealt > 0 {
+            let d0 = state.side(defender).active
+            if !d0.isFainted, d0.trappedTurns == 0 {
+                var d = d0
+                d.trappedTurns = Int.random(in: range, using: &rng)
+                d.trapMoveName = move.display
+                state.sides[defender.rawValue].team[state.side(defender).activeIndex] = d
+                say("\(d.name)는 \(move.display)에 붙잡혔다! (\(d.trappedTurns)턴)")
+            }
+        }
+
+        // 유턴 계열 — 공격이 통했으면 자신이 물러난다
+        if move.isPivot, !state.side(attacker).active.isFainted {
+            state.pendingPivot.insert(attacker.rawValue)
         }
 
         // 접촉 기술에 대한 반격 특성 (정전기·불꽃몸·거친피부 등)
@@ -1472,6 +1574,11 @@ struct BattleEngine {
         if applyStatus(move: move, attacker: attacker, defender: defender, guaranteed: true) { acted = true }
         if applyStatStages(move: move, attacker: attacker, defender: defender, guaranteed: true) { acted = true }
 
+        if move.isPivot, !state.side(attacker).active.isFainted {
+            state.pendingPivot.insert(attacker.rawValue)
+            acted = true
+        }
+
         if !acted { say("하지만 아무 일도 일어나지 않았다!") }
     }
 
@@ -1649,15 +1756,26 @@ struct BattleEngine {
         if let t = ended.endedTerrain { say("\(t.ko)가 사라졌다!") }
         if ended.gravityEnded { say("중력이 원래대로 돌아왔다!") }
 
-        // 조임 지속시간 감소
+        // 묶기 — 지속 피해 후 턴수 감소
         for side in [BattleSide.host, .guest] {
             let i = state.side(side).activeIndex
             guard state.side(side).team.indices.contains(i) else { continue }
             var b = state.sides[side.rawValue].team[i]
             guard b.trappedTurns > 0 else { continue }
+
+            // 기술로 묶인 경우에만 지속 피해를 준다 (다이맥스고스트는 묶기만 한다)
+            if let src = b.trapMoveName, !b.isFainted,
+               !(state.rules.abilities && isMagicGuard(b)) {
+                b.currentHP = max(0, b.currentHP - max(1, b.maxHP / 8))
+                say("\(KO.t(b.name)) \(src)에 시달리고 있다!")
+            }
             b.trappedTurns -= 1
-            if b.trappedTurns == 0 { say("\(KO.t(b.name)) 자유로워졌다!") }
+            if b.trappedTurns == 0 {
+                b.trapMoveName = nil
+                say("\(KO.t(b.name)) 자유로워졌다!")
+            }
             state.sides[side.rawValue].team[i] = b
+            checkFaint(side)
         }
     }
 

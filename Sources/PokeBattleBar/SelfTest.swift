@@ -70,6 +70,14 @@ enum SelfTest {
                     guard let pick = alive.randomElement(using: &rng) else { continue }
                     engine.applyReplacement(side, teamIndex: pick)
                 }
+            case .awaitingPivot(let pending):
+                for raw in pending {
+                    guard let side = BattleSide(rawValue: raw) else { continue }
+                    let alive = engine.state.side(side).aliveIndices
+                        .filter { $0 != engine.state.side(side).activeIndex }
+                    guard let pick = alive.randomElement(using: &rng) else { continue }
+                    engine.applyPivot(side, teamIndex: pick)
+                }
             case .finished, .chooseLead:
                 break
             }

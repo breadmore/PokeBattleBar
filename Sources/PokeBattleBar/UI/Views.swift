@@ -84,6 +84,7 @@ struct LobbyView: View {
                     .font(.system(size: 9)).foregroundStyle(.tertiary)
             }
             Spacer()
+            RecordBadge(record: model.record)
             VStack(alignment: .trailing, spacing: 4) {
                 Text("내 이름").font(.caption).foregroundStyle(.secondary)
                 TextField("트레이너", text: $model.playerName)
@@ -96,6 +97,7 @@ struct LobbyView: View {
 
 struct RosterSection: View {
     @Bindable var model: AppModel
+    @State private var teamRecommended: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -108,6 +110,14 @@ struct RosterSection: View {
                 Spacer()
                 Text("데려갈 수 있는 최대: \(model.effectiveTeamSize)마리")
                     .font(.caption).foregroundStyle(.secondary)
+                Button("팀 전체 실전 추천") {
+                    Task { teamRecommended = await model.applyRecommendationToTeam() }
+                }
+                .font(.caption)
+                .help("실전에서 많이 쓰이는 기술·도구·특성을 팀 전체에 적용합니다")
+                if let c = teamRecommended {
+                    Text("\(c)마리 적용됨").font(.caption2).foregroundStyle(.green)
+                }
             }
             if model.roster.isEmpty {
                 Text("PokeTokenBar 에 아직 포켓몬이 없습니다.")
@@ -134,6 +144,9 @@ struct RosterCard: View {
     let slot: RosterSlot
     @State private var moves: [MoveDef] = []
 
+    @State private var showPicker = false
+    @State private var recommendation: String?
+
     private var selected: Bool { model.selectedSlotIDs.contains(slot.id) }
     private var species: SpeciesDef? { model.rosterSpecies[slot.speciesID] }
 
@@ -153,8 +166,7 @@ struct RosterCard: View {
                 Text("종족값 \(Stat.allCases.reduce(0) { $0 + sp.base($1) })")
                     .font(.system(size: 9)).foregroundStyle(.secondary)
             }
-            Text(Nature.named(slot.nature).ko)
-                .font(.system(size: 9)).foregroundStyle(.secondary)
+            NatureLabel(nature: Nature.named(slot.nature))
             if slot.origin == .active && !slot.fullyEvolved {
                 Text("진화중").font(.system(size: 9)).foregroundStyle(.orange)
             }
@@ -169,14 +181,31 @@ struct RosterCard: View {
                 }
                 .frame(width: 104, alignment: .leading)
             }
-            Button("기술 다시뽑기") {
-                Task {
-                    await model.rerollMoves(for: slot)
-                    moves = await model.moveset(for: slot)
+            HStack(spacing: 6) {
+                Button("기술 고르기") { showPicker = true }
+                Button("다시뽑기") {
+                    Task {
+                        await model.rerollMoves(for: slot)
+                        moves = await model.moveset(for: slot)
+                    }
                 }
             }
             .font(.system(size: 9))
             .buttonStyle(.link)
+
+            if model.hasRecommendation(for: slot) {
+                Button("실전 추천 적용") {
+                    Task {
+                        recommendation = await model.applyRecommendation(for: slot)
+                        moves = await model.moveset(for: slot)
+                    }
+                }
+                .font(.system(size: 9)).buttonStyle(.link).tint(.green)
+            }
+            if let r = recommendation {
+                Text("적용: \(r)").font(.system(size: 8)).foregroundStyle(.green)
+                    .frame(width: 112, alignment: .leading).lineLimit(2)
+            }
 
             Divider().padding(.vertical, 1)
             LoadoutPickers(model: model, slot: slot)
@@ -193,6 +222,14 @@ struct RosterCard: View {
         )
         .onTapGesture { model.toggleSelection(slot) }
         .task { moves = await model.moveset(for: slot) }
+        .sheet(isPresented: $showPicker) {
+            MovePickerSheet(model: model, slot: slot, current: moves) { picked in
+                Task {
+                    await model.setMoves(picked, for: slot)
+                    moves = await model.moveset(for: slot)
+                }
+            }
+        }
     }
 }
 
@@ -229,6 +266,209 @@ struct LoadoutWarningBanner: View {
                 .fill(Color.orange.opacity(0.10)))
             .overlay(RoundedRectangle(cornerRadius: 8)
                 .stroke(Color.orange.opacity(0.35), lineWidth: 1))
+        }
+    }
+}
+
+/// 전적과 포인트 (3번)
+struct RecordBadge: View {
+    let record: RecordStore.Record
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 1) {
+            HStack(spacing: 4) {
+                Text("\(record.points)P").font(.callout.bold()).foregroundStyle(.orange)
+                if record.currentStreak > 1 {
+                    Text("\(record.currentStreak)연승")
+                        .font(.system(size: 9, weight: .bold))
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .background(Capsule().fill(.red.opacity(0.25)))
+                }
+            }
+            if record.total > 0 {
+                Text("\(record.wins)승 \(record.losses)패"
+                     + (record.draws > 0 ? " \(record.draws)무" : "")
+                     + " · \(Int(record.winRate * 100))%")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                if record.bestStreak > 1 {
+                    Text("최고 \(record.bestStreak)연승")
+                        .font(.system(size: 8)).foregroundStyle(.tertiary)
+                }
+            } else {
+                Text("아직 전적 없음").font(.system(size: 9)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+/// 채팅창 (4번)
+struct ChatPanel: View {
+    @Bindable var model: AppModel
+    var compact = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !compact {
+                Text("채팅").font(.caption.bold()).foregroundStyle(.secondary)
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.chatLines) { line in
+                            HStack(alignment: .top, spacing: 4) {
+                                Text(line.from)
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundStyle(line.mine ? Color.accentColor : .orange)
+                                Text(line.text)
+                                    .font(.system(size: 11))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 0)
+                            }
+                            .id(line.id)
+                        }
+                        if model.chatLines.isEmpty {
+                            Text("아직 대화가 없습니다")
+                                .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(height: compact ? 70 : 110)
+                .background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.4)))
+                .onChange(of: model.chatLines.count) { _, _ in
+                    if let last = model.chatLines.last { withAnimation { proxy.scrollTo(last.id) } }
+                }
+            }
+            HStack(spacing: 4) {
+                TextField("메시지", text: $model.chatDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+                    .onSubmit { model.sendChat() }
+                Button("전송") { model.sendChat() }
+                    .font(.caption)
+                    .disabled(model.chatDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+}
+
+/// 성격이 어떤 스탯을 올리고 내리는지 보여준다 (2번)
+struct NatureLabel: View {
+    let nature: Nature
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(nature.ko).font(.system(size: 9)).foregroundStyle(.secondary)
+            if let up = nature.up, let down = nature.down, up != down {
+                Text("\(up.ko)↑").font(.system(size: 8, weight: .bold)).foregroundStyle(.red)
+                Text("\(down.ko)↓").font(.system(size: 8, weight: .bold)).foregroundStyle(.blue)
+            } else {
+                Text("보정 없음").font(.system(size: 8)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+}
+
+/// 배울 수 있는 기술 중에서 4개를 직접 고른다 (1번)
+struct MovePickerSheet: View {
+    let model: AppModel
+    let slot: RosterSlot
+    let current: [MoveDef]
+    let onDone: ([String]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var picked: [String] = []
+    @State private var search = ""
+    @State private var details: [String: MoveDef] = [:]
+
+    private var all: [String] { model.learnableMoves(for: slot) }
+    private var filtered: [String] {
+        guard !search.isEmpty else { return all }
+        let q = search.lowercased()
+        return all.filter { name in
+            name.contains(q) || (details[name]?.display.lowercased().contains(q) ?? false)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("\(model.rosterSpecies[slot.speciesID]?.display ?? "") 기술 고르기")
+                    .font(.headline)
+                Spacer()
+                Text("\(picked.count)/4").font(.callout.bold())
+                    .foregroundStyle(picked.count == 4 ? .green : .secondary)
+            }
+            Text("배울 수 있는 기술 \(all.count)개 — 4개까지 고를 수 있습니다")
+                .font(.caption).foregroundStyle(.secondary)
+
+            TextField("기술 이름 검색", text: $search).textFieldStyle(.roundedBorder)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(filtered, id: \.self) { name in
+                        MoveRow(name: name,
+                                def: details[name],
+                                isPicked: picked.contains(name)) {
+                            if let i = picked.firstIndex(of: name) { picked.remove(at: i) }
+                            else if picked.count < 4 { picked.append(name) }
+                        }
+                        .task {
+                            if details[name] == nil {
+                                details[name] = try? await PokeAPI.shared.move(name)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(height: 340)
+
+            HStack {
+                Button("전부 지우기") { picked = [] }
+                Spacer()
+                Button("취소") { dismiss() }
+                Button("적용") { onDone(picked); dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(picked.isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(width: 460)
+        .onAppear { picked = current.map(\.name) }
+    }
+
+    struct MoveRow: View {
+        let name: String
+        let def: MoveDef?
+        let isPicked: Bool
+        let onTap: () -> Void
+
+        var body: some View {
+            HStack(spacing: 6) {
+                Image(systemName: isPicked ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isPicked ? Color.accentColor : .secondary)
+                Text(def?.display ?? name).font(.callout)
+                if let d = def {
+                    Text(d.type.ko).font(.system(size: 9))
+                        .padding(.horizontal, 4)
+                        .background(Capsule().fill(.tertiary))
+                    Text(d.damageClass == .status ? "변화"
+                         : (d.damageClass == .physical ? "물리" : "특수"))
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                    if let p = d.power, p > 0 {
+                        Text("위력 \(p)").font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    Text("PP \(d.pp)").font(.system(size: 9)).foregroundStyle(.tertiary)
+                } else {
+                    ProgressView().controlSize(.mini)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 2).padding(.horizontal, 4)
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(isPicked ? Color.accentColor.opacity(0.12) : .clear))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onTap)
         }
     }
 }
@@ -498,7 +738,7 @@ struct JoinSection: View {
 // MARK: - 대기
 
 struct WaitingView: View {
-    let model: AppModel
+    @Bindable var model: AppModel
     let title: String
 
     var body: some View {
@@ -506,8 +746,12 @@ struct WaitingView: View {
             Text(title).font(.title3.bold())
             ProgressView()
             Text(model.status).foregroundStyle(.secondary)
+            if model.role != .none {
+                ChatPanel(model: model).frame(width: 340)
+            }
             Button("취소") { model.leaveEverything() }
         }
+        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -598,14 +842,19 @@ struct HPBar: View {
 // MARK: - 배틀
 
 struct BattleView: View {
-    let model: AppModel
+    @Bindable var model: AppModel
 
     var body: some View {
         VStack(spacing: 0) {
             if let me = model.myState, let foe = model.foeState, let b = model.battle {
                 field(me: me, foe: foe, turn: b.turn)
                 Divider()
-                LogView(lines: b.log)
+                HStack(alignment: .top, spacing: 8) {
+                    LogView(lines: b.log)
+                    Divider().frame(height: 140)
+                    ChatPanel(model: model, compact: true).frame(width: 240)
+                }
+                .padding(.horizontal, 8)
                 Divider()
                 controls(me: me)
             } else {
@@ -666,12 +915,22 @@ struct BattleView: View {
                                  foeTypes: model.foeState?.active.types ?? [],
                                  chart: model.typeChart,
                                  pendingSpecial: model.pendingSpecial,
-                                 zMoveCache: model.zPreview) { model.submitMove($0) }
+                                 zMoveCache: model.zPreview,
+                                 megaForms: model.megaFormPreview) { model.submitMove($0) }
                     }
                 }
             case .awaitingReplacement:
                 if model.needsMyReplacement {
-                    ReplacementPicker(team: me.team) { model.submitReplacement($0) }
+                    ReplacementPicker(team: me.team, activeIndex: nil) { model.submitReplacement($0) }
+                } else {
+                    waiting
+                }
+            case .awaitingPivot:
+                if model.needsMyPivot {
+                    ReplacementPicker(team: me.team, activeIndex: me.activeIndex,
+                                      title: "물러났습니다 — 다음에 낼 포켓몬을 고르세요") {
+                        model.submitReplacement($0)
+                    }
                 } else {
                     waiting
                 }
@@ -740,6 +999,12 @@ struct ActiveBattlerView: View {
                     Text("✨ \(ab.display)").font(.system(size: 9))
                         .foregroundStyle(ab.isImplemented ? .primary : .secondary)
                 }
+            }
+            if b.trappedTurns > 0 {
+                Text("\(b.trapMoveName ?? "묶임") \(b.trappedTurns)턴")
+                    .font(.system(size: 9, weight: .bold))
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Capsule().fill(.purple.opacity(0.3)))
             }
             if let locked = b.lockedMoveIndex, b.moves.indices.contains(locked) {
                 Text("고정: \(b.moves[locked].def.display)")
@@ -832,6 +1097,7 @@ struct MoveGrid: View {
     let chart: TypeChart?
     var pendingSpecial: SpecialAction? = nil
     var zMoveCache: [String: MoveDef] = [:]
+    var megaForms: [String: FormStats] = [:]
     let onPick: (Int) -> Void
 
     var body: some View {
@@ -847,9 +1113,11 @@ struct MoveGrid: View {
                     Button { onPick(idx) } label: {
                         MoveButtonLabel(
                             slot: preview(slot),
-                            eff: Effectiveness.compute(move: preview(slot).def, attacker: battler,
+                            eff: Effectiveness.compute(move: preview(slot).def,
+                                                       attacker: previewAttacker,
                                                        defenderTypes: foeTypes, chart: chart),
-                            transformNote: transformNote(slot)
+                            transformNote: transformNote(slot),
+                            originalName: originalName(slot)
                         )
                     }
                     .buttonStyle(.bordered)
@@ -860,33 +1128,87 @@ struct MoveGrid: View {
         .padding(12)
     }
 
-    /// Z기술을 선언했거나 거다이맥스 중이면, 실제로 나갈 기술로 미리 바꿔 보여준다.
-    /// 그래서 상성 배지와 실질 위력도 변환 후 기준으로 계산된다.
+    /// 선언한 변신을 **누르기 전에** 반영해 보여준다.
+    /// 다이맥스를 누르면 기술 이름·위력이 맥스 기술로 바뀌고,
+    /// 메가진화를 누르면 바뀐 타입 기준으로 상성 배지와 실질 위력이 갱신된다.
     private func preview(_ slot: Battler.MoveSlot) -> Battler.MoveSlot {
         guard let t = transformedDef(slot.def) else { return slot }
         return Battler.MoveSlot(def: t, ppLeft: slot.ppLeft)
     }
 
+    /// 메가진화를 선언하면 바뀐 타입으로 상성을 계산해야 한다
+    private var previewAttacker: Battler {
+        guard case .mega(let form)? = pendingSpecial,
+              let stats = megaForms[form] else { return battler }
+        var b = battler
+        b.types = stats.types
+        return b
+    }
+
+    /// 변신으로 이름이 바뀌면 원래 기술 이름을 함께 보여준다
+    private func originalName(_ slot: Battler.MoveSlot) -> String? {
+        guard let t = transformedDef(slot.def), t.display != slot.def.display else { return nil }
+        return slot.def.display
+    }
+
+    private var isDeclaringDynamax: Bool {
+        switch pendingSpecial {
+        case .dynamax, .gmax: return true
+        default: return false
+        }
+    }
+
     private func transformNote(_ slot: Battler.MoveSlot) -> String? {
-        guard transformedDef(slot.def) != nil else { return nil }
-        if battler.isDynamaxed { return "맥스" }
+        if battler.isDynamaxed || isDeclaringDynamax { return "맥스" }
         if case .zMove = pendingSpecial { return "Z" }
+        if case .mega = pendingSpecial { return "메가" }
         return nil
     }
 
+    /// 실제로 나갈 기술 정의. 이미 변신 중이거나 이번 턴 선언한 경우 모두 반영한다.
     private func transformedDef(_ move: MoveDef) -> MoveDef? {
-        if battler.isDynamaxed {
+        if battler.isDynamaxed || isDeclaringDynamax {
+            // 거다이맥스 전용기 — 선언이 gmax 이거나 이미 거다이맥스 상태일 때
+            let giga: Bool = {
+                if case .gmax? = pendingSpecial { return true }
+                return battler.isGigantamaxed
+            }()
+            if giga, move.damageClass != .status,
+               let g = GMaxMove.forSpecies(battler.speciesID), g.type == move.type {
+                var gm = move
+                gm.koName = g.ko
+                gm.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
+                gm.accuracy = nil
+                return gm
+            }
+            if move.damageClass == .status {
+                guard var guardMove = zMoveCache[FormTables.maxGuard] else { return nil }
+                guardMove.pp = move.pp
+                return guardMove
+            }
             guard let n = FormTables.maxMove[move.type], var mx = zMoveCache[n] else { return nil }
             mx.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
             mx.damageClass = move.damageClass
+            mx.accuracy = nil
             return mx
         }
-        guard case .zMove = pendingSpecial,
-              let zn = FormTables.zMoveName(for: move),
-              var z = zMoveCache[zn] else { return nil }
-        z.power = FormTables.zPower(basePower: move.power ?? 0)
-        z.damageClass = move.damageClass
-        return z
+
+        if case .zMove = pendingSpecial {
+            // 전용 Z크리스탈은 타입 제한 없이 자기 공격기를 Z기술로 만든다
+            if battler.hasSignatureZ, move.damageClass != .status, move.isDamaging {
+                var sz = move
+                sz.koName = (battler.heldItem?.display ?? "전용 Z") + " Z기술"
+                sz.power = FormTables.zPower(basePower: move.power ?? 0)
+                sz.accuracy = nil
+                return sz
+            }
+            guard let zn = FormTables.zMoveName(for: move), var z = zMoveCache[zn] else { return nil }
+            z.power = FormTables.zPower(basePower: move.power ?? 0)
+            z.damageClass = move.damageClass
+            z.accuracy = nil
+            return z
+        }
+        return nil
     }
 }
 
@@ -894,13 +1216,20 @@ struct MoveButtonLabel: View {
     let slot: Battler.MoveSlot
     let eff: Effectiveness
     var transformNote: String? = nil
+    /// 변신으로 이름이 바뀐 경우 원래 기술 이름
+    var originalName: String? = nil
 
     private var isStatus: Bool { slot.def.damageClass == .status || !slot.def.isDamaging }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
-                Text(slot.def.display).font(.callout.bold())
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(slot.def.display).font(.callout.bold())
+                    if let o = originalName {
+                        Text(o).font(.system(size: 8)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
                 if let t = transformNote {
                     Text(t).font(.system(size: 9, weight: .black))
                         .padding(.horizontal, 4).padding(.vertical, 1)
@@ -954,18 +1283,21 @@ struct MoveButtonLabel: View {
 
 struct ReplacementPicker: View {
     let team: [Battler]
+    /// 유턴으로 물러날 때는 지금 나와 있는 개체를 다시 낼 수 없다
+    var activeIndex: Int? = nil
+    var title: String = "다음 포켓몬을 고르세요"
     let onPick: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("다음 포켓몬을 고르세요").font(.caption.bold()).foregroundStyle(.secondary)
+            Text(title).font(.caption.bold()).foregroundStyle(.secondary)
             HStack(spacing: 10) {
                 ForEach(Array(team.enumerated()), id: \.offset) { idx, b in
                     Button { onPick(idx) } label: {
-                        BattlerCard(battler: b)
+                        BattlerCard(battler: b, selected: idx == activeIndex)
                     }
                     .buttonStyle(.plain)
-                    .disabled(b.isFainted)
+                    .disabled(b.isFainted || idx == activeIndex)
                 }
             }
         }
@@ -1004,6 +1336,10 @@ struct ResultView: View {
     var body: some View {
         VStack(spacing: 16) {
             Text(model.resultText).font(.largeTitle.bold())
+            if let p = model.lastPointsGained {
+                Text("+\(p) 포인트").font(.title3.bold()).foregroundStyle(.orange)
+                RecordBadge(record: model.record)
+            }
             if let b = model.battle {
                 Text("\(b.turn)턴 만에 끝났습니다").foregroundStyle(.secondary)
                 LogView(lines: b.log).frame(width: 520)

@@ -51,6 +51,20 @@ final class AppModel {
     var discovered: [DiscoveredRoom] = []
     var opponentName: String = ""
 
+    // 채팅
+    struct ChatLine: Identifiable, Sendable {
+        let id = UUID()
+        var from: String
+        var text: String
+        var mine: Bool
+    }
+    var chatLines: [ChatLine] = []
+    var chatDraft: String = ""
+
+    // 전적 / 포인트
+    var record = RecordStore.Record()
+    var lastPointsGained: Int?
+
     // 배틀
     var battle: BattleState?
     var mySide: BattleSide = .host
@@ -91,6 +105,7 @@ final class AppModel {
             typeChart = try await PokeAPI.shared.typeChart()
             status = "도구·특성 데이터를 받는 중…"
             await loadLoadoutOptions()
+            record = await RecordStore.shared.record
             selectedSlotIDs = Set(roster.prefix(effectiveTeamSize).map(\.id))
             roomName = "\(playerName)의 방"
             status = ""
@@ -213,6 +228,8 @@ final class AppModel {
 
     /// 손가락흔들기 풀을 받아둔다 (첫 실행만 오래 걸린다).
     private var metronomePool: [MoveDef] = []
+    /// 토게피 모드용 고정 팀 (양쪽에 그대로 쓴다)
+    private var metronomeTeamSnapshot: [Battler] = []
     private func preloadMetronomePool() async {
         guard metronomePool.isEmpty else { return }
         var out: [MoveDef] = []
@@ -437,6 +454,75 @@ final class AppModel {
         movesetsBySlot[slot.id] = fresh
     }
 
+    // MARK: 기술 직접 선택 (1번)
+
+    /// 이 개체가 배울 수 있는 기술 목록. 실전에서 쓸 수 없는 것(Showdown 기준)은 뺀다.
+    func learnableMoves(for slot: RosterSlot) -> [String] {
+        guard let sp = rosterSpecies[slot.speciesID] else { return [] }
+        return sp.learnableMoves.filter { name in
+            guard let m = Showdown.move(name) else { return true }   // 모르면 일단 허용
+            return m.isUsable
+        }.sorted()
+    }
+
+    func setMoves(_ names: [String], for slot: RosterSlot) async {
+        let fresh = await MovesetStore.shared.setMoves(names, for: slot)
+        movesetsBySlot[slot.id] = fresh
+    }
+
+    // MARK: 추천 세팅 (6번)
+
+    /// 실전에서 많이 쓰이는 기술·도구·특성이 있는가
+    func hasRecommendation(for slot: RosterSlot) -> Bool {
+        guard let sp = rosterSpecies[slot.speciesID] else { return false }
+        return Showdown.set(forSpeciesName: sp.name) != nil
+    }
+
+    /// Showdown 의 실전 세팅을 그대로 적용한다.
+    /// 포켓몬을 잘 모르는 사람도 바로 쓸 수 있게 하기 위한 기능이다.
+    @discardableResult
+    func applyRecommendation(for slot: RosterSlot) async -> String? {
+        guard let sp = rosterSpecies[slot.speciesID],
+              let rec = Showdown.set(forSpeciesName: sp.name) else { return nil }
+        var applied: [String] = []
+
+        // 기술 — 그 개체가 실제로 배울 수 있는 것만
+        let learnable = Set(sp.learnableMoves)
+        let moves = rec.movePool.filter { learnable.contains($0) }
+        if !moves.isEmpty {
+            await setMoves(Array(moves.prefix(4)), for: slot)
+            applied.append("기술 \(min(4, moves.count))개")
+        }
+
+        // 도구 — 그 종에게 노출되는 것 중에 있으면
+        if let want = rec.item {
+            let avail = itemsForSpecies[slot.speciesID] ?? []
+            if let it = avail.first(where: { $0.name == want }) {
+                await setItem(it, for: slot)
+                applied.append("도구 \(it.display)")
+            }
+        }
+
+        // 특성 — 그 종이 가질 수 있는 것 중에 있으면
+        let abils = abilitiesForSpecies[slot.speciesID] ?? []
+        if let wantAb = rec.abilities.first(where: { w in abils.contains { $0.name == w } }),
+           let ab = abils.first(where: { $0.name == wantAb }) {
+            await setAbility(ab, for: slot)
+            applied.append("특성 \(ab.display)")
+        }
+
+        return applied.isEmpty ? nil : applied.joined(separator: ", ")
+    }
+
+    /// 팀 전체에 적용
+    func applyRecommendationToTeam() async -> Int {
+        var count = 0
+        for slot in teamSlots where hasRecommendation(for: slot) {
+            if await applyRecommendation(for: slot) != nil { count += 1 }
+        }
+        return count
+    }
+
     func moveset(for slot: RosterSlot) async -> [MoveDef] {
         guard let sp = rosterSpecies[slot.speciesID] else { return [] }
         return await MovesetStore.shared.moveset(for: slot, species: sp)
@@ -452,7 +538,10 @@ final class AppModel {
         status = "특수 변신 데이터를 준비하는 중…"
         await preloadForms(for: myTeam)
         await preloadTransformMoves()
-        if rules.metronomeMode { await preloadMetronomePool() }
+        if rules.metronomeMode {
+            await preloadMetronomePool()
+            metronomeTeamSnapshot = await buildMetronomeTeam()
+        }
 
         host.onGuestMessage = { [weak self] msg in
             Task { @MainActor in self?.hostHandle(msg) }
@@ -494,8 +583,18 @@ final class AppModel {
                 return
             }
             opponentName = name
-            let guestTeam = Array(team.prefix(rules.maxTeamSize))
-            let hostTeam = Array(myTeam.prefix(rules.maxTeamSize))
+            var guestTeam = Array(team.prefix(rules.maxTeamSize))
+            var hostTeam = Array(myTeam.prefix(rules.maxTeamSize))
+
+            // 토게피 모드는 **양쪽 모두** 고정 팀이다.
+            // 게스트는 규칙을 알기 전에 팀을 보내므로 호스트가 여기서 덮어쓴다.
+            if rules.metronomeMode {
+                let fixed = metronomeTeamSnapshot
+                if !fixed.isEmpty {
+                    hostTeam = fixed
+                    guestTeam = fixed
+                }
+            }
 
             let st = BattleState(
                 rules: rules,
@@ -539,8 +638,13 @@ final class AppModel {
                 maybeResolveTurn()
             case .awaitingReplacement(let needs) where needs.contains(BattleSide.guest.rawValue):
                 if case .replace(let idx) = a { applyReplacement(.guest, idx) }
+            case .awaitingPivot(let pending) where pending.contains(BattleSide.guest.rawValue):
+                if case .replace(let idx) = a { applyPivotHost(.guest, idx) }
             default: break
             }
+
+        case .chat(let from, let text):
+            receiveChat(from: from, text: text)
 
         case .leave:
             errorMessage = "상대가 방을 나갔습니다."
@@ -672,6 +776,9 @@ final class AppModel {
             battle = st
             applyPhaseToUI(st)
 
+        case .chat(let from, let text):
+            receiveChat(from: from, text: text)
+
         case .hostLeft:
             errorMessage = "호스트가 방을 닫았습니다."
             resetToLobby()
@@ -793,6 +900,8 @@ final class AppModel {
 
     /// 뷰가 Z/맥스 변환을 미리 보여주려면 정의가 필요하다
     var zPreview: [String: MoveDef] { zMoveCache.merging(maxMoveCache) { a, _ in a } }
+    /// 메가 폼의 타입·종족값 — 메가진화를 선언했을 때 상성 미리보기에 쓴다
+    var megaFormPreview: [String: FormStats] { megaCache }
 
     func kindOf(_ a: SpecialAction) -> SpecialKind {
         switch a {
@@ -823,14 +932,41 @@ final class AppModel {
     }
 
     func submitReplacement(_ teamIndex: Int) {
-        guard let b = battle, case .awaitingReplacement = b.phase else { return }
-        if role == .host {
-            applyReplacement(.host, teamIndex)
-        } else {
-            guestLink?.send(.action(.replace(teamIndex: teamIndex)))
-            waitingForOpponent = true
-            status = "진행을 기다리는 중…"
+        guard let b = battle else { return }
+        switch b.phase {
+        case .awaitingReplacement:
+            if role == .host { applyReplacement(.host, teamIndex) }
+            else {
+                guestLink?.send(.action(.replace(teamIndex: teamIndex)))
+                waitingForOpponent = true
+                status = "진행을 기다리는 중…"
+            }
+        case .awaitingPivot:
+            if role == .host { applyPivotHost(.host, teamIndex) }
+            else {
+                guestLink?.send(.action(.replace(teamIndex: teamIndex)))
+                waitingForOpponent = true
+                status = "진행을 기다리는 중…"
+            }
+        default:
+            return
         }
+    }
+
+    private func applyPivotHost(_ side: BattleSide, _ idx: Int) {
+        guard role == .host, var e = engine else { return }
+        e.applyPivot(side, teamIndex: idx)
+        engine = e
+        battle = e.state
+        host.send(.stateChanged(state: e.state))
+        waitingForOpponent = false
+        applyPhaseToUI(e.state)
+    }
+
+    /// 유턴으로 물러날 때 내가 골라야 하는가
+    var needsMyPivot: Bool {
+        guard let b = battle, case .awaitingPivot(let pending) = b.phase else { return false }
+        return pending.contains(mySide.rawValue)
     }
 
     private func maybeResolveTurn() {
@@ -869,6 +1005,14 @@ final class AppModel {
                 guard let side = BattleSide(rawValue: raw),
                       let pick = e.autoReplacement(for: side) else { continue }
                 e.applyReplacement(side, teamIndex: pick)
+            }
+        case .awaitingPivot(let pending):
+            for raw in pending {
+                guard let side = BattleSide(rawValue: raw) else { continue }
+                let alive = e.state.side(side).aliveIndices
+                    .filter { $0 != e.state.side(side).activeIndex }
+                guard let pick = alive.randomElement() else { continue }
+                e.applyPivot(side, teamIndex: pick)
             }
         default:
             return
@@ -912,9 +1056,22 @@ final class AppModel {
                 waitingForOpponent = true
                 status = "상대가 다음 포켓몬을 고르는 중…"
             }
+        case .awaitingPivot(let pending):
+            screen = .battle
+            if rules.autoMove {
+                waitingForOpponent = true
+                status = "자유의지 — 물러난 자리에 다음 포켓몬이 나옵니다…"
+            } else if pending.contains(mySide.rawValue) {
+                waitingForOpponent = false
+                status = "물러났습니다 — 다음에 낼 포켓몬을 고르세요"
+            } else {
+                waitingForOpponent = true
+                status = "상대가 교체 중…"
+            }
         case .finished:
             screen = .result
             status = ""
+            recordResultIfNeeded(st)
         }
     }
 
@@ -934,6 +1091,38 @@ final class AppModel {
         return w == mySide.rawValue ? "승리!" : "패배…"
     }
 
+    // MARK: 채팅
+
+    func sendChat() {
+        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        chatDraft = ""
+        chatLines.append(ChatLine(from: playerName, text: text, mine: true))
+        let msg = Wire.chat(from: playerName, text: text)
+        if role == .host { host.send(msg) } else { guestLink?.send(msg) }
+    }
+
+    private func receiveChat(from: String, text: String) {
+        chatLines.append(ChatLine(from: from, text: text, mine: false))
+        if chatLines.count > 200 { chatLines.removeFirst(chatLines.count - 200) }
+    }
+
+    // MARK: 전적
+
+    private func recordResultIfNeeded(_ st: BattleState) {
+        guard case .finished(let winner) = st.phase, lastPointsGained == nil else { return }
+        let me = st.sides[mySide.rawValue]
+        let draw = winner == nil
+        let won = winner == mySide.rawValue
+        Task { @MainActor in
+            let gained = await RecordStore.shared.finish(
+                won: won, draw: draw, opponent: self.opponentName,
+                survivors: me.remaining, teamSize: me.team.count)
+            self.lastPointsGained = gained
+            self.record = await RecordStore.shared.record
+        }
+    }
+
     func resetToLobby() {
         host.stop()
         guestLink?.cancel()
@@ -946,6 +1135,9 @@ final class AppModel {
         waitingForOpponent = false
         role = .none
         status = ""
+        chatLines = []
+        chatDraft = ""
+        lastPointsGained = nil
         screen = .lobby
     }
 

@@ -30,6 +30,9 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     /// 조임 — 교체할 수 없다 (교체룰이 들어오면 작동한다)
     var trappedTurns: Int = 0
+    /// 묶기 기술로 붙잡혔을 때 그 기술 이름 (지속 피해 로그용).
+    /// nil 이면 다이맥스고스트처럼 피해 없이 묶기만 하는 경우다.
+    var trapMoveName: String?
     /// 아무것도않기 — 같은 기술을 연속으로 쓸 수 없다
     var tormented: Bool = false
     /// 직전에 쓴 기술 (아무것도않기 판정용)

@@ -2,6 +2,14 @@ import Foundation
 
 let args = CommandLine.arguments
 
+if args.contains("--showdowntest") {
+    Task {
+        let passed = await ShowdownTest.run()
+        exit(passed ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--modetest") {
     Task {
         let passed = await ModeTest.run()
