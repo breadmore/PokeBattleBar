@@ -88,6 +88,11 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var powerTricked: Bool = false
     /// 헤롱헤롱(매혹) — 확률로 움직이지 못한다
     var infatuated: Bool = false
+    /// 웅크리기 — 데구르르·아이스볼의 위력이 두 배가 된다 (숨은 효과)
+    var defenseCurled: Bool = false
+    /// 떨어뜨리기 — 땅으로 끌어내려져 땅 기술을 피할 수 없다
+    /// (비행 타입·부유 특성·전자부유가 모두 무시된다)
+    var grounded: Bool = false
 
     var isRampaging: Bool { rampageTurns > 0 && rampageMoveIndex != nil }
 
