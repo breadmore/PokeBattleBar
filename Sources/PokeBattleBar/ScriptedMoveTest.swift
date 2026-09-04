@@ -5,6 +5,10 @@ import Foundation
 /// 이름만 목록에 적어두는 것으로는 아무것도 증명되지 않는다 (실제로 그렇게
 /// 적어놨다가 대부분이 미구현인 것을 뒤늦게 알았다). 그래서 배틀을 실제로
 /// 돌려 기대한 결과가 나오는지 본다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum ScriptedMoveTest {
 
     static func run(verbose: Bool) async -> Bool {
@@ -242,6 +246,18 @@ enum ScriptedMoveTest {
             ok = show(r.groundHits, "그 뒤에는 땅 기술이 비행 타입에게도 통한다",
                       r.detail2) && ok
         } else { ok = show(false, "떨어뜨리기 검사") && ok }
+
+        print("\n-- 데구르르 계열 (강제 턴 · 위력 상승 · 사슬 끊김) --")
+        if let r = await rolloutCheck(chart: chart) {
+            ok = show(r.locked, "한 번 쓰면 다른 기술을 골라도 계속 굴러간다", r.detail) && ok
+            ok = show(r.doubling, "턴마다 위력이 두 배가 된다 (5턴째 ×16)", r.detail2) && ok
+            ok = show(r.released, "5턴이 지나면 풀린다", r.detail3) && ok
+        } else { ok = show(false, "데구르르 검사") && ok }
+
+        if let r = await consecutiveBreakCheck(chart: chart) {
+            ok = show(r.stacks, "맞으면 연속 카운터가 쌓인다", r.detail2) && ok
+            ok = show(r.reset, "빗나가면 처음으로 돌아간다", r.detail) && ok
+        } else { ok = show(false, "연속 사슬 검사") && ok }
 
         print("\n-- 웅크리기 --")
         if let r = await defenseCurlCheck(chart: chart) {
@@ -1019,6 +1035,86 @@ enum ScriptedMoveTest {
         let (curled, def) = await dmg(withCurl: true)
         return (curled > plain, "데구르르 \(plain) → 웅크리기 후 \(curled)",
                 def > 0, "방어 랭크 \(def)")
+    }
+
+    /// 데구르르 계열의 **강제 턴과 위력 상승**.
+    ///
+    /// 세 가지를 한 번에 본다:
+    ///  - 한 번 쓰면 다른 기술을 골라도 계속 굴러간다 (원작 최대 5턴)
+    ///  - 위력이 턴마다 두 배가 된다 (5턴째 ×16)
+    ///  - 5턴이 지나면 풀려서 고른 기술이 나간다
+    ///
+    /// 예전에는 Showdown 의 `rollsOn` 플래그를 읽어놓고 **아무도 쓰지 않아서**
+    /// 강제가 없었고, 위력 상한도 연속자르기와 한 줄로 묶여 ×8 에서 멈췄다.
+    private static func rolloutCheck(chart: TypeChart) async -> (
+        locked: Bool, detail: String,
+        doubling: Bool, detail2: String,
+        released: Bool, detail3: String
+    )? {
+        guard let rollout = try? await PokeAPI.shared.move("rollout"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        // 1턴만 데구르르를 고르고, 그 뒤로는 계속 튀어오르기를 고른다.
+        // 강제가 걸려 있으면 데구르르가 계속 나간다.
+        guard let e = await runTurns(userMoves: [rollout, splash], foeMoves: [splash],
+                                     picks: [0, 1, 1, 1, 1, 1, 1],
+                                     userID: 143, foeID: 151, chart: chart) else { return nil }
+
+        // 내가 쓴 줄만 센다 (상대 이름이 섞이면 판정이 무의미해진다)
+        let mine = e.state.sides[0].team[0].name
+        let rolls = e.state.log.filter { $0.hasPrefix("\(mine)의 \(rollout.display)") }.count
+        let splashes = e.state.log.filter { $0.hasPrefix("\(mine)의 \(splash.display)") }.count
+        // 데구르르가 5번 나가고, 풀린 뒤에는 고른 기술이 나가야 한다
+        let locked = rolls == 5
+        let released = splashes > 0
+
+        // 위력 상승 — 턴별 데미지를 따로 굴려 비교한다 (1턴 vs 5턴)
+        func dealt(turns: Int) async -> Int {
+            guard let r = await runTurns(userMoves: [rollout], foeMoves: [splash],
+                                         picks: Array(repeating: 0, count: turns),
+                                         userID: 143, foeID: 151, chart: chart) else { return -1 }
+            return 9999 - r.state.sides[1].team[0].currentHP
+        }
+        let one = await dealt(turns: 1)
+        let five = await dealt(turns: 5)
+        // 1+2+4+8+16 = 31배가 누적된다. 난수를 감안해 20배 넘으면 통과.
+        let doubling = one > 0 && five > one * 20
+
+        return (locked, "데구르르 \(rolls)턴 강제",
+                doubling, "1턴 누적 \(one) → 5턴 누적 \(five)",
+                released, "풀린 뒤 튀어오르기 \(splashes)회")
+    }
+
+    /// 빗나가면 연속 위력이 처음으로 돌아가는지 (원작 규칙).
+    ///
+    /// 명중률은 난수라 재현이 어렵다. 그래서 **반드시 빗나가는** 상황을 만든다 —
+    /// 상대가 몸을 숨긴 상태(공중날기 중)면 명중 판정이 무조건 실패한다.
+    ///
+    /// 예전에는 카운터를 명중 판정 **전에** 올리고 되돌리지 않아서,
+    /// 빗나간 턴도 위력 단계가 올라갔다.
+    private static func consecutiveBreakCheck(chart: TypeChart) async -> (
+        reset: Bool, detail: String, stacks: Bool, detail2: String
+    )? {
+        guard let cutter = try? await PokeAPI.shared.move("fury-cutter"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        // (1) 맞을 때는 쌓인다
+        guard let hit = await runTurns(userMoves: [cutter], foeMoves: [splash],
+                                       picks: [0, 0, 0], userID: 143, foeID: 151,
+                                       chart: chart) else { return nil }
+        let stacked = hit.state.sides[0].team[0].consecutiveCount
+
+        // (2) 계속 빗나가면 쌓이지 않는다
+        guard let missed = await runTurns(userMoves: [cutter], foeMoves: [splash],
+                                          picks: [0, 0, 0], userID: 143, foeID: 151,
+                                          chart: chart, foeSetup: { f in
+                                              f.chargeHidden = true   // 숨어 있으면 반드시 빗나간다
+                                          }) else { return nil }
+        let after = missed.state.sides[0].team[0]
+        let reset = after.consecutiveCount == 0 && after.consecutiveMoveIndex == nil
+
+        return (reset, "빗나간 뒤 카운터 \(after.consecutiveCount)",
+                stacked >= 2, "맞을 때는 카운터 \(stacked)")
     }
 
     /// 떨어뜨리기가 비행 타입을 땅으로 끌어내리는지

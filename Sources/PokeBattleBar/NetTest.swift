@@ -3,6 +3,10 @@ import Network
 
 /// `PokeBattleBar --nettest` — Bonjour 광고/발견, TCP 접속, 프레이밍,
 /// Battler·BattleState 직렬화 왕복을 한 프로세스 안에서 실제로 확인한다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum NetTest {
 
     private final class Box: @unchecked Sendable {

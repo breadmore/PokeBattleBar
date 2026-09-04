@@ -3,6 +3,10 @@ import Foundation
 /// `PokeBattleBar --testall [--battles N] [--verbose]`
 /// 모든 검증 스위트를 순서대로 돌리고 요약표를 출력한다.
 /// 하나라도 실패하면 종료코드 1 — 릴리즈 스크립트가 이걸 보고 배포를 막는다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum TestAll {
     struct Suite {
         var flag: String

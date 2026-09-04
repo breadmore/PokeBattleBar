@@ -183,6 +183,17 @@ enum MoveFlags {
     static func isCharge(_ name: String) -> Bool { Showdown.move(name)?.isCharge ?? false }
     /// 난동부리기처럼 여러 턴 조작할 수 없게 되는 기술인가
     static func locksUser(_ name: String) -> Bool { Showdown.move(name)?.locksUser ?? false }
+    /// 데구르르처럼 연속으로 굴러가는 기술인가 (최대 5턴 강제, 위력이 배로).
+    /// 난동부리기와 달리 끝나도 혼란에 빠지지 않는다.
+    ///
+    /// **Showdown 데이터에는 플래그가 없다** — 난동부리기는 `sv:"lockedmove"` 로
+    /// 오는데 데구르르는 코드로만 처리해서(`cc:1`) 축약 데이터에 남지 않는다.
+    /// 방어 계열(protectMoves)과 같은 이유로 목록을 둔다: 종류가 둘뿐이고 확정적이다.
+    static func rollsOn(_ name: String) -> Bool {
+        if Showdown.move(name)?.rollsOn == true { return true }
+        return rolloutMoves.contains(name)
+    }
+    static let rolloutMoves: Set<String> = ["rollout", "ice-ball"]
     /// 일격필살인가 (땅가르기·뿔드릴·절대영도·가위자르기)
     static func isOHKO(_ name: String) -> Bool { Showdown.move(name)?.ohko ?? false }
     /// 탄환 계열인가 (방탄으로 막힌다)

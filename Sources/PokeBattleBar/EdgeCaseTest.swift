@@ -4,6 +4,10 @@ import Foundation
 ///
 /// 포켓몬 배틀 엔진에서 **실제로 자주 틀리는 지점들**을 하나씩 확인한다.
 /// 원작 규칙과 다르게 구현되기 쉬운 곳, 그리고 예전에 이 엔진에서 실제로 터진 유형들.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum EdgeCaseTest {
 
     static func run(verbose: Bool) async -> Bool {

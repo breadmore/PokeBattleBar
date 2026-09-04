@@ -4,6 +4,10 @@ import Foundation
 ///
 /// 세팅은 2,400개가 넘는다. 손으로 확인할 수 없으니 전부 돌려서
 /// 이름이 안 풀리는 기술·도구·특성, 위력이 0 이 되는 기술을 찾아낸다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum SetSweepTest {
 
     static func run(limitSpecies: Int, verbose: Bool) async -> Bool {

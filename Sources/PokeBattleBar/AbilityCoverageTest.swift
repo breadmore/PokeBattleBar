@@ -6,6 +6,10 @@ import Foundation
 /// PokeAPI 는 특성 효과를 산문으로만 주고, Showdown 조차 특성은 데이터가 아니라
 /// JavaScript 함수다. 그래서 특성만은 하나씩 손으로 구현해야 하고,
 /// "표시만" 인 것이 얼마나 남았는지 숫자로 알고 있어야 한다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum AbilityCoverageTest {
 
     static func run(full: Bool) async -> Bool {

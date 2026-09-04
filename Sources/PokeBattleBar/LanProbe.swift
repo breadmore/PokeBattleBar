@@ -5,6 +5,10 @@ import Foundation
 /// 한쪽을 `--lanprobe host`, 다른 쪽을 `--lanprobe browse` 로 **따로 실행**해야
 /// 의미가 있다. 한 프로세스 안에서 하는 검사(--nettest)로는
 /// 프로세스 경계를 넘는 Bonjour 광고가 실제로 보이는지 알 수 없다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum LanProbe {
     static func run(role: String, seconds: Int) async -> Bool {
         let tag = TestProfile.tag ?? "?"

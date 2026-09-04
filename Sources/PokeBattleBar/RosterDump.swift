@@ -3,6 +3,10 @@ import Foundation
 /// `PokeBattleBar --roster`
 /// 지금 내 도감이 배틀에서 어떻게 보이는지 출력한다.
 /// UI 를 열지 않고도 자격·기술·쓸 수 있는 도구를 확인할 수 있다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum RosterDump {
     /// AppModel.itemReadiness 와 같은 규칙 (UI 없이 확인하기 위한 복제)
     static func probeReadiness(item: ItemDef, species sp: SpeciesDef,

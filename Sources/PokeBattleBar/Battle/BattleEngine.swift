@@ -1294,6 +1294,19 @@ struct BattleEngine {
             moveIndex = forced
         }
 
+        // 데구르르·아이스볼 — 한 번 쓰면 **최대 5턴 강제**된다 (원작).
+        //
+        // 난동부리기와 달리 끝나도 혼란에 빠지지 않아서 rampage 자리를 쓸 수 없다.
+        // 대신 이미 들고 있는 연속 카운터를 그대로 본다 — 새 상태를 만들면
+        // Battler 가 커져서 프로토콜 버전을 올려야 한다.
+        // 빗나가면 breakConsecutive 가 카운터를 지우므로 강제도 함께 풀린다.
+        if let chain = atk.consecutiveMoveIndex, chain != moveIndex,
+           atk.moves.indices.contains(chain), atk.moves[chain].usable,
+           MoveFlags.rollsOn(atk.moves[chain].def.name), atk.consecutiveCount < 4 {
+            say("\(atkName)는 멈출 수 없다!")
+            moveIndex = chain
+        }
+
         // 앙코르 — 지정된 기술만 나간다. 구애와 같은 이유로 턴을 날리지 않는다.
         if atk.isEncored, let forced = atk.encoreMoveIndex,
            forced != moveIndex, atk.moves.indices.contains(forced), atk.moves[forced].usable {
@@ -4176,16 +4189,34 @@ extension BattleEngine {
         }
     }
 
+    /// 데이터에 구조화돼 있지 않아 손으로 구현한 기술들.
+    ///
+    /// 주제별 함수로 나눠 두고 순서대로 물어본다 — 한 함수에 63개 케이스를
+    /// 모아두면 디버그 빌드에서 스택 프레임이 터진다 (아래 각 함수 주석 참고).
     mutating func handleScriptedMove(_ move: MoveDef, attacker: BattleSide,
                                      defender: BattleSide) -> Bool {
+        if handleScriptedRecovery(move, attacker: attacker, defender: defender) { return true }
+        if handleScriptedTypeChange(move, attacker: attacker, defender: defender) { return true }
+        if handleScriptedScreens(move, attacker: attacker, defender: defender) { return true }
+        if handleScriptedVolatile(move, attacker: attacker, defender: defender) { return true }
+        if handleScriptedCalling(move, attacker: attacker, defender: defender) { return true }
+        return false
+    }
+
+    /// 회복·HP 를 쓰는 기술 (자기부활·저주·배북·대타출동·아픔나누기)
+    ///
+    /// **왜 나눠 놓았나**: 케이스를 한 함수에 모으면 디버그 빌드가 케이스별
+    /// 지역변수의 스택 슬롯을 재사용하지 않아 프레임이 한꺼번에 잡힌다.
+    /// Battler 는 큰 struct 라서 협조 스레드(512KB)를 넘겨 SIGBUS 로 죽었다
+    /// (릴리스 빌드는 최적화가 슬롯을 합쳐서 통과한다). 주제별로 쪼개면
+    /// 프레임이 나뉘어 디버그에서도 돈다.
+    private mutating func handleScriptedRecovery(_ move: MoveDef, attacker: BattleSide,
+                                                defender: BattleSide) -> Bool {
         var a = state.side(attacker).active
         var d = state.side(defender).active
         let aName = a.name
 
         switch move.name {
-
-        // 잠자기 — HP 를 모두 채우고 **자신이** 2턴 잠든다.
-        // PokéAPI 는 ailment=none, healing=0 으로 줘서 아무 일도 일어나지 않았다.
         case "rest":
             guard state.rules.statusEffects else {
                 say("\(aName)의 잠자기! …하지만 상태이상이 꺼져 있다!")
@@ -4272,6 +4303,25 @@ extension BattleEngine {
             return true
 
         // 텍스처 — 자신의 타입을 **가진 기술 중 하나**의 타입으로 바꾼다
+        default:
+            return false
+        }
+    }
+
+    /// 타입을 바꾸는 기술 (텍스처·물들이기·핼로윈·타입변경)
+    ///
+    /// **왜 나눠 놓았나**: 케이스를 한 함수에 모으면 디버그 빌드가 케이스별
+    /// 지역변수의 스택 슬롯을 재사용하지 않아 프레임이 한꺼번에 잡힌다.
+    /// Battler 는 큰 struct 라서 협조 스레드(512KB)를 넘겨 SIGBUS 로 죽었다
+    /// (릴리스 빌드는 최적화가 슬롯을 합쳐서 통과한다). 주제별로 쪼개면
+    /// 프레임이 나뉘어 디버그에서도 돈다.
+    private mutating func handleScriptedTypeChange(_ move: MoveDef, attacker: BattleSide,
+                                                defender: BattleSide) -> Bool {
+        var a = state.side(attacker).active
+        var d = state.side(defender).active
+        let aName = a.name
+
+        switch move.name {
         case "conversion":
             guard let first = a.moves.first?.def.type else { return true }
             a.types = [first]
@@ -4327,6 +4377,31 @@ extension BattleEngine {
         // 지속 턴수가 데이터에 없어 원작 값을 쓴다: 5턴, 빛의점토를 들면 8턴.
         // 오로라베일은 **눈·싸라기눈일 때만** 쓸 수 있다 — 그래서 아무 효과가
         // 없어 보이기 쉽다.
+        case "reflect-type":
+            a.types = d.types
+            commit(a, attacker)
+            say("\(aName)는 \(d.name)와 같은 타입이 되었다!")
+            return true
+
+        default:
+            return false
+        }
+    }
+
+    /// 화면·장애물·필드 (리플렉터·안개제거·스텔스록·중력·신비의부적)
+    ///
+    /// **왜 나눠 놓았나**: 케이스를 한 함수에 모으면 디버그 빌드가 케이스별
+    /// 지역변수의 스택 슬롯을 재사용하지 않아 프레임이 한꺼번에 잡힌다.
+    /// Battler 는 큰 struct 라서 협조 스레드(512KB)를 넘겨 SIGBUS 로 죽었다
+    /// (릴리스 빌드는 최적화가 슬롯을 합쳐서 통과한다). 주제별로 쪼개면
+    /// 프레임이 나뉘어 디버그에서도 돈다.
+    private mutating func handleScriptedScreens(_ move: MoveDef, attacker: BattleSide,
+                                                defender: BattleSide) -> Bool {
+        var a = state.side(attacker).active
+        var d = state.side(defender).active
+        let aName = a.name
+
+        switch move.name {
         case "reflect", "light-screen", "aurora-veil":
             let turns = screenTurns(for: a)
             var side = state.sides[attacker.rawValue]
@@ -4385,6 +4460,105 @@ extension BattleEngine {
 
         // 웅크리기 — 방어 상승은 데이터가 처리한다. 여기서는 **숨은 효과**만 건다:
         // 데구르르·아이스볼의 위력이 두 배가 된다.
+        case "haze":
+            for side in [attacker, defender] {
+                let i = state.side(side).activeIndex
+                guard state.side(side).team.indices.contains(i) else { continue }
+                var b = state.sides[side.rawValue].team[i]
+                b.stages = [:]
+                b.accuracyStage = 0
+                b.evasionStage = 0
+                state.sides[side.rawValue].team[i] = b
+            }
+            say("모든 능력 변화가 사라졌다!")
+            return true
+
+        // 중력 — 부유·비행이 무효가 되고 명중률이 오른다
+        case "gravity":
+            state.field.setGravity(5)
+            say("중력이 강해졌다! (5턴)")
+            return true
+
+        // 스텔스록·압정뿌리기·독압정 — 상대 진영에 깔린다.
+        // 교체가 없어도 **쓰러지면 다음 포켓몬이 나오는** 시점에 작동한다.
+        case "stealth-rock", "spikes", "toxic-spikes":
+            let hazard: Hazard = move.name == "toxic-spikes" ? .toxicSpikes : .stealthRock
+            if state.side(defender).hazards.contains(hazard) {
+                say("\(aName)의 \(move.display)! …하지만 이미 깔려 있다!")
+                return true
+            }
+            state.sides[defender.rawValue].hazards.insert(hazard)
+            say("상대 발밑에 \(hazard.ko)가 깔렸다!")
+            return true
+
+        // 안개제거 — 상대 진영의 장애물과 **양쪽 화면**을 걷어낸다
+        case "defog":
+            var did = false
+            if !state.side(defender).hazards.isEmpty {
+                state.sides[defender.rawValue].hazards.removeAll()
+                did = true
+            }
+            for side in [attacker, defender] where state.side(side).hasAnyScreen {
+                state.sides[side.rawValue].reflectTurns = 0
+                state.sides[side.rawValue].lightScreenTurns = 0
+                state.sides[side.rawValue].auroraVeilTurns = 0
+                did = true
+            }
+            // 상대 회피율도 한 단계 내린다
+            var d2 = state.side(defender).active
+            if d2.evasionStage > -6 {
+                d2.evasionStage -= 1
+                commit(d2, defender)
+                did = true
+            }
+            say(did ? "\(aName)의 안개제거! 장애물과 화면이 걷혔다!"
+                    : "\(aName)의 안개제거! …하지만 걷을 것이 없었다!")
+            return true
+
+        // 신비의부적 — 5턴 동안 상태이상에 걸리지 않는다
+        case "safeguard":
+            var side = state.sides[attacker.rawValue]
+            guard side.safeguardTurns == 0 else {
+                say("\(aName)의 신비의부적! …하지만 이미 걸려 있다!")
+                return true
+            }
+            side.safeguardTurns = 5
+            state.sides[attacker.rawValue] = side
+            say("\(s(attacker).playerName) 쪽이 신비의부적에 둘러싸였다! (5턴)")
+            return true
+
+        // 흰안개 — 5턴 동안 능력이 내려가지 않는다
+        case "mist":
+            var side = state.sides[attacker.rawValue]
+            guard side.mistTurns == 0 else {
+                say("\(aName)의 흰안개! …하지만 이미 걸려 있다!")
+                return true
+            }
+            side.mistTurns = 5
+            state.sides[attacker.rawValue] = side
+            say("\(s(attacker).playerName) 쪽이 흰안개에 둘러싸였다! (5턴)")
+            return true
+
+        // 예민해지기 — 다음 공격이 반드시 급소에 맞는다
+        default:
+            return false
+        }
+    }
+
+    /// 상대에게 지속 상태를 거는 기술 (도발·앙코르·하품·금제·멸망의노래)
+    ///
+    /// **왜 나눠 놓았나**: 케이스를 한 함수에 모으면 디버그 빌드가 케이스별
+    /// 지역변수의 스택 슬롯을 재사용하지 않아 프레임이 한꺼번에 잡힌다.
+    /// Battler 는 큰 struct 라서 협조 스레드(512KB)를 넘겨 SIGBUS 로 죽었다
+    /// (릴리스 빌드는 최적화가 슬롯을 합쳐서 통과한다). 주제별로 쪼개면
+    /// 프레임이 나뉘어 디버그에서도 돈다.
+    private mutating func handleScriptedVolatile(_ move: MoveDef, attacker: BattleSide,
+                                                defender: BattleSide) -> Bool {
+        var a = state.side(attacker).active
+        var d = state.side(defender).active
+        let aName = a.name
+
+        switch move.name {
         case "defense-curl":
             a.defenseCurled = true
             commit(a, attacker)
@@ -4647,6 +4821,101 @@ extension BattleEngine {
 
         // 검은눈빛 / 블랙아이즈 — 도망갈 수 없게 만든다
         // 따라하기 — 마지막으로 나온 기술을 그대로 쓴다
+        case "laser-focus":
+            a.critStage = 4
+            commit(a, attacker)
+            say("\(aName)는 정신을 집중했다! 다음 공격은 급소에 맞는다!")
+            return true
+
+        // 금제 — 상대 도구가 5턴 동안 작동하지 않는다
+        case "embargo":
+            guard d.embargoTurns == 0 else {
+                say("\(aName)의 금제! …하지만 실패했다!")
+                return true
+            }
+            d.embargoTurns = 5
+            commit(d, defender)
+            say("\(d.name)는 도구를 쓸 수 없게 되었다! (5턴)")
+            return true
+
+        // 미라클아이 — 상대의 회피율 상승을 무시하고 에스퍼가 악에 통한다
+        case "miracle-eye", "odor-sleuth", "foresight":
+            guard !d.identified else {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            d.identified = true
+            commit(d, defender)
+            say("\(d.name)를 꿰뚫어 보았다!")
+            return true
+
+        // 텔레키네시스 — 3턴 동안 상대를 띄워 땅 기술을 무효로 하고 반드시 맞춘다.
+        // 디그다 계열처럼 통하지 않는 종족이 있다 (원작 예외).
+        case "telekinesis":
+            if Self.telekinesisImmune.contains(d.speciesID) {
+                say("\(d.name)에게는 통하지 않는다!")
+                return true
+            }
+            guard d.magnetRiseTurns == 0 else {
+                say("\(aName)의 텔레키네시스! …하지만 실패했다!")
+                return true
+            }
+            d.magnetRiseTurns = 3
+            d.identified = true
+            commit(d, defender)
+            say("\(d.name)가 공중으로 떠올랐다! (3턴)")
+            return true
+
+        // 멸망의노래 — 3턴 후에 **양쪽 모두** 쓰러진다.
+        // 지금까지 아무 효과가 없었다 (PokeAPI 에 지속 턴수가 없다).
+        case "perish-song":
+            var hit = false
+            for side in [attacker, defender] {
+                let i = state.side(side).activeIndex
+                guard state.side(side).team.indices.contains(i) else { continue }
+                var b = state.sides[side.rawValue].team[i]
+                guard !b.isFainted, b.perishTurns == 0 else { continue }
+                // 방음은 소리 기술을 막는다
+                if state.rules.abilities, case .soundImmunity = b.abilityKind { continue }
+                b.perishTurns = 4
+                state.sides[side.rawValue].team[i] = b
+                hit = true
+            }
+            say(hit ? "멸망의노래가 울려퍼졌다! 3턴 후에 쓰러진다!"
+                    : "\(aName)의 멸망의노래! …하지만 실패했다!")
+            return true
+
+        // 변신 — 상대를 그대로 베낀다. 메타몽이 배우는 기술은 이것뿐이다.
+        case "mean-look", "block", "spider-web":
+            guard !d.cannotFlee else {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            d.cannotFlee = true
+            commit(d, defender)
+            say("\(d.name)는 도망갈 수 없게 되었다!")
+            return true
+
+        // 미러타입 — 상대와 같은 타입이 된다
+        default:
+            return false
+        }
+    }
+
+    /// 다른 기술·상태를 베끼거나 부르는 기술 (따라하기·자연의힘·트릭·변신)
+    ///
+    /// **왜 나눠 놓았나**: 케이스를 한 함수에 모으면 디버그 빌드가 케이스별
+    /// 지역변수의 스택 슬롯을 재사용하지 않아 프레임이 한꺼번에 잡힌다.
+    /// Battler 는 큰 struct 라서 협조 스레드(512KB)를 넘겨 SIGBUS 로 죽었다
+    /// (릴리스 빌드는 최적화가 슬롯을 합쳐서 통과한다). 주제별로 쪼개면
+    /// 프레임이 나뉘어 디버그에서도 돈다.
+    private mutating func handleScriptedCalling(_ move: MoveDef, attacker: BattleSide,
+                                                defender: BattleSide) -> Bool {
+        var a = state.side(attacker).active
+        var d = state.side(defender).active
+        let aName = a.name
+
+        switch move.name {
         case "copycat":
             guard let last = state.lastMoveUsedAnywhere,
                   last.name != "copycat",
@@ -4868,151 +5137,6 @@ extension BattleEngine {
             return true
 
         // 흑안개 — **양쪽** 능력 변화를 전부 되돌린다
-        case "haze":
-            for side in [attacker, defender] {
-                let i = state.side(side).activeIndex
-                guard state.side(side).team.indices.contains(i) else { continue }
-                var b = state.sides[side.rawValue].team[i]
-                b.stages = [:]
-                b.accuracyStage = 0
-                b.evasionStage = 0
-                state.sides[side.rawValue].team[i] = b
-            }
-            say("모든 능력 변화가 사라졌다!")
-            return true
-
-        // 중력 — 부유·비행이 무효가 되고 명중률이 오른다
-        case "gravity":
-            state.field.setGravity(5)
-            say("중력이 강해졌다! (5턴)")
-            return true
-
-        // 스텔스록·압정뿌리기·독압정 — 상대 진영에 깔린다.
-        // 교체가 없어도 **쓰러지면 다음 포켓몬이 나오는** 시점에 작동한다.
-        case "stealth-rock", "spikes", "toxic-spikes":
-            let hazard: Hazard = move.name == "toxic-spikes" ? .toxicSpikes : .stealthRock
-            if state.side(defender).hazards.contains(hazard) {
-                say("\(aName)의 \(move.display)! …하지만 이미 깔려 있다!")
-                return true
-            }
-            state.sides[defender.rawValue].hazards.insert(hazard)
-            say("상대 발밑에 \(hazard.ko)가 깔렸다!")
-            return true
-
-        // 안개제거 — 상대 진영의 장애물과 **양쪽 화면**을 걷어낸다
-        case "defog":
-            var did = false
-            if !state.side(defender).hazards.isEmpty {
-                state.sides[defender.rawValue].hazards.removeAll()
-                did = true
-            }
-            for side in [attacker, defender] where state.side(side).hasAnyScreen {
-                state.sides[side.rawValue].reflectTurns = 0
-                state.sides[side.rawValue].lightScreenTurns = 0
-                state.sides[side.rawValue].auroraVeilTurns = 0
-                did = true
-            }
-            // 상대 회피율도 한 단계 내린다
-            var d2 = state.side(defender).active
-            if d2.evasionStage > -6 {
-                d2.evasionStage -= 1
-                commit(d2, defender)
-                did = true
-            }
-            say(did ? "\(aName)의 안개제거! 장애물과 화면이 걷혔다!"
-                    : "\(aName)의 안개제거! …하지만 걷을 것이 없었다!")
-            return true
-
-        // 신비의부적 — 5턴 동안 상태이상에 걸리지 않는다
-        case "safeguard":
-            var side = state.sides[attacker.rawValue]
-            guard side.safeguardTurns == 0 else {
-                say("\(aName)의 신비의부적! …하지만 이미 걸려 있다!")
-                return true
-            }
-            side.safeguardTurns = 5
-            state.sides[attacker.rawValue] = side
-            say("\(s(attacker).playerName) 쪽이 신비의부적에 둘러싸였다! (5턴)")
-            return true
-
-        // 흰안개 — 5턴 동안 능력이 내려가지 않는다
-        case "mist":
-            var side = state.sides[attacker.rawValue]
-            guard side.mistTurns == 0 else {
-                say("\(aName)의 흰안개! …하지만 이미 걸려 있다!")
-                return true
-            }
-            side.mistTurns = 5
-            state.sides[attacker.rawValue] = side
-            say("\(s(attacker).playerName) 쪽이 흰안개에 둘러싸였다! (5턴)")
-            return true
-
-        // 예민해지기 — 다음 공격이 반드시 급소에 맞는다
-        case "laser-focus":
-            a.critStage = 4
-            commit(a, attacker)
-            say("\(aName)는 정신을 집중했다! 다음 공격은 급소에 맞는다!")
-            return true
-
-        // 금제 — 상대 도구가 5턴 동안 작동하지 않는다
-        case "embargo":
-            guard d.embargoTurns == 0 else {
-                say("\(aName)의 금제! …하지만 실패했다!")
-                return true
-            }
-            d.embargoTurns = 5
-            commit(d, defender)
-            say("\(d.name)는 도구를 쓸 수 없게 되었다! (5턴)")
-            return true
-
-        // 미라클아이 — 상대의 회피율 상승을 무시하고 에스퍼가 악에 통한다
-        case "miracle-eye", "odor-sleuth", "foresight":
-            guard !d.identified else {
-                say("\(aName)의 \(move.display)! …하지만 실패했다!")
-                return true
-            }
-            d.identified = true
-            commit(d, defender)
-            say("\(d.name)를 꿰뚫어 보았다!")
-            return true
-
-        // 텔레키네시스 — 3턴 동안 상대를 띄워 땅 기술을 무효로 하고 반드시 맞춘다.
-        // 디그다 계열처럼 통하지 않는 종족이 있다 (원작 예외).
-        case "telekinesis":
-            if Self.telekinesisImmune.contains(d.speciesID) {
-                say("\(d.name)에게는 통하지 않는다!")
-                return true
-            }
-            guard d.magnetRiseTurns == 0 else {
-                say("\(aName)의 텔레키네시스! …하지만 실패했다!")
-                return true
-            }
-            d.magnetRiseTurns = 3
-            d.identified = true
-            commit(d, defender)
-            say("\(d.name)가 공중으로 떠올랐다! (3턴)")
-            return true
-
-        // 멸망의노래 — 3턴 후에 **양쪽 모두** 쓰러진다.
-        // 지금까지 아무 효과가 없었다 (PokeAPI 에 지속 턴수가 없다).
-        case "perish-song":
-            var hit = false
-            for side in [attacker, defender] {
-                let i = state.side(side).activeIndex
-                guard state.side(side).team.indices.contains(i) else { continue }
-                var b = state.sides[side.rawValue].team[i]
-                guard !b.isFainted, b.perishTurns == 0 else { continue }
-                // 방음은 소리 기술을 막는다
-                if state.rules.abilities, case .soundImmunity = b.abilityKind { continue }
-                b.perishTurns = 4
-                state.sides[side.rawValue].team[i] = b
-                hit = true
-            }
-            say(hit ? "멸망의노래가 울려퍼졌다! 3턴 후에 쓰러진다!"
-                    : "\(aName)의 멸망의노래! …하지만 실패했다!")
-            return true
-
-        // 변신 — 상대를 그대로 베낀다. 메타몽이 배우는 기술은 이것뿐이다.
         case "transform":
             guard !a.isTransformed else {
                 say("\(aName)의 변신! …하지만 실패했다!")
@@ -5028,27 +5152,11 @@ extension BattleEngine {
             say("\(aName)는 \(d.name)으로 변신했다!")
             return true
 
-        case "mean-look", "block", "spider-web":
-            guard !d.cannotFlee else {
-                say("\(aName)의 \(move.display)! …하지만 실패했다!")
-                return true
-            }
-            d.cannotFlee = true
-            commit(d, defender)
-            say("\(d.name)는 도망갈 수 없게 되었다!")
-            return true
-
-        // 미러타입 — 상대와 같은 타입이 된다
-        case "reflect-type":
-            a.types = d.types
-            commit(a, attacker)
-            say("\(aName)는 \(d.name)와 같은 타입이 되었다!")
-            return true
-
         default:
             return false
         }
     }
+
 
     /// 위력이 상황에 따라 바뀌는 기술의 위력.
     ///

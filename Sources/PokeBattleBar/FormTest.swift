@@ -3,6 +3,10 @@ import Foundation
 /// `PokeBattleBar --formtest`
 /// 메가진화 / 거다이맥스 / Z기술의 **자격 제한**과 **배틀당 1회 제한**을 검증한다.
 /// 핵심 규칙: 6마리를 데려가도 메가 1회, 거다이맥스 1회, Z기술 1회씩만 쓸 수 있다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum FormTest {
 
     @MainActor

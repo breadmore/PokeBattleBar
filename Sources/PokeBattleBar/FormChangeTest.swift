@@ -3,6 +3,10 @@ import Foundation
 /// `PokeBattleBar --formchangetest`
 /// 폼 체인지와 턴 재생을 검증한다.
 /// **PokeTokenBar 의 데이터는 건드리지 않는다** — 폼 선택은 우리 저장소에만 기록된다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum FormChangeTest {
     static func run() async -> Bool {
         print("=== 폼 체인지 · 턴 재생 검증 ===\n")

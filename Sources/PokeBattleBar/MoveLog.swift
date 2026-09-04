@@ -7,6 +7,10 @@ import Foundation
 ///
 /// 검증(assert)이 아니라 눈으로 보기 위한 도구다. "왜 안 때리지?" 같은 질문은
 /// 로그를 보면 대개 한 번에 답이 나온다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum MoveLog {
     static func run(move: String, turns: Int, foeMove: String, userSpeed: Int,
                     extraMove: String? = nil) async -> Bool {

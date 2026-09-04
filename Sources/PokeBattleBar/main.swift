@@ -6,20 +6,14 @@ if let i = args.firstIndex(of: "--lanprobe") {
     let role = i + 1 < args.count ? args[i + 1] : ""
     var secs = 8
     if let j = args.firstIndex(of: "--seconds"), j + 1 < args.count, let v = Int(args[j + 1]) { secs = v }
-    Task {
-        let ok = await LanProbe.run(role: role, seconds: secs)
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await LanProbe.run(role: role, seconds: secs) }
 }
 
 if args.contains("--mechaudit") {
     let verbose = args.contains("--verbose")
-    Task {
-        let ok = await MechanicAudit.run(verbose: verbose)
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await MechanicAudit.run(verbose: verbose) }
 }
 
 if args.contains("--formaudit") {
@@ -29,11 +23,8 @@ if args.contains("--formaudit") {
     }
     let upTo = intVal("--upto", default: 649)
     let verbose = args.contains("--verbose")
-    Task {
-        let ok = await FormAudit.run(upTo: upTo, verbose: verbose)
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await FormAudit.run(upTo: upTo, verbose: verbose) }
 }
 
 if args.contains("--setsweep") {
@@ -43,102 +34,66 @@ if args.contains("--setsweep") {
     }
     let limit = intVal("--limit", default: 0)
     let verbose = args.contains("--verbose")
-    Task {
-        let ok = await SetSweepTest.run(limitSpecies: limit, verbose: verbose)
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await SetSweepTest.run(limitSpecies: limit, verbose: verbose) }
 }
 
 if args.contains("--settest") {
-    Task { @MainActor in
-        let ok = await SmogonSetTest.run()
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await SmogonSetTest.run() }
 }
 
 if args.contains("--scriptedtest") {
     let verbose = args.contains("--verbose")
-    Task {
-        let ok = await ScriptedMoveTest.run(verbose: verbose)
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await ScriptedMoveTest.run(verbose: verbose) }
 }
 
 if args.contains("--moveaudit") {
     let verbose = args.contains("--verbose")
-    Task {
-        let ok = await MoveAudit.run(verbose: verbose)
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await MoveAudit.run(verbose: verbose) }
 }
 
 if args.contains("--lobbytest") {
-    Task { @MainActor in
-        let passed = await LobbyTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await LobbyTest.run() }
 }
 
 if args.contains("--playbacktest") {
-    Task { @MainActor in
-        let passed = await PlaybackTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await PlaybackTest.run() }
 }
 
 if args.contains("--profiletest") {
-    Task {
-        let passed = await TestProfileTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await TestProfileTest.run() }
 }
 
 if args.contains("--formchangetest") {
-    Task {
-        let passed = await FormChangeTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await FormChangeTest.run() }
 }
 
 if args.contains("--berrytest") {
-    Task {
-        let passed = await BerryTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await BerryTest.run() }
 }
 
 if args.contains("--abilitytest") {
     let full = args.contains("--full")
-    Task {
-        let passed = await AbilityCoverageTest.run(full: full)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await AbilityCoverageTest.run(full: full) }
 }
 
 if args.contains("--showdowntest") {
-    Task {
-        let passed = await ShowdownTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await ShowdownTest.run() }
 }
 
 if args.contains("--modetest") {
-    Task {
-        let passed = await ModeTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await ModeTest.run() }
 }
 
 if args.contains("--testall") {
@@ -148,28 +103,19 @@ if args.contains("--testall") {
     }
     let n = intVal("--battles", default: 40)
     let verbose = args.contains("--verbose")
-    Task {
-        let passed = await TestAll.run(battles: n, verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await TestAll.run(battles: n, verbose: verbose) }
 }
 
 if args.contains("--roster") {
-    Task {
-        let ok = await RosterDump.run()
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await RosterDump.run() }
 }
 
 if args.contains("--edgetest") {
     let verbose = args.contains("--verbose")
-    Task {
-        let passed = await EdgeCaseTest.run(verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await EdgeCaseTest.run(verbose: verbose) }
 }
 
 if args.contains("--bugsweep") {
@@ -179,65 +125,44 @@ if args.contains("--bugsweep") {
     }
     let n = intVal("--battles", default: 40)
     let verbose = args.contains("--verbose")
-    Task {
-        let passed = await BugSweep.run(battles: n, verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await BugSweep.run(battles: n, verbose: verbose) }
 }
 
 if args.contains("--extendedtest") {
-    Task {
-        let passed = await ExtendedTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await ExtendedTest.run() }
 }
 
 if args.contains("--loadouttest") {
     let verbose = args.contains("--verbose")
-    Task {
-        let passed = await LoadoutTest.run(verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await LoadoutTest.run(verbose: verbose) }
 }
 
 if args.contains("--itemtest") {
-    Task {
-        let passed = await ItemTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await ItemTest.run() }
 }
 
 if args.contains("--formtest") {
     let verbose = args.contains("--verbose")
-    Task {
-        let passed = await FormTest.run(verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await FormTest.run(verbose: verbose) }
 }
 
 if args.contains("--movetest") {
     let verbose = args.contains("--verbose")
-    Task {
-        let passed = await MoveEffectTest.run(verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await MoveEffectTest.run(verbose: verbose) }
 }
 
 if args.contains("--pickertest") {
     // @MainActor 테스트는 세마포어로 기다리면 안 된다 —
     // 메인 스레드가 잠기면 MainActor 작업이 실행될 수 없어 데드락이다.
     // 런루프를 돌려주고 작업 안에서 종료한다.
-    Task { @MainActor in
-        let passed = await SelectionTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await SelectionTest.run() }
 }
 
 // 기술 하나의 턴 로그를 그대로 본다 (구현 확인용)
@@ -250,42 +175,31 @@ if let i = args.firstIndex(of: "--movelog"), args.count > i + 1 {
     let turns = Int(opt("--turns", "3")) ?? 3
     let foeMove = opt("--foe-move", "splash")
     let speed = Int(opt("--speed", "999")) ?? 999
-    Task { @MainActor in
-        let extra = args.firstIndex(of: "--move2").flatMap { j in
-            args.count > j + 1 ? args[j + 1] : nil
-        }
-        let ok = await MoveLog.run(move: move, turns: turns,
-                                   foeMove: foeMove, userSpeed: speed,
-                                   extraMove: extra)
-        exit(ok ? 0 : 1)
+    let extra = args.firstIndex(of: "--move2").flatMap { j in
+        args.count > j + 1 ? args[j + 1] : nil
     }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run {
+        await MoveLog.run(move: move, turns: turns,
+                          foeMove: foeMove, userSpeed: speed, extraMove: extra)
+    }
 }
 
 // Showdown 데이터와 우리 구현을 대조한다 — 뭘 빼먹었는지 데이터가 말해준다
 // 내 로스터 기술이 실제로 작동하는지 하나하나 센다
 if args.contains("--usability") {
-    Task { @MainActor in
-        let ok = await MoveUsabilityAudit.run(verbose: args.contains("--all"))
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await MoveUsabilityAudit.run(verbose: args.contains("--all")) }
 }
 
 if args.contains("--datagap") {
-    Task { @MainActor in
-        let ok = await DataGapAudit.run(verbose: args.contains("--all"))
-        exit(ok ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await DataGapAudit.run(verbose: args.contains("--all")) }
 }
 
 if args.contains("--nettest") {
-    Task {
-        let passed = await NetTest.run()
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await NetTest.run() }
 }
 
 if args.contains("--selftest") {
@@ -305,11 +219,8 @@ if args.contains("--selftest") {
     let lvl = intVal("--level", default: 50)
     let verbose = args.contains("--verbose")
 
-    Task {
-        let passed = await SelfTest.run(speciesA: a, speciesB: b, level: lvl, verbose: verbose)
-        exit(passed ? 0 : 1)
-    }
-    RunLoop.main.run()
+    // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
+    BigStack.run { await SelfTest.run(speciesA: a, speciesB: b, level: lvl, verbose: verbose) }
 }
 
 PokeBattleBarApp.main()

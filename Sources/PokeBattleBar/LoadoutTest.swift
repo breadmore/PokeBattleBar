@@ -3,6 +3,10 @@ import Foundation
 /// `PokeBattleBar --loadouttest`
 /// 지닌 도구와 특성이 배틀 계산에 **실제로** 반영되는지 확인한다.
 /// 매핑만 맞고 엔진이 안 쓰면 의미가 없으므로, 전부 실제 턴을 굴려서 본다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum LoadoutTest {
 
     static func run(verbose: Bool) async -> Bool {

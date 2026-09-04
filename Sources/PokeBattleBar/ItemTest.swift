@@ -2,6 +2,10 @@ import Foundation
 
 /// `PokeBattleBar --itemtest`
 /// PokeAPI 에서 받은 실제 도구 데이터가 배틀 효과로 올바르게 매핑되는지 확인한다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum ItemTest {
     static func run() async -> Bool {
         print("=== 지닌 도구 데이터 검증 ===\n")

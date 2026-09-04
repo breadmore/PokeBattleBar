@@ -3,6 +3,10 @@ import Foundation
 /// `PokeBattleBar --extendedtest`
 /// 날씨 · 접촉 특성 · G-Max 전용기가 실제로 작동하는지 확인한다.
 /// 이 셋은 PokeAPI 에 데이터가 없어 직접 표로 넣은 것들이라, 특히 검증이 필요하다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum ExtendedTest {
 
     static func run() async -> Bool {

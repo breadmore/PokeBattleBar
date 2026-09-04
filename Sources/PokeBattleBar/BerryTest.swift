@@ -2,6 +2,10 @@ import Foundation
 
 /// `PokeBattleBar --berrytest`
 /// 나무열매와 3차 특성(먹보·긴장감·해감액·저주받은바디·트레이스·픽업·무게)을 검증한다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum BerryTest {
     static func run() async -> Bool {
         print("=== 나무열매 · 확장 특성 검증 ===\n")

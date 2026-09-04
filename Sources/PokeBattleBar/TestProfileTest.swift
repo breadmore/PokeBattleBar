@@ -2,6 +2,10 @@ import Foundation
 
 /// 테스트 프로필이 **배포본에 영향을 주지 않는지**, 그리고 두 인스턴스를
 /// 실제로 격리하는지 검증한다.
+/// 검증은 **메인 스레드에서** 돌아야 한다 — 배틀 엔진의 한 턴 계산은
+/// 디버그 빌드에서 스택 프레임이 커서 협조 스레드(512KB)를 넘긴다.
+/// nonisolated async 로 두면 MainActor 에서 불러도 협조 풀로 넘어간다.
+@MainActor
 enum TestProfileTest {
     static func run() async -> Bool {
         print("=== 테스트 프로필 ===\n")
