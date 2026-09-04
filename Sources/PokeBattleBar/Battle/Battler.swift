@@ -116,6 +116,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         var ability: AbilityDef?
         var spriteForm: String?
         var weight: Int
+        var apparentSpeciesID: Int?
     }
 
     /// 쓸 수 있는 도구를 지니고 있는가 (곡예·성원의칼날 판정)
@@ -232,6 +233,17 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     /// 지금 화면에 그려야 할 스프라이트의 폼 이름.
     /// 자동 변신 > 메가·거다이맥스 > 전투 전 선택 순으로 우선한다.
     var spriteForm: String? { autoForm ?? visualForm ?? chosenForm }
+
+    /// **상대에게 보이는 종족.**
+    ///
+    /// 변신한 메타몽은 종족값·기술은 상대 것을 쓰지만 speciesID 는 계속
+    /// 메타몽이다 (금속가루 같은 종족 전용 도구가 그걸 봐야 한다).
+    /// 그래서 스프라이트용 번호를 따로 둔다 — 이게 없으면 변신해도
+    /// 그림이 메타몽으로 남는다. 일루전도 같은 자리를 쓴다.
+    var apparentSpeciesID: Int?
+
+    /// 화면에 그릴 종족 번호
+    var spriteSpeciesID: Int { apparentSpeciesID ?? speciesID }
     /// 다이맥스는 전용 스프라이트가 없으므로 크기로 표현한다
     var spriteScale: CGFloat { isDynamaxed ? 1.35 : 1.0 }
     /// 자동 변신 전 원래 종족값 — 되돌릴 때 쓴다
@@ -371,7 +383,11 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
             let inner = (2 * base.base(s) + iv + ev / 4) * level / 100 + 5
             return max(1, Int(Double(inner) * nature.multiplier(for: s)))
         }
-        let hp = (2 * base.base(.hp) + iv + ev / 4) * level / 100 + level + 10
+        var hp = (2 * base.base(.hp) + iv + ev / 4) * level / 100 + level + 10
+        // 껍질몬처럼 **최대 HP 가 고정된 종족**이 있다. 종족값 공식으로 계산하면
+        // HP 1 이 아니라 정상 체력이 되어 불가사의부적이 무의미해진다.
+        // Showdown 의 pokedex.ts 가 maxHP 로 알려준다 — 손으로 적지 않는다.
+        if let fixed = Showdown.fixedMaxHP(speciesName: base.name) { hp = fixed }
         var m: [Stat: Int] = [:]
         for s in [Stat.attack, .defense, .spAttack, .spDefense, .speed] { m[s] = other(s) }
         return (max(1, hp), m)
@@ -456,7 +472,8 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         // 되돌릴 수 있게 원래 모습을 남긴다
         preTransform = Snapshot(name: name, types: types, stats: stats,
                                 moves: moves, ability: ability,
-                                spriteForm: spriteForm, weight: weight)
+                                spriteForm: spriteForm, weight: weight,
+                                apparentSpeciesID: apparentSpeciesID)
         name = target.name
         types = target.types
         // HP 를 뺀 능력치만 가져온다
@@ -469,6 +486,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         ability = target.ability
         weight = target.weight
         visualForm = target.spriteForm
+        apparentSpeciesID = target.spriteSpeciesID
         isTransformed = true
         formLabel = "변신"
     }
@@ -483,6 +501,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         ability = snap.ability
         weight = snap.weight
         visualForm = snap.spriteForm
+        apparentSpeciesID = snap.apparentSpeciesID
         stages = [:]
         isTransformed = false
         preTransform = nil

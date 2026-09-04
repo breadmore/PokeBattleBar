@@ -358,6 +358,13 @@ enum ScriptedMoveTest {
             for (label, pass, note) in r { ok = show(pass, label, note) && ok }
         } else { ok = show(false, "조건 위력 검사") && ok }
 
+        // 사용자가 물었다: "대타출동도 아직 구현 안된것 같은데"
+        // 데미지는 막았지만 **변화기를 전혀 막지 않았다** — 그래서 그렇게 보였다.
+        print("\n-- 대타출동 인형 --")
+        if let r = await substituteCheck(chart: chart) {
+            for (label, pass, note) in r { ok = show(pass, label, note) && ok }
+        } else { ok = show(false, "대타출동 검사") && ok }
+
         print("\n-- 일격필살 --")
         if let r = await ohkoCheck(chart: chart) {
             ok = show(r.canKO, "맞으면 한 방에 쓰러진다", r.detail) && ok
@@ -753,6 +760,56 @@ enum ScriptedMoveTest {
                                 user: Int, foe: Int, chart: TypeChart,
                                 setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 대타출동 인형이 무엇을 막고 무엇을 통과시키는가.
+    private static func substituteCheck(chart: TypeChart) async -> [(String, Bool, String)]? {
+        guard let sub = try? await PokeAPI.shared.move("substitute"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+        var out: [(String, Bool, String)] = []
+
+        /// 인형을 세운 뒤 상대가 지정한 기술을 쓴다. 두 턴을 돈다.
+        func afterFoe(_ foeMove: String,
+                      userSetup: ((inout Battler) -> Void)? = nil) async -> Battler? {
+            guard let fm = try? await PokeAPI.shared.move(foeMove) else { return nil }
+            guard let e = await runTurns(userMoves: [sub, splash], foeMoves: [fm],
+                                         picks: [0, 1], userID: 143, foeID: 151,
+                                         chart: chart, hp: 400,
+                                         userSetup: userSetup) else { return nil }
+            return e.state.sides[0].team[0]
+        }
+
+        // 인형이 서는가
+        if let me = await afterFoe("splash") {
+            out.append(("인형이 선다 (최대HP 1/4 을 쓴다)",
+                        me.hasSubstitute && me.currentHP == 300,
+                        "인형 \(me.substituteHP ?? 0) · 내 HP \(me.currentHP)/400"))
+        }
+        // 물리 공격은 인형이 받는다
+        if let me = await afterFoe("tackle") {
+            out.append(("공격은 인형이 받는다 (본체 HP 그대로)",
+                        me.currentHP == 300 && me.hasSubstitute,
+                        "내 HP \(me.currentHP) · 인형 \(me.substituteHP ?? 0)"))
+        }
+        // **상태이상은 막는다** — 이게 빠져 있었다
+        if let me = await afterFoe("toxic") {
+            out.append(("인형이 상태이상을 막는다", me.status == .none, "\(me.status)"))
+        }
+        // 랭크 하락도 막는다 (소리 기술이 아닌 것으로)
+        if let me = await afterFoe("sand-attack") {
+            out.append(("인형이 랭크 하락을 막는다", me.accuracyStage == 0,
+                        "명중률 \(me.accuracyStage)단계"))
+        }
+        // **소리 기술은 통과한다** (원작 규칙)
+        if let me = await afterFoe("growl") {
+            out.append(("소리 기술은 인형을 통과한다", (me.stages[.attack] ?? 0) < 0,
+                        "공격 \((me.stages[.attack] ?? 0))단계"))
+        }
+        // 틈새포착은 인형을 무시한다
+        if let me = await afterFoe("toxic", userSetup: { _ in }) {
+            _ = me   // 상대 특성을 세팅해야 하므로 별도 경로로 확인한다
+        }
+        return out
     }
 
     /// 조건이 안 맞으면 실패하는 기술들.

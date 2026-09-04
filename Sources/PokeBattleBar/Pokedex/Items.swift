@@ -318,6 +318,19 @@ actor ItemCatalog {
         "darkinium": .dark,     "steelium": .steel,     "fairium": .fairy
     ]
 
+    /// 전용 Z크리스탈이 어느 종의 것인지 **Showdown 의 itemUser 로** 찾는다.
+    ///
+    /// "Kommo-o" 같은 표시명을 전국번호로 바꿔야 한다. PokeAPI 종 이름은
+    /// 소문자·하이픈이므로 그 형태로 맞춰 도감에서 번호를 얻는다.
+    static func signatureZSpecies(_ bareSlug: String) -> Int? {
+        let users = Showdown.signatureItemUsers(bareSlug)
+        guard let first = users.first else { return nil }
+        // 토템폼 같은 파생은 건너뛰고 원종을 찾는다
+        let base = first.split(separator: "-").first.map(String.init) ?? first
+        let id = Showdown.id(fromPokeAPI: base)
+        return Showdown.dex[id]?.num
+    }
+
     /// 전용 Z크리스탈 → 그 종만 쓸 수 있다.
     /// PokeAPI 는 어느 종의 것인지 구조화해서 주지 않아 표로 둔다.
     static let signatureZ: [String: Int] = [
@@ -437,9 +450,15 @@ actor ItemCatalog {
         }
         // Z크리스탈
         if category == "z-crystals" {
-            let base = slug.replacingOccurrences(of: "-z--held", with: "")
-                           .replacingOccurrences(of: "-z", with: "")
+            let bare = stripHeldSuffix(slug) ?? slug
+            let base = bare.replacingOccurrences(of: "-z", with: "")
             if let t = zPrefix[base] { return .zCrystalType(t) }
+            // **전용 Z 는 데이터에서 종을 찾는다.**
+            //
+            // 예전에는 signatureZ 표를 손으로 적어뒀고, 코모참프·루가루간이
+            // 빠져 실전 세팅 3개가 조용히 무시됐다 (도구가 .none 이 되면
+            // 목록에서 숨고, 세팅 적용도 그냥 넘어간다).
+            if let sid = signatureZSpecies(bare) { return .zCrystalSignature(species: sid) }
             if let sid = signatureZ[base] { return .zCrystalSignature(species: sid) }
             return .none
         }
@@ -627,6 +646,14 @@ actor ItemCatalog {
             }
         }
 
+        // **카테고리만 믿으면 안 된다.**
+        //
+        // PokeAPI 의 z-crystals 카테고리에는 29개뿐이고 코모참프(kommonium-z)와
+        // 루가루간(lycanium-z)이 빠져 있다 — 개별 조회는 되는데 목록에 없다.
+        // 그래서 실전 세팅 3개의 Z크리스탈이 조용히 무시됐다.
+        // Showdown 쪽 Z크리스탈 목록에서 이름을 만들어 보탠다.
+        names.formUnion(Self.zCrystalNamesFromShowdown())
+
         for n in names {
             guard var d = await load(n) else { continue }
             // PokeAPI 는 Z크리스탈을 "firium-z--held" 로 준다.
@@ -637,6 +664,20 @@ actor ItemCatalog {
         }
         items = out
         loaded = true
+    }
+
+    /// Showdown 의 Z크리스탈 목록에서 PokeAPI 도구 이름을 만든다.
+    ///
+    /// Showdown id 는 하이픈이 없다("kommoniumz"). PokeAPI 는
+    /// "kommonium-z--held" 를 쓴다 — 끝의 z 앞에 하이픈을 넣고 접미사를 붙인다.
+    static func zCrystalNamesFromShowdown() -> [String] {
+        Showdown.items.compactMap { id, it in
+            guard it.zMoveType != nil || it.itemUser != nil else { return nil }
+            guard id.hasSuffix("z"), id.count > 1 else { return nil }
+            let base = String(id.dropLast())
+            guard base.hasSuffix("ium") else { return nil }   // …ium + z 형태만
+            return "\(base)-z--held"
+        }
     }
 
     /// "firium-z--held" -> "firium-z". 접미사가 없으면 nil.

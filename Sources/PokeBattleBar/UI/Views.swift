@@ -928,22 +928,27 @@ struct MovePickerSheet: View {
                     .font(.headline)
                 Spacer()
                 Text("\(picked.count)/4").font(.callout.bold())
-                    .foregroundStyle(picked.count == 4 ? .green : .secondary)
+                    .foregroundStyle(picked.count == 4 ? GB.hilite : GB.ink.opacity(0.55))
             }
             HStack(spacing: 6) {
                 Text("배울 수 있는 기술 \(all.count)개 — 4개까지")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(GB.ink.opacity(0.6))
                 if !recommended.isEmpty {
                     Text("⭐ 실전 추천 \(recommended.count)개 (맨 위)")
-                        .font(.caption).foregroundStyle(.orange)
-                    Button("추천으로 채우기") {
+                        .font(.caption).foregroundStyle(GB.ink.opacity(0.75))
+                    GBSheetButton("추천으로 채우기") {
                         picked = Array(model.recommendedMoveNames(for: slot).prefix(4))
                     }
-                    .font(.caption)
                 }
             }
 
-            TextField("기술 이름 검색", text: $search).textFieldStyle(.roundedBorder)
+            TextField("기술 이름 검색", text: $search)
+                .textFieldStyle(.plain)
+                .font(.callout)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 6).fill(GB.plateHi))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke(GB.ink.opacity(0.18), lineWidth: 1))
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -964,18 +969,25 @@ struct MovePickerSheet: View {
                 }
             }
             .frame(height: 340)
+            .background(RoundedRectangle(cornerRadius: 8).fill(GB.plateHi.opacity(0.6)))
 
             HStack {
-                Button("전부 지우기") { picked = [] }
+                GBSheetButton("전부 지우기") { picked = [] }
                 Spacer()
-                Button("취소") { dismiss() }
-                Button("적용") { onDone(picked); dismiss() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(picked.isEmpty)
+                GBSheetButton("취소") { dismiss() }
+                GBSheetButton("적용", kind: .primary) {
+                    guard !picked.isEmpty else { return }
+                    onDone(picked)
+                    dismiss()
+                }
+                .opacity(picked.isEmpty ? 0.45 : 1)
             }
         }
         .padding(16)
         .frame(width: 460)
+        // 배경만 칠하면 다크모드 기본 글자색(흰색)이 그대로 나와 안 보인다.
+        // gbSurface 가 글자색·강조색·명암을 함께 맞춘다.
+        .gbSurface(GB.plate)
         .onAppear { picked = current.map(\.name) }
     }
 
@@ -989,7 +1001,7 @@ struct MovePickerSheet: View {
         var body: some View {
             HStack(spacing: 6) {
                 Image(systemName: isPicked ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(isPicked ? Color.accentColor : .secondary)
+                    .foregroundStyle(isPicked ? GB.hilite : GB.ink.opacity(0.35))
                 if isRecommended {
                     Text("⭐").font(.system(size: 9))
                 }
@@ -999,14 +1011,16 @@ struct MovePickerSheet: View {
                 if let d = def {
                     Text(d.type.ko).font(.system(size: 9))
                         .padding(.horizontal, 4)
-                        .background(Capsule().fill(.tertiary))
+                        .background(Capsule().fill(GB.ink.opacity(0.12)))
                     Text(d.damageClass == .status ? "변화"
                          : (d.damageClass == .physical ? "물리" : "특수"))
-                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                        .font(.system(size: 9)).foregroundStyle(GB.ink.opacity(0.6))
                     if let p = d.power, p > 0 {
-                        Text("위력 \(p)").font(.system(size: 9)).foregroundStyle(.secondary)
+                        Text("위력 \(p)").font(.system(size: 9))
+                            .foregroundStyle(GB.ink.opacity(0.6))
                     }
-                    Text("PP \(d.pp)").font(.system(size: 9)).foregroundStyle(.tertiary)
+                    Text("PP \(d.pp)").font(.system(size: 9))
+                        .foregroundStyle(GB.ink.opacity(0.45))
                 } else {
                     ProgressView().controlSize(.mini)
                 }
@@ -1014,7 +1028,7 @@ struct MovePickerSheet: View {
             }
             .padding(.vertical, 2).padding(.horizontal, 4)
             .background(RoundedRectangle(cornerRadius: 4)
-                .fill(isPicked ? Color.accentColor.opacity(0.12) : .clear))
+                .fill(isPicked ? GB.hilite.opacity(0.15) : .clear))
             .contentShape(Rectangle())
             .onTapGesture(perform: onTap)
         }
@@ -1657,7 +1671,7 @@ struct BattlerCard: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            SpriteView(speciesID: battler.speciesID, shiny: battler.isShiny, size: 76,
+            SpriteView(speciesID: battler.spriteSpeciesID, shiny: battler.isShiny, size: 76,
                        form: battler.spriteForm)
                 .opacity(battler.isFainted ? 0.3 : 1)
             Text(battler.name).font(.caption.bold())

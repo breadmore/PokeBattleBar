@@ -116,6 +116,29 @@ enum SmogonSetTest {
         ok = show(m.roster.map(\.nature) == before, "성격이 그대로다",
                   "\(Set(before))") && ok
 
+        // 사용자 제보: "실전추천하면 z기술이 미반영 된대"
+        //
+        // Z크리스탈은 PokeAPI 가 "electrium-z--held" 로 주는데 세팅은
+        // "Electrium Z" 로 적는다. 이름이 어긋나면 도구가 **조용히** 안 붙는다.
+        print("\n-- Z크리스탈 세팅이 실제로 붙는가 --")
+        var zCount = 0, zResolved = 0
+        var missing: [String] = []
+        for (speciesName, sets) in SmogonSets.allByCatalog {
+            for set in sets {
+                guard let want = set.itemID, want.hasSuffix("-z") else { continue }
+                zCount += 1
+                if await ItemCatalog.shared.item(want) != nil {
+                    zResolved += 1
+                } else if missing.count < 8 {
+                    missing.append("\(speciesName)/\(set.name): \(want)")
+                }
+            }
+        }
+        ok = show(zCount > 0, "Z크리스탈 세팅이 데이터에 있다", "\(zCount)개") && ok
+        ok = show(zResolved == zCount, "Z크리스탈 이름이 모두 카탈로그에 있다",
+                  missing.isEmpty ? "\(zResolved)/\(zCount)"
+                                  : "못 찾음: \(missing.joined(separator: ", "))") && ok
+
         print(ok ? "\n✓ 통과" : "\n✗ 실패 항목 있음")
         return ok
     }

@@ -14,7 +14,11 @@ cd "$(dirname "$0")/.."
 OUT="Sources/PokeBattleBar/Generated/SmogonSets.swift"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 
-FORMATS="gen71v1 gen51v1 gen91v1 gen5ou gen5uu gen5ubers gen4ou gen3ou gen2ou gen9ou gen8ou gen7ou gen6ou"
+# 1대1 포맷을 **전부** 넣는다.
+#
+# 이 게임이 1대1 인데 gen81v1(132종)·gen61v1(82종)이 빠져 있었다 —
+# 두 세대분 1대1 세팅을 그냥 놓치고 있었다. gen41v1 은 존재하지 않는다(404).
+FORMATS="gen91v1 gen81v1 gen71v1 gen61v1 gen51v1 gen5ou gen5uu gen5ubers gen4ou gen3ou gen2ou gen9ou gen8ou gen7ou gen6ou"
 
 echo "==> 내려받기"
 for f in $FORMATS; do
@@ -26,22 +30,35 @@ for f in $FORMATS; do
 done
 
 echo "==> 합치기"
-python3 - "$TMP" "$OUT" <<'PY'
-import json, os, sys, glob
+python3 - "$TMP" "$OUT" "$FORMATS" <<'PY'
+import json, os, re, sys, glob
 
 tmp, out = sys.argv[1], sys.argv[2]
 
-# 포맷 이름을 화면에 보여줄 한글 라벨로
-LABEL = {
-    'gen71v1': '7세대 1대1', 'gen51v1': '5세대 1대1', 'gen91v1': '9세대 1대1',
-    'gen5ou': '5세대 OU', 'gen5uu': '5세대 UU', 'gen5ubers': '5세대 Ubers',
-    'gen4ou': '4세대 OU', 'gen3ou': '3세대 OU', 'gen2ou': '2세대 OU',
-    'gen9ou': '9세대 OU', 'gen8ou': '8세대 OU', 'gen7ou': '7세대 OU',
-    'gen6ou': '6세대 OU',
-}
-# 1대1 포맷을 먼저 보여준다 (우리 배틀이 1대1 이다)
-ORDER = ['gen71v1', 'gen51v1', 'gen91v1', 'gen5ou', 'gen5uu', 'gen5ubers',
-         'gen4ou', 'gen3ou', 'gen2ou', 'gen9ou', 'gen8ou', 'gen7ou', 'gen6ou']
+# **받는 목록과 합치는 목록이 갈라지지 않게** FORMATS 를 그대로 받는다.
+#
+# 예전에는 여기에 ORDER 를 손으로 또 적어놨다. 그래서 FORMATS 에
+# gen81v1 을 추가해도 파일만 내려받고 합치기에서 조용히 빠졌다.
+FORMATS = sys.argv[3].split()
+
+def label(fmt):
+    """gen81v1 -> "8세대 1대1", gen5uu -> "5세대 UU" """
+    m = re.match(r'gen(\d+)(.+)', fmt)
+    if not m:
+        return fmt
+    gen, rest = m.group(1), m.group(2)
+    kind = {'1v1': '1대1', 'ou': 'OU', 'uu': 'UU', 'ubers': 'Ubers'}.get(rest, rest.upper())
+    return f'{gen}세대 {kind}'
+
+LABEL = {f: label(f) for f in FORMATS}
+# 1대1 포맷을 먼저 보여준다 (우리 배틀이 1대1 이다).
+# 같은 종류 안에서는 최신 세대가 앞에 온다.
+def sort_key(f):
+    m = re.match(r'gen(\d+)(.+)', f)
+    gen = int(m.group(1)) if m else 0
+    is1v1 = 0 if (m and m.group(2) == '1v1') else 1
+    return (is1v1, -gen)
+ORDER = sorted(FORMATS, key=sort_key)
 
 def slot_options(m):
     """기술 한 칸. 문자열이거나 대안 목록이다."""

@@ -38,7 +38,7 @@ struct SmogonSet: Sendable, Identifiable, Hashable {
 }
 
 enum SmogonSets {
-    private static let store: [String: [SmogonSet]] = {
+    static let store: [String: [SmogonSet]] = {
         guard let data = SmogonSetsData.json.data(using: .utf8),
               let raw = try? JSONSerialization.jsonObject(with: data) as? [String: [[String: Any]]]
         else { return [:] }
@@ -103,4 +103,11 @@ enum SmogonSets {
     /// 데이터가 실제로 들어왔는지 (테스트용)
     static var speciesCount: Int { store.count }
     static var setCount: Int { store.values.reduce(0) { $0 + $1.count } }
+}
+
+extension SmogonSets {
+    /// 종 이름 → 세팅 전체. 검증이 훑는 데 쓴다.
+    static var allByCatalog: [(String, [SmogonSet])] {
+        store.map { ($0.key, $0.value) }
+    }
 }

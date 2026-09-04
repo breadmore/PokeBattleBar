@@ -1304,6 +1304,24 @@ struct BattleEngine {
         // Z기술 / 맥스기술 변환. 위력은 PokeAPI 가 주지 않으므로 원작 변환표를 쓴다.
         var move = transformed(baseMove, attacker: attacker)
 
+        // 심판의뭉치·멀티어택·테크노버스터 — 지닌 도구가 타입을 정한다
+        if state.rules.itemEffects,
+           let t = Showdown.signatureMoveType(move: move.name,
+                                              holderTypes: atk.types,
+                                              heldItem: atk.itemConsumed ? nil : atk.heldItem?.name),
+           move.type != t {
+            move.type = t
+        }
+
+        // 잠재파워 — 타입이 **개성치로 정해진다.**
+        //
+        // 우리는 개성치를 전부 31 로 쓰므로 원작 공식(하위 비트 조합)에 넣으면
+        // 악 타입이 된다. PokeAPI 는 잠재파워를 노말 60 으로만 주기 때문에,
+        // 이걸 안 넣으면 노말 기술로 나가 고스트에게 통하지 않는다.
+        if move.name == "hidden-power" {
+            move.type = Self.hiddenPowerType(ivs: 31)
+        }
+
         // 에어레이트·페어리스킨·노말스킨 — 기술의 **타입 자체가** 바뀐다.
         // 데미지 계산 전에 바꿔야 상성표가 새 타입으로 돌아간다.
         if state.rules.abilities, move.damageClass != .status,
@@ -1559,6 +1577,24 @@ struct BattleEngine {
             say("\(d.name)는 정화의소금으로 상태이상을 막았다!")
             return
         }
+        // **대타출동 인형은 상대의 변화기를 막는다.**
+        //
+        // 인형이 데미지만 흡수하고 상태이상·랭크하락은 그대로 통과했다 —
+        // 그래서 "대타출동이 구현 안 된 것 같다" 로 보였다.
+        //
+        // 통과하는 예외가 세 가지 있다 (원작):
+        //  - 소리 기술 (울음소리·잠재의힘 …)
+        //  - 틈새포착(인필트레이터) 특성
+        //  - 자기 자신에게 쓰는 기술
+        if move.damageClass == .status, !move.targetsSelf,
+           state.side(defender).active.hasSubstitute,
+           !MoveFlags.isSound(move.name),
+           !isInfiltrator(atk) {
+            say("\(state.side(defender).active.name)의 인형이 막아냈다!")
+            noteMoveUsed(attacker, moveIndex: moveIndex, failed: true)
+            return
+        }
+
         // 안전고글 — 가루 기술을 막는다
         if state.rules.itemEffects, MoveFlags.isPowder(move.name),
            case .safetyGoggles = state.side(defender).active.itemKind {
@@ -2807,7 +2843,8 @@ struct BattleEngine {
 
         // 화면 — 리플렉터·빛의장막·오로라베일이 데미지를 절반으로 줄인다.
         // **급소에는 무시된다** (원작 규칙).
-        if !critical {
+        // 리플렉터·빛의장막·오로라베일 — 급소에는 무효, 틈새포착은 관통한다
+        if !critical, !isInfiltrator(a) {
             let foeSide = s(defender)
             if move.damageClass == .physical, foeSide.halvesPhysical { extra *= 0.5 }
             if move.damageClass == .special, foeSide.halvesSpecial { extra *= 0.5 }
@@ -3150,6 +3187,23 @@ struct BattleEngine {
         say("\(b.name)는 \(wantBlade ? "블레이드" : "실드") 폼이 되었다!")
     }
 
+    /// 잠재파워의 타입. 원작 공식이다.
+    ///
+    /// HP·공격·방어·스피드·특공·특방 개성치의 **최하위 비트**를 순서대로
+    /// 모아 만든 0…15 를 타입 표에 넣는다. 개성치가 모두 31(홀수)이면
+    /// 여섯 비트가 다 1 이라 15 — 악 타입이다.
+    static func hiddenPowerType(ivs: Int) -> PType {
+        let bit = ivs % 2
+        let index = bit * 1 + bit * 2 + bit * 4 + bit * 8   // 하위 4비트만으로 충분하다
+        return hiddenPowerTypes[min(index, hiddenPowerTypes.count - 1)]
+    }
+
+    /// 잠재파워 타입 표 (원작 순서). 노말과 페어리는 나오지 않는다.
+    static let hiddenPowerTypes: [PType] = [
+        .fighting, .flying, .poison, .ground, .rock, .bug, .ghost, .steel,
+        .fire, .water, .grass, .electric, .psychic, .ice, .dragon, .dark,
+    ]
+
     /// 이 기술이 실제로 갖는 우선도. 여왕의위엄이 이걸 본다.
     /// 짓궂은마음·질풍날개로 올라간 우선도도 선공으로 취급된다.
     private func effectivePriority(_ move: MoveDef, attacker: Battler) -> Int {
@@ -3163,6 +3217,13 @@ struct BattleEngine {
             }
         }
         return p
+    }
+
+    /// 틈새포착 — 리플렉터·빛의장막·대타출동 인형을 무시한다
+    private func isInfiltrator(_ b: Battler) -> Bool {
+        guard state.rules.abilities else { return false }
+        if case .infiltrator = b.abilityKind { return true }
+        return false
     }
 
     /// 원격(롱리치) — 접촉 판정이 붙지 않는다.

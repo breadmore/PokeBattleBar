@@ -653,9 +653,25 @@ final class AppModel {
                     }
                 }
             }
+            // 아르세우스·실버디 — **지닌 도구가 타입과 폼을 바꾼다.**
+            // 폼을 따로 고르지 않아도 플레이트/메모리만 들면 그 타입이 된다.
+            var effectiveForm = formStats
+            var effectiveFormName = formName
+            if let itemName = item?.name,
+               let hit = Showdown.typeFromFormItem(itemName),
+               !hit.form.hasPrefix("genesect"),          // 게노세크트는 타입이 안 바뀐다
+               hit.form.hasPrefix(sp.name) {
+                if formCache[hit.form] == nil {
+                    formCache[hit.form] = try? await PokeAPI.shared.form(named: hit.form)
+                }
+                if let f = formCache[hit.form] {
+                    effectiveForm = f
+                    effectiveFormName = hit.form
+                }
+            }
             out.append(Battler.make(slot: slot, species: sp, moves: legalMoves,
                                     level: rules.level, heldItem: item, ability: ability,
-                                    form: formStats, formName: formName))
+                                    form: effectiveForm, formName: effectiveFormName))
         }
         return out
     }
@@ -1037,8 +1053,24 @@ final class AppModel {
     /// 세팅은 걸러낸다 (다른 세대 전용 기술로만 짜인 경우가 있다).
     func smogonSets(for slot: RosterSlot) -> [SmogonSet] {
         guard let sp = rosterSpecies[slot.speciesID] else { return [] }
-        let learnable = Set(sp.learnableMoves)
-        return SmogonSets.sets(forSpeciesName: sp.name).filter { set in
+
+        // **고른 폼의 세팅을 보여준다.**
+        //
+        // 로토무 워시와 로토무는 실전 세팅이 전혀 다르다. 폼을 바꿔놓고
+        // 원종 세팅만 보여주면 못 쓰는 기술이 잔뜩 나온다.
+        // 폼 세팅이 없으면 원종으로 되돌아간다 (지역폼 일부는 세팅이 없다).
+        let form = loadouts[slot.id]?.form
+        var sets = form.map { SmogonSets.sets(forSpeciesName: $0) } ?? []
+        if sets.isEmpty { sets = SmogonSets.sets(forSpeciesName: sp.name) }
+
+        // 그 폼이 배울 수 있는 기술로 걸러낸다
+        let learnable: Set<String> = {
+            if let form, let f = formCache[form], !f.learnableMoves.isEmpty {
+                return f.learnableMoves
+            }
+            return Set(sp.learnableMoves)
+        }()
+        return sets.filter { set in
             set.allMoveOptions.contains { opts in opts.contains { learnable.contains($0) } }
         }
     }

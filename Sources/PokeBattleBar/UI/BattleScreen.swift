@@ -284,7 +284,7 @@ struct GBStageMon: View {
 
     var body: some View {
         VStack(spacing: -spriteSize * 0.12) {
-            SpriteView(speciesID: b.speciesID, shiny: b.isShiny, size: spriteSize,
+            SpriteView(speciesID: b.spriteSpeciesID, shiny: b.isShiny, size: spriteSize,
                        form: b.spriteForm, scale: b.spriteScale)
                 // 필드에서 벗어난 동안은 눈에 보이지 않아야 한다 —
                 // 그러지 않으면 왜 공격이 빗나가는지 알 수가 없다

@@ -447,3 +447,83 @@ extension Showdown {
         return ""
     }
 }
+
+extension Showdown {
+    /// 최대 HP 가 고정된 종족의 값 (껍질몬 = 1).
+    ///
+    /// 종족값 공식으로 계산하면 껍질몬도 정상 체력이 되어 불가사의부적이
+    /// 무의미해진다. 목록을 손으로 적지 않고 pokedex.ts 에서 읽는다.
+    static func fixedMaxHP(speciesName: String) -> Int? {
+        dex[id(fromPokeAPI: speciesName)]?.maxHP
+    }
+
+    /// 다이맥스로 HP 를 늘려도 되는 종족인가.
+    /// 최대 HP 가 고정된 종족(껍질몬)은 늘리면 안 된다.
+    static func canScaleMaxHP(speciesName: String) -> Bool {
+        fixedMaxHP(speciesName: speciesName) == nil
+    }
+}
+
+extension Showdown {
+    /// **도구가 타입과 폼을 정하는 종족.**
+    ///
+    /// 아르세우스(플레이트)·실버디(메모리)는 지닌 도구가 자기 타입까지 바꾼다.
+    /// 게노세크트(드라이브)는 자기 타입은 그대로고 테크노버스터의 타입만 바뀐다.
+    ///
+    /// 표를 손으로 적지 않는다 — Showdown 의 `onPlate` 와 `itemUser` 가 알려준다.
+    /// ("Silvally-Bug" 이라는 itemUser 하나로 폼과 타입이 동시에 정해진다)
+    static func typeFromFormItem(_ itemName: String) -> (form: String, type: PType)? {
+        let it = item(itemName)
+        // 플레이트: onPlate 에 타입 이름이 그대로 있다
+        if let plate = it?.plateType, let t = PType(rawValue: plate.lowercased()) {
+            return (form: "arceus-\(plate.lowercased())", type: t)
+        }
+        // 메모리·드라이브: itemUser 가 "Silvally-Bug" 처럼 폼 이름을 준다
+        guard let user = it?.itemUser?.first else { return nil }
+        let parts = user.split(separator: "-")
+        guard parts.count >= 2,
+              let t = PType(rawValue: parts[1].lowercased()) else { return nil }
+        return (form: user.lowercased(), type: t)
+    }
+
+    /// 지닌 도구로 타입이 정해지는 **전용기**의 타입.
+    ///
+    /// 심판의뭉치·멀티어택은 쓰는 쪽의 타입을 따라간다 (플레이트·메모리가
+    /// 이미 타입을 바꿔놓았다). 테크노버스터만 도구를 직접 봐야 한다 —
+    /// 게노세크트의 타입은 벌레/강철로 그대로이기 때문이다.
+    static func signatureMoveType(move: String, holderTypes: [PType],
+                                  heldItem: String?) -> PType? {
+        switch move {
+        case "judgment", "multi-attack":
+            return holderTypes.first
+        case "techno-blast":
+            guard let heldItem, let hit = typeFromFormItem(heldItem),
+                  hit.form.hasPrefix("genesect") else { return nil }
+            return hit.type
+        default:
+            return nil
+        }
+    }
+}
+
+extension Showdown {
+    /// 전용 Z크리스탈이 **어느 종의 것인가** (Showdown 이름 목록).
+    ///
+    /// 예전에는 이 표를 손으로 적어뒀다. 그래서 코모참프(kommonium-z)와
+    /// 루가루간(lycanium-z)이 빠져 실전 세팅 3개가 조용히 무시됐다 —
+    /// 도구가 카탈로그에 없으면 `.none` 이 되어 목록에서도 숨는다.
+    /// `itemUser` 가 이미 알려주므로 데이터에서 읽는다.
+    static func signatureItemUsers(_ itemName: String) -> [String] {
+        item(itemName)?.itemUser ?? []
+    }
+
+    /// 전용 Z크리스탈·전용 도구 전체 (도구 id → 쓸 수 있는 종 이름들)
+    static var itemUserTable: [String: [String]] {
+        var out: [String: [String]] = [:]
+        for (id, it) in items {
+            guard let users = it.itemUser, !users.isEmpty else { continue }
+            out[id] = users
+        }
+        return out
+    }
+}
