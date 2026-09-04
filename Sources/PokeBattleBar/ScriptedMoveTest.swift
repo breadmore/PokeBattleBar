@@ -227,6 +227,28 @@ enum ScriptedMoveTest {
         ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
                   "\(rechargeChecked)개") && ok
 
+        // MARK: 승부가 나는 시점
+        //
+        // 원작 규칙: 쓰러진 포켓몬은 행동하지 않고, 한쪽이 전멸하면 **그 자리에서**
+        // 배틀이 끝난다 — 턴 종료 지속 데미지(독·화상)도 돌지 않는다.
+        // 이게 어긋나면 이겨야 할 배틀이 무승부가 된다.
+        print("\n-- 쓰러뜨린 뒤 승부 --")
+        if let r = await knockoutTiming(poisonedWinner: false, chart: chart) {
+            ok = show(r.finished, "마지막 상대를 쓰러뜨리면 그 자리에서 끝난다", r.detail) && ok
+            ok = show(r.winnerIsMe, "내가 이긴 것으로 기록된다", r.detail) && ok
+            ok = show(!r.foeActed, "쓰러진 상대는 반격하지 않는다",
+                      r.foeActed ? "반격 로그가 있다" : "반격 없음") && ok
+        } else { ok = show(false, "쓰러뜨리기 검사") && ok }
+
+        print("\n-- 독에 걸린 채로 이겼을 때 --")
+        // 이겼는데 턴 종료 독 데미지로 내가 죽어 무승부가 되면 안 된다
+        if let r = await knockoutTiming(poisonedWinner: true, chart: chart) {
+            ok = show(r.winnerIsMe, "독에 걸려 있어도 이긴 것으로 기록된다", r.detail) && ok
+            ok = show(!r.drew, "무승부가 되지 않는다", r.detail) && ok
+            ok = show(r.myHPAfter > 0, "이긴 뒤에 독으로 죽지 않는다",
+                      "내 HP \(r.myHPAfter)") && ok
+        } else { ok = show(false, "독 상태 승리 검사") && ok }
+
         // MARK: 원시회귀 — 구슬을 지니면 등장할 때 자동으로 바뀐다
         print("\n-- 원시회귀 --")
         if let r = await primalCheck(speciesID: 383, orb: "red-orb",
@@ -549,6 +571,69 @@ enum ScriptedMoveTest {
                                 user: Int, foe: Int, chart: TypeChart,
                                 setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 마지막 상대를 쓰러뜨렸을 때 승부가 어떻게 나는지 본다.
+    ///
+    /// - Parameter poisonedWinner: 이기는 쪽이 독에 걸린 상태인가.
+    ///   턴 종료 독 데미지가 승리 뒤에 돌면 무승부가 되어버린다.
+    private static func knockoutTiming(poisonedWinner: Bool, chart: TypeChart) async -> (
+        finished: Bool, winnerIsMe: Bool, drew: Bool, foeActed: Bool,
+        myHPAfter: Int, detail: String
+    )? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+
+        func make(_ tag: String, speed: Int, hp: Int, poisoned: Bool) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: [tackle], level: 50)
+            b.moves[0].ppLeft = 99
+            b.stats[.speed] = speed
+            b.maxHP = hp
+            b.currentHP = hp
+            if poisoned { b.status = .poison }
+            return b
+        }
+
+        // 나: 빠르고 한 방에 죽일 수 있다. 독에 걸렸다면 HP 를 아슬아슬하게 둔다.
+        //     (독 데미지는 최대 HP 의 1/8 이므로 8 이면 죽는다)
+        let myHP = poisonedWinner ? 8 : 300
+        let me = make("h", speed: 999, hp: myHP, poisoned: poisonedWinner)
+        // 상대: 느리고 한 방에 죽는다
+        let foe = make("g", speed: 1, hp: 1, poisoned: false)
+
+        var rules = BattleRules(maxTeamSize: 1, level: 50)
+        rules.statusEffects = true
+        var st = BattleState(rules: rules,
+                             sides: [SideState(playerName: "나", team: [me], activeIndex: 0),
+                                     SideState(playerName: "상대", team: [foe], activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 5)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        let logBefore = e.state.log.count
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let lines = Array(e.state.log[logBefore...])
+
+        var finished = false, winner: Int??  = nil
+        if case .finished(let w) = e.state.phase { finished = true; winner = w }
+
+        // 상대가 행동했는가 — 쓰러진 뒤 반격하면 로그에 두 번째 몸통박치기가 남는다
+        let attackLines = lines.filter { $0.contains("몸통박치기") }
+        let foeActed = attackLines.count > 1
+
+        let w = winner ?? nil
+        let hpLeft = e.state.sides[0].team[0].currentHP
+        return (finished,
+                w == BattleSide.host.rawValue,
+                finished && w == nil,
+                foeActed,
+                hpLeft,
+                "종료=\(finished) 승자=\(w.map(String.init) ?? "무승부") 내HP=\(hpLeft)"
+                + " 공격로그=\(attackLines.count)")
     }
 
     /// 원시회귀가 등장할 때 발동하는지 본다

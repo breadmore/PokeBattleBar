@@ -24,7 +24,8 @@ enum BugSweep {
         print("종 \(pool.count)개 / 배틀 \(battles)회 / 전 기능 ON\n")
 
         var violations: [Violation: Int] = [:]
-        var turnsTotal = 0, finished = 0, stalled = 0
+        var turnsTotal = 0
+        var draws = 0, finished = 0, stalled = 0
         var rng = SystemRandomNumberGenerator()
 
         for battleNo in 1...battles {
@@ -95,6 +96,9 @@ enum BugSweep {
                 if case .finished = e.state.phase { break }
             }
             turnsTotal += turns
+            // 무승부는 **양쪽이 동시에 전멸**할 때만 나온다 (자폭·반동·생명의구슬).
+            // 자주 나오면 승패 판정에 문제가 있다는 뜻이므로 비율을 본다.
+            if case .finished(let w) = e.state.phase, w == nil { draws += 1 }
             if case .finished = e.state.phase { finished += 1 } else {
                 stalled += 1
                 violations[Violation(rule: "배틀이 \(cap)턴 안에 끝나지 않음",
@@ -105,6 +109,8 @@ enum BugSweep {
 
         // 결과
         print("배틀 \(battles)회 / 총 \(turnsTotal)턴 / 정상 종료 \(finished) / 미종료 \(stalled)")
+        let drawPct = finished > 0 ? draws * 100 / finished : 0
+        print("무승부 \(draws)회 (\(drawPct)%) — 양쪽이 동시에 전멸한 경우")
         print("평균 \(turnsTotal / max(1, battles))턴\n")
 
         if violations.isEmpty {

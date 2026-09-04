@@ -71,6 +71,10 @@ struct MenuBarContent: View {
 
             Divider()
 
+            Button("대전기록 보기") {
+                showWindow()
+                model.wantsHistory = true
+            }
             Text("전적 \(model.record.wins)승 \(model.record.losses)패"
                  + (model.record.draws > 0 ? " \(model.record.draws)무" : "")
                  + " · \(model.record.points)P"

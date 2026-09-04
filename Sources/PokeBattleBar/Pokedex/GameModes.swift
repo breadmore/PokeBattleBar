@@ -7,7 +7,12 @@ enum GameModes {
     enum Metronome {
         static let speciesID = 175          // 토게피
         static let move = "metronome"       // 손가락흔들기
-        static let item = "life-orb"        // 생명의구슬
+        /// 진화의휘석 — 방어·특방 1.5배. **반동이 없다.**
+        ///
+        /// 예전에는 생명의구슬이었는데, 매 공격마다 최대 HP 의 1/10 을 잃어
+        /// 양쪽이 동시에 쓰러지는 일이 잦았다 (무승부 10%).
+        /// 휘석은 능력치만 올리므로 순수하게 손가락흔들기 운으로 승부가 난다.
+        static let item = "eviolite"
         static let nature = "serious"       // 중립 성격 — 순수하게 손가락흔들기 운으로만
     }
 

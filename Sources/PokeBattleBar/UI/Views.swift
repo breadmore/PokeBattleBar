@@ -92,6 +92,8 @@ struct LoadingView: View {
 
 struct LobbyView: View {
     @Bindable var model: AppModel
+    /// 대전기록 창
+    @State private var showHistory = false
 
     var body: some View {
         ScrollView {
@@ -111,6 +113,13 @@ struct LobbyView: View {
             }
             .padding(18)
         }
+        .sheet(isPresented: $showHistory) {
+            HistoryView(model: model)
+        }
+        // 상단 탭에서 눌렀을 때도 열린다
+        .onChange(of: model.wantsHistory) { _, want in
+            if want { showHistory = true; model.wantsHistory = false }
+        }
     }
 
     private var header: some View {
@@ -126,7 +135,11 @@ struct LobbyView: View {
             }
             Spacer()
             UpdateButton(model: model)
-            RecordBadge(record: model.record)
+            Button { showHistory = true } label: {
+                RecordBadge(record: model.record)
+            }
+            .buttonStyle(.plain)
+            .help("대전기록 보기 — 무엇으로 싸웠고 누가 끝까지 남았는지")
             VStack(alignment: .trailing, spacing: 3) {
                 Text("내 이름").font(.system(size: 10, weight: .bold))
                     .foregroundStyle(GB.inkSoft)
