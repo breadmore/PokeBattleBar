@@ -102,6 +102,13 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var perishTurns: Int = 0
     /// 옷무늬·아이스페이스의 한 번 방어를 이미 썼는가
     var shieldUsed: Bool = false
+    /// 이번 턴에 받은 데미지와 그 분류 — 카운터·미러코트가 본다
+    var damageTakenThisTurn: Int = 0
+    var damageClassTakenThisTurn: DamageClass = .status
+    /// 금제 — 도구가 작동하지 않는 남은 턴
+    var embargoTurns: Int = 0
+    /// 꿰뚫어보기·미라클아이로 간파됐는가 (회피율 상승 무시)
+    var identified: Bool = false
     /// 변신한 상태인가 (두 번 변신할 수 없다)
     var isTransformed: Bool = false
     /// 변신 전 모습. 되돌릴 때 쓴다.
@@ -119,8 +126,17 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         var apparentSpeciesID: Int?
     }
 
-    /// 쓸 수 있는 도구를 지니고 있는가 (곡예·성원의칼날 판정)
-    var hasUsableItem: Bool { heldItem != nil && !itemConsumed }
+    /// 쓸 수 있는 도구를 지니고 있는가 (곡예·성원의칼날 판정).
+    /// 금제(embargo)나 서투름(klutz) 중에는 도구가 없는 것으로 취급한다.
+    var hasUsableItem: Bool {
+        heldItem != nil && !itemConsumed && embargoTurns == 0 && !isKlutz
+    }
+
+    /// 서투름 — 자기 도구가 작동하지 않는다
+    var isKlutz: Bool {
+        if case .klutz = abilityKind { return true }
+        return false
+    }
 
     /// **땅에 발이 닿아 있는가.** 필드(일렉트릭필드 등)는 땅에 닿은 쪽에만 걸린다.
     ///
@@ -265,6 +281,9 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     /// 지닌 도구의 효과 (소비됐으면 없음)
     var itemKind: ItemKind {
+        // 금제·서투름 중에는 도구가 아무 일도 하지 않는다.
+        // 여기서 한 번에 막아야 모든 계산이 일관되게 "도구 없음" 으로 돈다.
+        guard embargoTurns == 0, !isKlutz else { return .none }
         guard let heldItem, !itemConsumed else { return .none }
         return heldItem.kind
     }

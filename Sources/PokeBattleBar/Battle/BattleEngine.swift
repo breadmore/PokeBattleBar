@@ -86,6 +86,10 @@ struct SideState: Codable, Sendable, Equatable {
     var hazards: Set<Hazard> = []
     /// 지난 턴에 이 진영의 포켓몬이 쓰러졌는가 (구사일생의 위력이 두 배가 된다)
     var allyFaintedLastTurn: Bool = false
+    /// 신비의부적 — 상태이상을 막는 남은 턴
+    var safeguardTurns: Int = 0
+    /// 흰안개 — 능력 하락을 막는 남은 턴
+    var mistTurns: Int = 0
 
     // MARK: 화면 (리플렉터 · 빛의장막 · 오로라베일)
     //
@@ -654,6 +658,8 @@ struct BattleEngine {
             guard state.side(side).team.indices.contains(i) else { continue }
             state.sides[side.rawValue].team[i].wasHitThisTurn = false
             state.sides[side.rawValue].team[i].damagedThisTurn = false
+            state.sides[side.rawValue].team[i].damageTakenThisTurn = 0
+            state.sides[side.rawValue].team[i].damageClassTakenThisTurn = .status
         }
 
         for side in order {
@@ -670,6 +676,30 @@ struct BattleEngine {
         if case .finished = state.phase { return }
 
         endOfTurn()
+        // 진영 상태 턴 감소 (신비의부적·흰안개)
+        for side in [BattleSide.host, .guest] {
+            if state.sides[side.rawValue].safeguardTurns > 0 {
+                state.sides[side.rawValue].safeguardTurns -= 1
+                if state.sides[side.rawValue].safeguardTurns == 0 {
+                    say("\(s(side).playerName) 쪽의 신비의부적이 사라졌다!")
+                }
+            }
+            if state.sides[side.rawValue].mistTurns > 0 {
+                state.sides[side.rawValue].mistTurns -= 1
+                if state.sides[side.rawValue].mistTurns == 0 {
+                    say("\(s(side).playerName) 쪽의 흰안개가 사라졌다!")
+                }
+            }
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            if state.sides[side.rawValue].team[i].embargoTurns > 0 {
+                state.sides[side.rawValue].team[i].embargoTurns -= 1
+                if state.sides[side.rawValue].team[i].embargoTurns == 0 {
+                    say("\(state.side(side).team[i].name)의 금제가 풀렸다!")
+                }
+            }
+        }
+
         // 필드에 머문 턴 수 — 속이기·선취점이 "나온 턴" 을 판정한다
         for side in [BattleSide.host, .guest] {
             let i = state.side(side).activeIndex
@@ -888,6 +918,17 @@ struct BattleEngine {
             let stats = formCache[want]
             guard stats != nil else { continue }   // 데이터가 없으면 바꾸지 않는다
             b.applyAutoForm(want, stats: stats, nature: Nature.named(natureOf(b)))
+            // **지가르데 퍼펙트폼만 최대 HP 가 늘어난다.**
+            // 늘어난 만큼 현재 HP 도 함께 올려준다 (원작과 같다).
+            if want == "zygarde-complete", let st = stats, st.base(.hp) > 0 {
+                let iv = 31
+                let newMax = (2 * st.base(.hp) + iv) * b.level / 100 + b.level + 10
+                if newMax > b.maxHP {
+                    let gained = newMax - b.maxHP
+                    b.maxHP = newMax
+                    b.currentHP = min(newMax, b.currentHP + gained)
+                }
+            }
             state.sides[side.rawValue].team[idx] = b
             say("\(b.name)는 \(FormChange.label(want)) 폼으로 변했다!")
         }
@@ -1303,6 +1344,12 @@ struct BattleEngine {
 
         // Z기술 / 맥스기술 변환. 위력은 PokeAPI 가 주지 않으므로 원작 변환표를 쓴다.
         var move = transformed(baseMove, attacker: attacker)
+
+        // 오라휠 — 모르페코의 폼에 따라 전기/악이 된다
+        if move.name == "aura-wheel",
+           (atk.visualForm ?? "").contains("hangry"), move.type != .dark {
+            move.type = .dark
+        }
 
         // 심판의뭉치·멀티어택·테크노버스터 — 지닌 도구가 타입을 정한다
         if state.rules.itemEffects,
@@ -1821,6 +1868,15 @@ struct BattleEngine {
             applyContactAbility(attacker: attacker, defender: defender)
         }
 
+        // 카운터·미러코트가 볼 기록 — 얼마를 어떤 분류로 맞았는가
+        if totalDealt > 0 {
+            let i = state.side(defender).activeIndex
+            if state.side(defender).team.indices.contains(i) {
+                state.sides[defender.rawValue].team[i].damageTakenThisTurn = totalDealt
+                state.sides[defender.rawValue].team[i].damageClassTakenThisTurn = move.damageClass
+            }
+        }
+
         // 맞은 쪽 자신에게 일어나는 특성 (노기어깨·벌서크·변색 …)
         if totalDealt > 0 {
             applyHitReaction(defender: defender, attacker: attacker, move: move,
@@ -1870,6 +1926,11 @@ struct BattleEngine {
            let g = state.side(attacker).active.gmaxMove {
             applyGMaxEffect(g, attacker: attacker, defender: defender)
         }
+        // 일반 맥스 기술 부가 효과 — 타입마다 정해져 있다 (원작 8세대).
+        // 이게 없으면 다이맥스가 "위력만 센 기술" 이 된다.
+        if move.name.hasPrefix("max-"), totalDealt > 0 {
+            applyMaxEffect(type: move.type, attacker: attacker, defender: defender)
+        }
 
         // 구애 계열 — 처음 쓴 기술로 고정된다
         lockChoiceMove(attacker, moveIndex: moveIndex)
@@ -1881,59 +1942,14 @@ struct BattleEngine {
     /// 이번 턴에 실제로 쓰이는 기술. Z기술 선언이나 거다이맥스 상태면 다른 기술로 바뀐다.
     private func transformed(_ move: MoveDef, attacker: BattleSide) -> MoveDef {
         let b = state.side(attacker).active
-
-        // 다이맥스/거다이맥스 중에는 모든 기술이 맥스 기술이 된다 (원작과 동일)
-        if b.isDynamaxed {
-            if move.damageClass == .status {
-                if var guardMove = maxMoveCache[FormTables.maxGuard] {
-                    guardMove.pp = move.pp
-                    return guardMove
-                }
-                return move
-            }
-            // 거다이맥스 전용기 — 기술 타입이 전용기 타입과 같을 때 발동한다 (원작과 동일)
-            if let g = b.gmaxMove, g.type == move.type {
-                var gm = move
-                gm.name = "gmax-" + g.rawValue
-                gm.koName = g.ko
-                gm.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
-                gm.accuracy = nil
-                gm.specialDamage = .none
-                gm.selfKO = false
-                gm.ailment = .none
-                gm.statChanges = []
-                return gm
-            }
-            guard let name = FormTables.maxMove[move.type],
-                  var mx = maxMoveCache[name] else { return move }
-            mx.power = FormTables.maxPower(basePower: move.power ?? 0, type: move.type)
-            mx.damageClass = move.damageClass      // 물리/특수는 원래 기술을 따른다
-            mx.accuracy = nil                      // 맥스 기술은 빗나가지 않는다
-            mx.specialDamage = .none
-            mx.selfKO = false                      // 다이맥스 중 대폭발은 자폭하지 않는다
-            return mx
-        }
-
-        // Z기술 — 이번 턴 한 번만
-        guard zDeclared.contains(attacker.rawValue) else { return move }
-        // 전용 Z크리스탈은 타입 제한 없이 자기 공격기를 Z기술로 만든다
-        if b.hasSignatureZ, move.damageClass != .status, move.isDamaging {
-            var sz = move
-            sz.koName = (b.heldItem?.display ?? "전용 Z") + " Z기술"
-            sz.power = FormTables.zPower(basePower: move.power ?? 0)
-            sz.accuracy = nil
-            sz.specialDamage = .none
-            sz.selfKO = false
-            return sz
-        }
-        guard let zName = FormTables.zMoveName(for: move),
-              var z = zMoveCache[zName] else { return move }
-        z.power = FormTables.zPower(basePower: move.power ?? 0)
-        z.damageClass = move.damageClass
-        z.accuracy = nil                           // Z기술은 필중
-        z.specialDamage = .none
-        z.selfKO = false
-        return z
+        // **UI 와 같은 함수를 쓴다.** 규칙을 두 곳에 적어두면 갈라진다 —
+        // 실제로 UI 쪽이 캐시를 잘못된 키로 뒤져 이름이 안 바뀌고 있었다.
+        return MoveTransform.resolve(
+            move: move,
+            battler: b,
+            declaring: zDeclared.contains(attacker.rawValue) ? .zMove : nil,
+            maxMoves: maxMoveCache,
+            zMoves: zMoveCache)
     }
 
     /// 접촉했을 때 방어측 특성이 공격측에게 되돌리는 효과
@@ -2182,6 +2198,52 @@ struct BattleEngine {
         state.sides[defender.rawValue].team[idx] = d
     }
 
+    /// 일반 맥스 기술의 부가 효과 (맥스플레어 → 쾌청 등).
+    private mutating func applyMaxEffect(type: PType, attacker: BattleSide,
+                                         defender: BattleSide) {
+        guard let effect = FormTables.maxEffect[type] else { return }
+        switch effect {
+        case .weather(let w):
+            guard state.rules.weather else { return }
+            state.field.setWeather(w, turns: 5)
+            say("맥스 기술의 여파로 \(w.ko) 상태가 되었다!")
+
+        case .terrain(let t):
+            guard state.rules.weather else { return }
+            state.field.setTerrain(t, turns: 5)
+            say("맥스 기술의 여파로 발밑이 \(t.ko) 상태가 되었다!")
+
+        case .selfBoost(let stat, let n):
+            let i = state.side(attacker).activeIndex
+            guard state.side(attacker).team.indices.contains(i) else { return }
+            var a = state.sides[attacker.rawValue].team[i]
+            guard !a.isFainted, (a.stages[stat] ?? 0) < 6 else { return }
+            a.stages[stat] = min(6, (a.stages[stat] ?? 0) + n)
+            state.sides[attacker.rawValue].team[i] = a
+            say("\(a.name)의 \(KO.s(stat.ko)) 올라갔다!")
+
+        case .foeDrop(let stat, let n):
+            let i = state.side(defender).activeIndex
+            guard state.side(defender).team.indices.contains(i) else { return }
+            var d = state.sides[defender.rawValue].team[i]
+            guard !d.isFainted, (d.stages[stat] ?? 0) > -6 else { return }
+            // 클리어바디·이상한부적은 맥스 기술의 하락도 막는다
+            if state.rules.abilities, case .clearBody = d.abilityKind {
+                say("\(d.name)는 \(d.ability?.display ?? "특성") 때문에 능력치가 떨어지지 않는다!")
+                return
+            }
+            d.stages[stat] = max(-6, (d.stages[stat] ?? 0) - n)
+            state.sides[defender.rawValue].team[i] = d
+            say("\(d.name)의 \(KO.s(stat.ko)) 내려갔다!")
+
+        case .status(let ail):
+            inflictDirect(ail, on: defender, source: "맥스 기술")
+
+        case .none:
+            break
+        }
+    }
+
     /// 거다이맥스 전용기의 추가 효과를 적용한다.
     /// 교체가 없는 배틀이라 스텔스록·묶기·중력 계열은 재현 대상이 아니다.
     private mutating func applyGMaxEffect(_ g: GMaxMove, attacker: BattleSide, defender: BattleSide) {
@@ -2318,6 +2380,11 @@ struct BattleEngine {
         guard state.side(side).team.indices.contains(idx) else { return }
         var t = state.sides[side.rawValue].team[idx]
         guard !t.isFainted else { return }
+        // 신비의부적 — 상태이상을 막는다
+        if state.side(side).safeguardTurns > 0, ail != .confusion {
+            say("\(t.name)는 신비의부적에 지켜졌다!")
+            return
+        }
 
         if ail == .confusion {
             guard t.confusionTurns == 0 else { return }
@@ -2564,8 +2631,11 @@ struct BattleEngine {
             if case .noGuard = defender.abilityKind { return true }
         }
         guard let acc = move.accuracy else { return true }   // nil = 필중
+        // 꿰뚫어보기·미라클아이·텔레키네시스로 간파됐으면 회피율 상승을 무시한다
+        let foeEvasion = defender.identified ? max(0, defender.evasionStage) * 0
+                                             : defender.evasionStage
         let mod = Battler.accEvaMultiplier(attacker.accuracyStage)
-                / Battler.accEvaMultiplier(defender.evasionStage)
+                / Battler.accEvaMultiplier(foeEvasion)
         var accMult = 1.0
         if state.rules.abilities {
             if case .accuracyMultiplier(let m) = attacker.abilityKind { accMult *= m }
@@ -3128,6 +3198,16 @@ struct BattleEngine {
                 }
                 state.sides[side.rawValue].team[i] = b
 
+            // 배고픔스위치 — 턴이 끝날 때마다 만복/허기가 뒤바뀐다.
+            // 오라휠의 타입도 함께 바뀐다 (전기 ↔ 악).
+            case .formSwitchDisplay where b.ability?.name == "hunger-switch":
+                let hangry = (b.visualForm ?? "").contains("hangry")
+                let want = hangry ? "morpeko" : "morpeko-hangry"
+                guard let stats = formCache[want] else { continue }
+                b.applyAutoForm(want, stats: stats, nature: Nature.named(natureOf(b)))
+                state.sides[side.rawValue].team[i] = b
+                say("\(b.name)는 \(hangry ? "만복" : "허기") 모양이 되었다!")
+
             // 수확 — 먹은 열매를 확률로 되돌린다 (쾌청이면 반드시)
             case .harvest(let percent):
                 guard b.itemConsumed, b.heldItem != nil else { continue }
@@ -3186,6 +3266,10 @@ struct BattleEngine {
         state.sides[attacker.rawValue].team[idx] = b
         say("\(b.name)는 \(wantBlade ? "블레이드" : "실드") 폼이 되었다!")
     }
+
+    /// 텔레키네시스가 통하지 않는 종족 (원작 예외).
+    /// 디그다·닥트리오·모래꿍·모래성이당, 그리고 메가팬텀.
+    static let telekinesisImmune: Set<Int> = [50, 51, 328, 329, 330, 94]
 
     /// 잠재파워의 타입. 원작 공식이다.
     ///
@@ -3484,6 +3568,11 @@ struct BattleEngine {
            case .statDropImmunity(let stats) = t.abilityKind,
            move.statChanges.allSatisfy({ $0.change >= 0 || stats.contains($0.stat) }) {
             say("\(t.name)는 \(t.ability?.display ?? "특성") 때문에 능력치가 떨어지지 않는다!")
+            return false
+        }
+        // 흰안개 — 상대가 걸어오는 하락을 막는다
+        if target != attacker, lowering, state.side(target).mistTurns > 0 {
+            say("\(t.name)는 흰안개에 지켜져 능력치가 떨어지지 않는다!")
             return false
         }
         // 이상한부적(클리어참) — 상대가 걸어오는 하락을 막는다
@@ -4480,6 +4569,146 @@ extension BattleEngine {
             return true
 
         // 검은눈빛 / 블랙아이즈 — 도망갈 수 없게 만든다
+        // 카운터·미러코트 — **이번 턴에 받은 데미지의 두 배**로 되돌려준다.
+        // PokeAPI 는 위력을 주지 않아(power=null) 아무 일도 하지 않았다.
+        case "counter", "mirror-coat":
+            let wantPhysical = move.name == "counter"
+            let taken = a.damageTakenThisTurn
+            guard taken > 0, a.damageClassTakenThisTurn == (wantPhysical ? .physical : .special) else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            let dealt = applyDamage(taken * 2, to: defender)
+            say("\(aName)는 받은 공격을 두 배로 되돌려줬다! (\(dealt))")
+            checkFaint(defender)
+            return true
+
+        // 흑안개 — **양쪽** 능력 변화를 전부 되돌린다
+        case "haze":
+            for side in [attacker, defender] {
+                let i = state.side(side).activeIndex
+                guard state.side(side).team.indices.contains(i) else { continue }
+                var b = state.sides[side.rawValue].team[i]
+                b.stages = [:]
+                b.accuracyStage = 0
+                b.evasionStage = 0
+                state.sides[side.rawValue].team[i] = b
+            }
+            say("모든 능력 변화가 사라졌다!")
+            return true
+
+        // 중력 — 부유·비행이 무효가 되고 명중률이 오른다
+        case "gravity":
+            state.field.setGravity(5)
+            say("중력이 강해졌다! (5턴)")
+            return true
+
+        // 스텔스록·압정뿌리기·독압정 — 상대 진영에 깔린다.
+        // 교체가 없어도 **쓰러지면 다음 포켓몬이 나오는** 시점에 작동한다.
+        case "stealth-rock", "spikes", "toxic-spikes":
+            let hazard: Hazard = move.name == "toxic-spikes" ? .toxicSpikes : .stealthRock
+            if state.side(defender).hazards.contains(hazard) {
+                say("\(aName)의 \(move.display)! …하지만 이미 깔려 있다!")
+                return true
+            }
+            state.sides[defender.rawValue].hazards.insert(hazard)
+            say("상대 발밑에 \(hazard.ko)가 깔렸다!")
+            return true
+
+        // 안개제거 — 상대 진영의 장애물과 **양쪽 화면**을 걷어낸다
+        case "defog":
+            var did = false
+            if !state.side(defender).hazards.isEmpty {
+                state.sides[defender.rawValue].hazards.removeAll()
+                did = true
+            }
+            for side in [attacker, defender] where state.side(side).hasAnyScreen {
+                state.sides[side.rawValue].reflectTurns = 0
+                state.sides[side.rawValue].lightScreenTurns = 0
+                state.sides[side.rawValue].auroraVeilTurns = 0
+                did = true
+            }
+            // 상대 회피율도 한 단계 내린다
+            var d2 = state.side(defender).active
+            if d2.evasionStage > -6 {
+                d2.evasionStage -= 1
+                commit(d2, defender)
+                did = true
+            }
+            say(did ? "\(aName)의 안개제거! 장애물과 화면이 걷혔다!"
+                    : "\(aName)의 안개제거! …하지만 걷을 것이 없었다!")
+            return true
+
+        // 신비의부적 — 5턴 동안 상태이상에 걸리지 않는다
+        case "safeguard":
+            var side = state.sides[attacker.rawValue]
+            guard side.safeguardTurns == 0 else {
+                say("\(aName)의 신비의부적! …하지만 이미 걸려 있다!")
+                return true
+            }
+            side.safeguardTurns = 5
+            state.sides[attacker.rawValue] = side
+            say("\(s(attacker).playerName) 쪽이 신비의부적에 둘러싸였다! (5턴)")
+            return true
+
+        // 흰안개 — 5턴 동안 능력이 내려가지 않는다
+        case "mist":
+            var side = state.sides[attacker.rawValue]
+            guard side.mistTurns == 0 else {
+                say("\(aName)의 흰안개! …하지만 이미 걸려 있다!")
+                return true
+            }
+            side.mistTurns = 5
+            state.sides[attacker.rawValue] = side
+            say("\(s(attacker).playerName) 쪽이 흰안개에 둘러싸였다! (5턴)")
+            return true
+
+        // 예민해지기 — 다음 공격이 반드시 급소에 맞는다
+        case "laser-focus":
+            a.critStage = 4
+            commit(a, attacker)
+            say("\(aName)는 정신을 집중했다! 다음 공격은 급소에 맞는다!")
+            return true
+
+        // 금제 — 상대 도구가 5턴 동안 작동하지 않는다
+        case "embargo":
+            guard d.embargoTurns == 0 else {
+                say("\(aName)의 금제! …하지만 실패했다!")
+                return true
+            }
+            d.embargoTurns = 5
+            commit(d, defender)
+            say("\(d.name)는 도구를 쓸 수 없게 되었다! (5턴)")
+            return true
+
+        // 미라클아이 — 상대의 회피율 상승을 무시하고 에스퍼가 악에 통한다
+        case "miracle-eye", "odor-sleuth", "foresight":
+            guard !d.identified else {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            d.identified = true
+            commit(d, defender)
+            say("\(d.name)를 꿰뚫어 보았다!")
+            return true
+
+        // 텔레키네시스 — 3턴 동안 상대를 띄워 땅 기술을 무효로 하고 반드시 맞춘다.
+        // 디그다 계열처럼 통하지 않는 종족이 있다 (원작 예외).
+        case "telekinesis":
+            if Self.telekinesisImmune.contains(d.speciesID) {
+                say("\(d.name)에게는 통하지 않는다!")
+                return true
+            }
+            guard d.magnetRiseTurns == 0 else {
+                say("\(aName)의 텔레키네시스! …하지만 실패했다!")
+                return true
+            }
+            d.magnetRiseTurns = 3
+            d.identified = true
+            commit(d, defender)
+            say("\(d.name)가 공중으로 떠올랐다! (3턴)")
+            return true
+
         // 멸망의노래 — 3턴 후에 **양쪽 모두** 쓰러진다.
         // 지금까지 아무 효과가 없었다 (PokeAPI 에 지속 턴수가 없다).
         case "perish-song":

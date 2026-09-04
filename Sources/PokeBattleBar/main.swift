@@ -263,6 +263,15 @@ if let i = args.firstIndex(of: "--movelog"), args.count > i + 1 {
 }
 
 // Showdown 데이터와 우리 구현을 대조한다 — 뭘 빼먹었는지 데이터가 말해준다
+// 내 로스터 기술이 실제로 작동하는지 하나하나 센다
+if args.contains("--usability") {
+    Task { @MainActor in
+        let ok = await MoveUsabilityAudit.run(verbose: args.contains("--all"))
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--datagap") {
     Task { @MainActor in
         let ok = await DataGapAudit.run(verbose: args.contains("--all"))

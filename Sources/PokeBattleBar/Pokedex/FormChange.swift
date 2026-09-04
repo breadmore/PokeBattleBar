@@ -70,6 +70,7 @@ enum FormChange {
         ("-solo", "단독"), ("-school", "어군"),
         ("-disguised", "화장"), ("-busted", "들킴"),
         ("-full-belly", "만복"), ("-hangry", "허기"),
+        ("-complete", "퍼펙트"), ("-meteor", "유성"), ("-hero", "마이티"),
         ("-combat", "콤바트"), ("-blaze", "블레이즈"), ("-aqua", "아쿠아")
     ]
 
@@ -109,6 +110,13 @@ enum FormChange {
             return .belowHP(0.5, "darmanitan-zen", base: "darmanitan-standard")
         case "schooling":
             return .aboveHP(0.25, "wishiwashi-school", base: "wishiwashi-solo")
+        // 지가르데 — HP 절반 이하가 되면 퍼펙트폼이 된다.
+        // **최대 HP 가 늘어나는 유일한 폼 변화**라 별도 처리가 필요하다.
+        case "power-construct":
+            return .belowHP(0.5, "zygarde-complete", base: "zygarde")
+        // 메테노 — HP 절반을 기준으로 유성/코어가 바뀐다
+        case "shields-down":
+            return .belowHP(0.5, "minior", base: "minior-meteor")
         default:
             return nil
         }
@@ -123,6 +131,7 @@ enum FormChange {
     /// 안 하는" 특성이 생기므로, 특성 분류(AbilityKind)도 이 목록을 본다.
     static let autoAbilityNames: Set<String> = [
         "forecast", "flower-gift", "zen-mode", "schooling",
+        "power-construct", "shields-down",
     ]
 
     /// 자동 변신 특성인가 (UI 에서 "배틀 중 자동" 이라고 알려준다)

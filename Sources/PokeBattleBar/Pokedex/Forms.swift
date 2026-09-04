@@ -55,6 +55,48 @@ enum FormTables {
 
     static let maxGuard = "max-guard"
 
+    /// **맥스 기술의 부가 효과.**
+    ///
+    /// 맥스 기술은 위력만 오르는 게 아니라 타입마다 정해진 부가 효과가 있다
+    /// (원작 8세대). PokeAPI 는 맥스 기술을 위력 없는 껍데기로만 주므로 표로 둔다.
+    /// 이게 없으면 다이맥스가 "위력만 센 기술" 이 되어 버린다.
+    enum MaxEffect: Sendable, Equatable {
+        /// 날씨를 바꾼다 (맥스플레어 → 쾌청)
+        case weather(Weather)
+        /// 필드를 만든다 (맥스라이트닝 → 일렉트릭필드)
+        case terrain(Terrain)
+        /// 내 진영의 능력이 오른다 (맥스너클 → 공격 +1)
+        case selfBoost(Stat, Int)
+        /// 상대 능력이 내려간다 (맥스오파츠 → 공격 -1)
+        case foeDrop(Stat, Int)
+        /// 상대를 상태이상으로 만든다 (맥스오파츠 → 독)
+        case status(Ailment)
+        /// 턴마다 상대가 깎인다 (맥스록폴 → 모래바람과 같은 효과)
+        case none
+    }
+
+    /// 타입 → 맥스 기술 부가 효과 (원작 8세대)
+    static let maxEffect: [PType: MaxEffect] = [
+        .fire:     .weather(.sun),          // 맥스플레어 — 쾌청
+        .water:    .weather(.rain),         // 맥스가이저 — 비
+        .rock:     .weather(.sandstorm),    // 맥스록폴 — 모래바람
+        .ice:      .weather(.snow),         // 맥스하일스톰 — 눈
+        .electric: .terrain(.electric),     // 맥스라이트닝 — 일렉트릭필드
+        .grass:    .terrain(.grassy),       // 맥스오버그로스 — 그래스필드
+        .fairy:    .terrain(.misty),        // 맥스스타폴 — 미스트필드
+        .psychic:  .terrain(.psychic),      // 맥스마인드스톰 — 사이코필드
+        .fighting: .selfBoost(.attack, 1),      // 맥스너클 — 공격 상승
+        .steel:    .selfBoost(.defense, 1),     // 맥스스틸스파이크 — 방어 상승
+        .ghost:    .selfBoost(.spAttack, 1),    // 맥스팬텀 — 특공 상승
+        .dragon:   .selfBoost(.spDefense, 1),   // 맥스와이엄윈드 — 특방 상승
+        .flying:   .selfBoost(.speed, 1),       // 맥스에어스트림 — 스피드 상승
+        .dark:     .foeDrop(.spDefense, 1),     // 맥스다크네스 — 상대 특방 하락
+        .normal:   .foeDrop(.speed, 1),         // 맥스스트라이크 — 상대 스피드 하락
+        .bug:      .foeDrop(.spAttack, 1),      // 맥스플러터바이 — 상대 특공 하락
+        .ground:   .foeDrop(.spDefense, 1),     // 맥스퀘이크 — 상대 특방 하락
+        .poison:   .foeDrop(.attack, 1),        // 맥스오파츠 — 상대 공격 하락
+    ]
+
     /// Z기술 이름 (물리/특수 구분). PokeAPI 는 `--physical` / `--special` 로 나뉘어 있다.
     static func zMoveName(for move: MoveDef) -> String? {
         guard let base = zMoveBase[move.type] else { return nil }

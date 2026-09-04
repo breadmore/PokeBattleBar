@@ -901,6 +901,10 @@ final class AppModel {
                 extra = ["mimikyu-busted"]
             case "ice-face":
                 extra = ["eiscue-noice"]
+            case "hunger-switch":
+                extra = ["morpeko", "morpeko-hangry"]
+            case "zero-to-hero":
+                extra = ["palafin", "palafin-hero"]
             default:
                 break
             }
@@ -2309,6 +2313,20 @@ final class AppModel {
 
     /// 뷰가 Z/맥스 변환을 미리 보여주려면 정의가 필요하다
     var zPreview: [String: MoveDef] { zMoveCache.merging(maxMoveCache) { a, _ in a } }
+
+    /// 버튼에 보여줄 기술 — **엔진과 같은 함수**로 계산한다.
+    ///
+    /// 예전에는 UI 가 캐시를 원래 기술 이름으로 뒤져서(`zPreview[def.name]`)
+    /// 한 번도 맞지 않았다. 캐시 키는 "max-flare" 인데 "flamethrower" 로
+    /// 찾았으니 다이맥스를 눌러도 이름이 그대로였다.
+    func previewMove(_ move: MoveDef, for b: Battler) -> MoveDef {
+        MoveTransform.resolve(
+            move: move,
+            battler: b,
+            declaring: pendingSpecial.map(kindOf),
+            maxMoves: maxMoveCache,
+            zMoves: zMoveCache)
+    }
     /// 메가 폼의 타입·종족값 — 메가진화를 선언했을 때 상성 미리보기에 쓴다
     var megaFormPreview: [String: FormStats] { megaCache }
 

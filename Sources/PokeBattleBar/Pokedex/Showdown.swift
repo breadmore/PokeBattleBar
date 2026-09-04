@@ -190,6 +190,8 @@ enum Showdown {
                 i.naturalGiftType = ng[1] as? String
             }
             i.hooks = Set((d["hooks"] as? [String]) ?? [])
+            // zMove 가 문자열이면 전용 Z기술 이름이다 (타입 Z 는 1 이 들어온다)
+            i.signatureZMoveName = d["z"] as? String
             out[id] = i
         }
         return out
@@ -301,6 +303,8 @@ struct ShowdownItem: Sendable {
     var naturalGiftType: String?
     /// 배틀 중 동작하는 훅 이름들. 하나라도 있으면 구현이 필요한 도구다.
     var hooks: Set<String> = []
+    /// 전용 Z기술 이름 ("Genesis Supernova"). 타입 Z크리스탈은 nil 이다.
+    var signatureZMoveName: String?
 
     /// 지금 세대에서 실제로 쓸 수 있는 도구인가
     var isUsable: Bool { nonstandard == nil }

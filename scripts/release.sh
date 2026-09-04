@@ -61,6 +61,9 @@ REC="$SUP/record.json"
 REC_BEFORE=""
 [ -f "$REC" ] && REC_BEFORE=$(shasum -a 256 "$REC" | cut -d' ' -f1)
 
+# 손구현 기술 목록을 최신으로 (낡으면 감사가 잘못 보고한다)
+./scripts/gen-scripted-names.sh >/dev/null
+
 echo "==> 번들"
 VERSION="$VERSION" ./scripts/bundle.sh >/dev/null
 

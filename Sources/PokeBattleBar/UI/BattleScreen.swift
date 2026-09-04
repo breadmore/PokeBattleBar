@@ -595,13 +595,10 @@ struct GBChoicePanel: View {
     }
 
     private func transformed(_ def: MoveDef) -> MoveDef? {
-        guard let p = model.pendingSpecial else { return nil }
-        switch p {
-        case .dynamax, .gmax, .zMove:
-            return model.zPreview[def.name]
-        case .mega:
-            return nil
-        }
+        guard model.pendingSpecial != nil else { return nil }
+        let shown = model.previewMove(def, for: me.active)
+        // 바뀐 것이 없으면 nil — 그래야 "맥스" 배지도 안 붙는다
+        return shown.name == def.name && shown.display == def.display ? nil : shown
     }
 
     private func note(for slot: Battler.MoveSlot) -> String? {
