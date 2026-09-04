@@ -96,6 +96,21 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     var isRampaging: Bool { rampageTurns > 0 && rampageMoveIndex != nil }
 
+    /// 쓸 수 있는 도구를 지니고 있는가 (곡예·성원의칼날 판정)
+    var hasUsableItem: Bool { heldItem != nil && !itemConsumed }
+
+    /// **땅에 발이 닿아 있는가.** 필드(일렉트릭필드 등)는 땅에 닿은 쪽에만 걸린다.
+    ///
+    /// 비행 타입과 부유 특성은 떠 있고, 전자부유도 마찬가지다.
+    /// 단 떨어뜨리기(grounded)를 맞으면 전부 무시되고 끌어내려진다.
+    var isGrounded: Bool {
+        if grounded { return true }                 // 떨어뜨리기로 강제 착지
+        if magnetRiseTurns > 0 { return false }
+        if types.contains(.flying) { return false }
+        if case .typeImmunity(.ground) = abilityKind { return false }   // 부유
+        return true
+    }
+
     var isCharging: Bool { chargingMoveIndex != nil }
     var isEncored: Bool { encoreTurns > 0 && encoreMoveIndex != nil }
 
@@ -140,6 +155,17 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var weight: Int = 0
     /// 직전에 쓴 기술 (아무것도않기 판정용)
     var lastMoveIndex: Int?
+    /// 필드에 나온 뒤 지난 턴 수. 0 이면 **나온 그 턴**이다
+    /// (속이기·선취점은 나온 턴에만 성공한다).
+    var turnsOnField: Int = 0
+    /// 이번 턴에 공격을 맞았는가 (역전·리벤지의 위력이 두 배가 된다)
+    var wasHitThisTurn: Bool = false
+    /// 이번 턴에 이미 데미지를 입었는가 (트릭플레이 판정)
+    var damagedThisTurn: Bool = false
+    /// 직전에 쓴 기술이 실패했는가 (내던지기의 위력이 두 배가 된다)
+    var lastMoveFailed: Bool = false
+    /// 이번 배틀에서 쓴 기술 인덱스 (마지막수단 판정)
+    var usedMoveIndices: Set<Int> = []
     /// 이번 턴 방어 상태인가
     var isProtecting: Bool = false
     /// 방어를 연속으로 쓴 횟수 (연속 사용 시 성공률이 떨어진다)
@@ -214,6 +240,12 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     /// 일관되게 특성 없음으로 돈다.
     var abilityKind: AbilityKind {
         abilitySuppressed ? .none : (ability?.kind ?? .none)
+    }
+
+    /// 둔감 — 헤롱헤롱과 도발이 통하지 않는다.
+    /// (혼란 면역은 마이페이스다. 예전엔 둘을 섞어놨었다.)
+    var isOblivious: Bool {
+        !abilitySuppressed && ability?.name == "oblivious"
     }
 
     /// 이 개체가 메가진화할 수 있는 폼 (도구가 허용하는 것만)
@@ -332,6 +364,8 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         if let form {
             base.baseStats = form.baseStats
             base.types = form.types
+            // 폼마다 무게가 다르다 (저울짓기·헤비봄버가 이걸 본다)
+            if form.weight > 0 { base.weight = form.weight }
         }
         let (hp, others) = computeStats(base: base, nature: nature, level: level)
         var b = Battler(
@@ -349,7 +383,7 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
             moves: moves.map { .init(def: $0, ppLeft: $0.pp) },
             heldItem: heldItem,
             ability: ability,
-            weight: species.weight,
+            weight: base.weight,
             megaForms: species.megaForms,
             gmaxForm: species.gmaxForm,
             baseMaxHP: hp

@@ -121,6 +121,9 @@ actor ItemCatalog {
     private var loaded = false
     private(set) var items: [String: ItemDef] = [:]
 
+    /// 우리가 이름을 아는 도구 slug 전체. 데이터 대조(--datagap)가 쓴다.
+    static var allKnownSlugs: [String] { battleItems }
+
     /// 배틀에 의미가 있는 도구만 받는다 — 2223개를 전부 받을 이유가 없다.
     private static let battleItems: [String] = [
         // 실전 세팅에 자주 나오는데 목록에 없던 것들.
@@ -137,7 +140,7 @@ actor ItemCatalog {
         "charcoal", "mystic-water", "magnet", "miracle-seed", "never-melt-ice",
         "sharp-beak", "poison-barb", "soft-sand", "hard-stone", "silver-powder",
         "spell-tag", "twisted-spoon", "black-belt", "black-glasses",
-        "dragon-fang", "metal-coat", "silk-scarf",
+        "dragon-fang", "metal-coat", "silk-scarf", "fairy-feather",
 
         "leftovers", "life-orb", "focus-sash", "expert-belt",
         "muscle-band", "wise-glasses", "choice-band", "choice-specs", "choice-scarf",
@@ -217,6 +220,22 @@ actor ItemCatalog {
         "primarium": 730,    // 누리레느 — 오케스트라
         "marshadium": 802,   // 마샤도 — 확산일격
         "tapunium": 785      // 카푸꼬꼬꼭 — 수호신의일격
+    ]
+
+    /// 타입 강화 도구 — 같은 타입 기술의 위력이 1.2배가 된다.
+    ///
+    /// 플레이트(1.2배)와 효과가 같지만 이름이 전혀 달라서 별도 표가 필요하다.
+    /// Smogon 추천 세팅에 자주 나오는데 우리 쪽에 없어서 조용히 무시되던 것들이다.
+    private static let typeBoostItems: [String: PType] = [
+        "charcoal": .fire,          "mystic-water": .water,
+        "magnet": .electric,        "miracle-seed": .grass,
+        "never-melt-ice": .ice,     "black-belt": .fighting,
+        "poison-barb": .poison,     "soft-sand": .ground,
+        "sharp-beak": .flying,      "twisted-spoon": .psychic,
+        "silver-powder": .bug,      "hard-stone": .rock,
+        "spell-tag": .ghost,        "dragon-fang": .dragon,
+        "black-glasses": .dark,     "metal-coat": .steel,
+        "silk-scarf": .normal,      "fairy-feather": .fairy,
     ]
 
     private static let plates: [String: PType] = [
@@ -313,6 +332,8 @@ actor ItemCatalog {
             return .none
         }
         if let t = plates[slug] { return .typePlate(t, 1.2) }
+        // 목탄·신비의물방울 등 — 플레이트와 같은 1.2배다
+        if let t = typeBoostItems[slug] { return .typePlate(t, 1.2) }
 
         if let t = resistBerries[slug] { return .berryTypeResist(t) }
         if let st = pinchBerries[slug] { return .berryPinchBoost(st) }

@@ -62,24 +62,41 @@ enum FormChangeTest {
                   "규칙 없는 특성을 자동폼으로 분류하지 않는다",
                   "\(AbilityCatalog.kind(for: "disguise"))") && ok
 
-        // MARK: 지역폼이 폼 선택에 새어 들어오지 않는가
-        print("\n-- 지역폼 제외 --")
-        var leaked: [(String, String)] = []
-        for id in [555, 26, 52, 105, 555, 79, 80, 27, 28, 37, 38] {
-            guard let sp = try? await PokeAPI.shared.species(id) else { continue }
-            for f in FormChange.selectable(for: sp) {
-                for region in ["-alola", "-galar", "-hisui", "-paldea"] where f.contains(region) {
-                    leaked.append((sp.display, f))
-                }
-            }
-        }
-        ok = show(leaked.isEmpty, "지역폼은 폼 선택에서 제외된다",
-                  leaked.isEmpty ? "" : "\(leaked)") && ok
-        // 불비달마는 가라르폼만 있으므로 고를 폼이 없어야 한다
+        // MARK: 지역폼을 고를 수 있는가
+        //
+        // 예전에는 지역폼을 선택 목록에서 **뺐다.** 하지만 PokeTokenBar 도감은
+        // 전국번호만 갖고 있어서 얼음 불비달마를 따로 구분하지 않는다 —
+        // 그러면 얼음 불비달마를 영원히 쓸 수 없다. 그래서 열었다.
+        // 폼 선택은 우리 loadouts.json 에만 적히므로 도감은 그대로다.
+        print("\n-- 지역폼 선택 --")
         if let dar = try? await PokeAPI.shared.species(555) {
             let forms = FormChange.selectable(for: dar)
-            ok = show(forms.isEmpty, "불비달마는 고를 폼이 없다 (달마모드는 자동)",
-                      "\(forms)") && ok
+            ok = show(forms.contains("darmanitan-galar-standard"),
+                      "얼음 불비달마(가라르폼)를 고를 수 있다", "\(forms)") && ok
+            // 자동 변신 폼은 여전히 고르는 대상이 아니다
+            ok = show(!forms.contains { $0.hasSuffix("-zen") },
+                      "달마모드는 자동이므로 고를 수 없다", "\(forms)") && ok
+        }
+        if let raichu = try? await PokeAPI.shared.species(26) {
+            let forms = FormChange.selectable(for: raichu)
+            ok = show(forms.contains("raichu-alola"),
+                      "알로라 라이츄를 고를 수 있다", "\(forms)") && ok
+        }
+        // 이름이 "노말" 로 뭉개지지 않는지 — 예전에는 접미사만 보고 붙였다
+        ok = show(FormChange.label("darmanitan-galar-standard") == "가라르",
+                  "가라르 불비달마의 이름", FormChange.label("darmanitan-galar-standard")) && ok
+        ok = show(FormChange.label("darmanitan-galar-zen") == "가라르 달마모드",
+                  "가라르 달마모드의 이름", FormChange.label("darmanitan-galar-zen")) && ok
+
+        // 폼마다 배우는 기술이 다르다 — 얼음 폼만 고드름떨구기를 배운다
+        if let galar = try? await PokeAPI.shared.form(named: "darmanitan-galar-standard"),
+           let kanto = try? await PokeAPI.shared.form(named: "darmanitan-standard") {
+            ok = show(galar.canLearn("icicle-crash") && !kanto.canLearn("icicle-crash"),
+                      "폼별 학습 기술이 다르게 들어온다",
+                      "가라르 \(galar.learnableMoves.count)종 / 관동 \(kanto.learnableMoves.count)종") && ok
+            ok = show(galar.weight != kanto.weight,
+                      "폼별 무게가 다르게 들어온다",
+                      "가라르 \(galar.weight) / 관동 \(kanto.weight)") && ok
         }
 
         // MARK: 폼을 적용한 배틀러

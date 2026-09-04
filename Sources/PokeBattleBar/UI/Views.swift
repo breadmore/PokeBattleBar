@@ -1205,8 +1205,56 @@ struct JoinSection: View {
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
                 }
             }
+
+            Divider().padding(.vertical, 2)
+            DirectJoinField(model: model)
         }
         .frame(minWidth: 300)
+    }
+}
+
+/// 다른 네트워크의 방에 주소로 붙는 칸.
+///
+/// 자동 검색(Bonjour)은 같은 네트워크 안에서만 동작한다 — 라우터를 넘지 못한다.
+/// 회사와 집처럼 네트워크가 다르면 방장이 알려준 주소를 여기 적는다.
+struct DirectJoinField: View {
+    @Bindable var model: AppModel
+    @State private var address = ""
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("다른 네트워크의 방에 접속").font(.caption.bold())
+                }
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                HStack(spacing: 6) {
+                    TextField("100.64.1.2:\(RoomHost.preferredPort)", text: $address)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.caption, design: .monospaced))
+                        .onSubmit { go() }
+                    Button("접속") { go() }
+                        .disabled(address.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || model.roster.isEmpty)
+                }
+                Text("방장이 알려준 주소를 적으세요. 같은 네트워크라면 위 목록에서 그냥 고르면 됩니다.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func go() {
+        let a = address.trimmingCharacters(in: .whitespaces)
+        guard !a.isEmpty else { return }
+        Task { await model.joinDirect(address: a) }
     }
 }
 
@@ -1221,6 +1269,11 @@ struct WaitingView: View {
             Text(title).font(.title3.bold())
             ProgressView()
             Text(model.status).foregroundStyle(.secondary)
+
+            // 다른 네트워크의 사람에게 알려줄 주소
+            if model.canInvite, !model.shareableAddresses.isEmpty {
+                ShareAddressSection(model: model).frame(maxWidth: 520)
+            }
 
             // 방을 연 뒤에 초대한다 — 여기가 초대를 보내는 자리다
             if model.canInvite {
@@ -1239,6 +1292,41 @@ struct WaitingView: View {
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .gbSurface()
+    }
+}
+
+/// 다른 네트워크에서 붙을 수 있게 내 주소를 보여준다.
+///
+/// 같은 네트워크 사람은 자동으로 방을 찾으므로 이건 **밖에 있는 사람**용이다.
+/// Tailscale 주소가 있으면 그게 제일 쉽다 — 설정 없이 바로 붙는다.
+struct ShareAddressSection: View {
+    let model: AppModel
+    @State private var copied: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("다른 네트워크에서 부르려면").font(.caption.bold())
+            ForEach(model.shareableAddresses, id: \.address) { entry in
+                HStack(spacing: 8) {
+                    Text(entry.address)
+                        .font(.system(.caption, design: .monospaced).bold())
+                        .textSelection(.enabled)
+                    Text(entry.note)
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button(copied == entry.address ? "복사됨" : "복사") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(entry.address, forType: .string)
+                        copied = entry.address
+                    }
+                    .font(.caption)
+                }
+            }
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8)
+            .fill(Color(nsColor: .controlBackgroundColor)))
     }
 }
 

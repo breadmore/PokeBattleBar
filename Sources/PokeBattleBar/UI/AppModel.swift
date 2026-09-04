@@ -278,6 +278,8 @@ final class AppModel {
     private var didFirstRoomScan = false
     private var toastTask: Task<Void, Never>?
     private var guestLink: PeerLink?
+    /// 주소로 직접 붙는 중이라 방 정보를 기다리고 있는가
+    private var awaitingRoomInfo = false
 
     private var engine: BattleEngine?
     private var hostPending: BattleAction?
@@ -482,7 +484,26 @@ final class AppModel {
                 }
                 formStats = formCache[formName]
             }
-            out.append(Battler.make(slot: slot, species: sp, moves: moves,
+            // **폼이 못 배우는 기술은 데려가지 않는다.**
+            // 얼음 불비달마가 불꽃 기술을 들고 나가는 일을 막는다.
+            var legalMoves = moves
+            if let formStats {
+                let illegal = moves.filter { !formStats.canLearn($0.name) }
+                if !illegal.isEmpty {
+                    legalMoves = moves.filter { formStats.canLearn($0.name) }
+                    let names = illegal.map(\.display).joined(separator: ", ")
+                    let label = FormChange.label(formStats.name)
+                    // 기술이 하나도 안 남으면 발버둥만 남는다 — 그건 배틀이 안 된다.
+                    if legalMoves.isEmpty {
+                        errorMessage = "\(sp.display)의 \(label) 폼은 지금 기술(\(names))을 "
+                            + "하나도 배울 수 없습니다. 기술을 바꾸거나 폼을 되돌려주세요."
+                        legalMoves = moves
+                    } else {
+                        status = "\(sp.display) — \(label) 폼이 못 배우는 기술을 뺐습니다: \(names)"
+                    }
+                }
+            }
+            out.append(Battler.make(slot: slot, species: sp, moves: legalMoves,
                                     level: rules.level, heldItem: item, ability: ability,
                                     form: formStats, formName: formName))
         }
@@ -704,7 +725,9 @@ final class AppModel {
     private func preloadAutoForms(for team: [Battler]) async {
         for b in team {
             guard let ab = b.ability?.name,
-                  let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID) else { continue }
+                  let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID,
+                                                 form: b.chosenForm ?? b.visualForm)
+            else { continue }
             var names: [String] = []
             switch rule {
             case .byWeather(let map, let base): names = Array(map.values) + [base]
@@ -1028,6 +1051,14 @@ final class AppModel {
 
         host.onGuestMessage = { [weak self] msg in
             Task { @MainActor in self?.hostHandle(msg) }
+        }
+        // 주소로 직접 붙은 게스트는 마리 수·레벨을 모른다 — 먼저 알려준다.
+        host.onGuestConnected = { [weak self] link in
+            Task { @MainActor in
+                guard let self else { return }
+                link.send(.roomInfo(rules: self.rules, hostName: self.playerName,
+                                    roomName: self.roomName))
+            }
         }
         host.onProtocolError = { [weak self] msg in
             Task { @MainActor in
@@ -1500,6 +1531,88 @@ final class AppModel {
         )
     }
 
+    // MARK: 주소로 직접 접속 (다른 네트워크)
+
+    /// 다른 네트워크의 방에 주소로 붙는다.
+    ///
+    /// Bonjour 는 링크 로컬이라 라우터를 넘지 못한다. Tailscale 같은 가상 LAN,
+    /// 포트포워딩, 터널은 전부 "주소로 붙을 수 있다"는 점만 공통이므로
+    /// 여기 하나만 열어두면 셋 다 쓸 수 있다.
+    func joinDirect(address: String) async {
+        guard let endpoint = DirectConnect.endpoint(from: address) else {
+            errorMessage = "주소를 알아볼 수 없습니다. 100.64.1.2:\(RoomHost.preferredPort) 처럼 적어주세요."
+            return
+        }
+        guard !roster.isEmpty else { errorMessage = "포켓몬이 없습니다."; return }
+
+        role = .guest
+        mySide = .guest
+        screen = .joiningRoom
+        status = "\(address) 에 접속하는 중…"
+        awaitingRoomInfo = true
+
+        let link = PeerLink(to: endpoint)
+        link.onProtocolError = { [weak self] msg in
+            Task { @MainActor in
+                self?.errorMessage = msg
+                self?.resetToLobby()
+            }
+        }
+        guestLink = link
+        link.start(
+            onMessage: { [weak self] msg in
+                Task { @MainActor in self?.guestHandle(msg) }
+            },
+            onState: { [weak self] st in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch st {
+                    case .ready:
+                        // 여기서는 아직 팀을 보내지 않는다.
+                        // 마리 수·레벨을 모르는 채로 만들면 불공평해진다 —
+                        // 호스트의 roomInfo 를 받고 나서 만든다.
+                        self.status = "방 정보를 기다리는 중…"
+                    case .failed(let e):
+                        self.awaitingRoomInfo = false
+                        self.errorMessage = "접속 실패: \(e.localizedDescription)\n"
+                            + "주소와 포트가 맞는지, 방장이 방을 열어뒀는지 확인해주세요."
+                        self.resetToLobby()
+                    case .cancelled:
+                        self.awaitingRoomInfo = false
+                        if self.screen == .battle || self.screen == .chooseLead {
+                            self.errorMessage = "호스트와 연결이 끊어졌습니다."
+                        }
+                        self.resetToLobby()
+                    default: break
+                    }
+                }
+            }
+        )
+    }
+
+    /// 방 정보를 받은 뒤에야 팀을 만들어 보낸다 (직접 접속 경로).
+    private func sendTeamAfterRoomInfo() async {
+        trimSelectionToCap()
+        myTeam = await buildTeam()
+        guard !myTeam.isEmpty else {
+            errorMessage = "팀을 만들 수 없습니다."
+            resetToLobby()
+            return
+        }
+        status = "특수 변신 데이터를 준비하는 중…"
+        await preloadForms(for: myTeam)
+        await preloadTransformMoves()
+        await preloadAutoForms(for: myTeam)
+        status = "호스트 응답을 기다리는 중…"
+        guestLink?.send(.join(playerName: playerName, team: myTeam))
+    }
+
+    /// 내가 방장일 때 남에게 알려줄 주소들 (다른 네트워크에서 붙을 때 쓴다)
+    var shareableAddresses: [(address: String, note: String)] {
+        guard let port = host.listeningPort else { return [] }
+        return DirectConnect.myAddresses(port: port)
+    }
+
     private func guestHandle(_ msg: Wire) {
         switch msg {
         case .joinAccepted(let r, let hostName, let side):
@@ -1522,6 +1635,17 @@ final class AppModel {
             screen = .chooseLead
             status = "선봉을 고르세요"
             autoPickLeadIfNeeded()
+
+        case .roomInfo(let r, let hostName, let roomName):
+            // 직접 접속으로 들어온 경우에만 의미가 있다 — 팀을 이 규칙으로 다시 만든다.
+            guard awaitingRoomInfo else { break }
+            awaitingRoomInfo = false
+            rules = r
+            opponentName = hostName
+            status = "\(hostName) 님의 \(roomName) — 팀을 준비하는 중…"
+            Task { @MainActor in
+                await self.sendTeamAfterRoomInfo()
+            }
 
         case .joinRejected(let reason):
             errorMessage = reason

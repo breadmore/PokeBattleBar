@@ -84,6 +84,8 @@ struct SideState: Codable, Sendable, Equatable {
     var usedZMove: Bool = false
     /// 이 진영에 설치된 장애물. 등장하는 포켓몬이 피해를 받는다.
     var hazards: Set<Hazard> = []
+    /// 지난 턴에 이 진영의 포켓몬이 쓰러졌는가 (구사일생의 위력이 두 배가 된다)
+    var allyFaintedLastTurn: Bool = false
 
     // MARK: 화면 (리플렉터 · 빛의장막 · 오로라베일)
     //
@@ -229,6 +231,19 @@ struct BattleEngine {
     /// 이걸 안 쓰고 steps 합계만 보면, 턴 시작에 steps 를 비운 뒤 첫 mark() 가
     /// **배틀 전체 로그**를 한 단계에 담아버린다.
     private var stepLogBase = 0
+
+    /// 이번 턴에 **먼저 움직인** 쪽. 역돌기(payback)가 이걸 본다.
+    private var firstMoverThisTurn: BattleSide?
+
+    /// 기술을 썼다는 것을 기록한다.
+    /// 마지막수단은 "다른 기술을 다 써봤는가" 를 보고, 내던지기는
+    /// "직전 기술이 실패했는가" 를 본다.
+    private mutating func noteMoveUsed(_ side: BattleSide, moveIndex: Int, failed: Bool) {
+        let i = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(i) else { return }
+        state.sides[side.rawValue].team[i].usedMoveIndices.insert(moveIndex)
+        state.sides[side.rawValue].team[i].lastMoveFailed = failed
+    }
 
     /// 지금까지 쌓인 로그를 한 단계로 끊어 기록한다.
     /// UI 가 이 단계들을 순서대로 재생해서 "누가 먼저 때렸는지" 를 보여준다.
@@ -477,6 +492,15 @@ struct BattleEngine {
         mark()          // 변신을 별도 단계로 보여준다
 
         let order = turnOrder(hostAction: hostAction, guestAction: guestAction)
+        firstMoverThisTurn = order.first
+
+        // 이번 턴에만 유효한 표시를 지운다 (역전·트릭플레이 판정용)
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            state.sides[side.rawValue].team[i].wasHitThisTurn = false
+            state.sides[side.rawValue].team[i].damagedThisTurn = false
+        }
 
         for side in order {
             if case .finished = state.phase { break }
@@ -492,6 +516,12 @@ struct BattleEngine {
         if case .finished = state.phase { return }
 
         endOfTurn()
+        // 필드에 머문 턴 수 — 속이기·선취점이 "나온 턴" 을 판정한다
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            state.sides[side.rawValue].team[i].turnsOnField += 1
+        }
         mark()          // 턴 종료 처리(상태이상·날씨·열매) 를 한 단계로
 
         if case .finished = state.phase { return }
@@ -681,7 +711,9 @@ struct BattleEngine {
             var b = state.sides[side.rawValue].team[idx]
             guard !b.isFainted,
                   let ab = b.ability?.name,
-                  let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID) else { continue }
+                  let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID,
+                                                 form: b.chosenForm ?? b.visualForm)
+            else { continue }
 
             let weather = state.rules.weather && state.field.hasWeather ? state.field.weather : Weather.none
             let ratio = Double(b.currentHP) / Double(max(1, b.maxHP))
@@ -978,9 +1010,11 @@ struct BattleEngine {
 
         // 모으는 중이면 이번 턴에 그 기술이 나간다 (고른 기술은 무시된다)
         if let charging = atk.chargingMoveIndex {
+            let wasHidden = atk.chargeHidden
             atk.chargingMoveIndex = nil
             atk.chargeHidden = false
             state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
+            _ = wasHidden
             releaseChargedMove(attacker: attacker, moveIndex: charging)
             return
         }
@@ -1061,8 +1095,14 @@ struct BattleEngine {
             return
         }
 
+        // 잠꼬대·코골기는 **자면서 쓰는** 기술이다.
+        // 잠듦으로 행동을 막으면 이 둘은 영원히 나가지 못한다.
+        let sleepMove = atk.moves.indices.contains(moveIndex)
+            && ["sleep-talk", "snore"].contains(atk.moves[moveIndex].def.name)
+
         // 행동 방해 판정
-        if let blocked = checkPreMoveBlock(&atk, side: attacker) {
+        if !(sleepMove && atk.status == .sleep),
+           let blocked = checkPreMoveBlock(&atk, side: attacker) {
             state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = atk
             say(blocked)
             return
@@ -1103,6 +1143,13 @@ struct BattleEngine {
             say("(\(move.type.ko) · 위력 \(move.power.map(String.init) ?? "-"))")
         } else {
             say("\(atkName)의 \(move.display)!")
+        }
+
+        // 몸을 숨기고 있다가 내려오는 턴 — **한 줄 알려준다.**
+        // 이게 없으면 기술 이름만 뜨고 데미지 표시가 없어
+        // "공격을 안 했다" 로 보인다 (공중날기·구멍파기).
+        if skipCharge, move.chargeHides {
+            say(releaseMessage(move, who: atkName))
         }
 
         // 직전 기술 기록 (아무것도않기 판정용) + 연속 사용 횟수
@@ -1169,6 +1216,38 @@ struct BattleEngine {
         }
 
         // 데이터에 구조화돼 있지 않아 손으로 구현한 기술들
+        // 조건이 안 맞으면 실패하는 기술 (꿈먹기·속이기·마지막수단 …).
+        // PokeAPI 에는 이 조건이 없어서 그냥 나가던 것들이다.
+        if let why = ConditionalMove.failureReason(
+            move: move.name,
+            attacker: state.side(attacker).active,
+            defender: state.side(defender).active,
+            attackerSide: state.side(attacker)
+        ) {
+            say("…\(why)")
+            noteMoveUsed(attacker, moveIndex: moveIndex, failed: true)
+            return
+        }
+
+        // 잠꼬대 — 다른 기술 하나를 무작위로 골라 그 자리에서 쓴다.
+        // 자신은 계속 잠들어 있고, 모으는 기술은 모으지 않고 바로 나간다.
+        if move.name == "sleep-talk" {
+            let pool = atk.moves.indices.filter { i in
+                let n = atk.moves[i].def.name
+                return i != moveIndex && atk.moves[i].usable
+                    && !["sleep-talk", "snore", "bide", "focus-punch",
+                         "uproar", "me-first"].contains(n)
+                    && !atk.moves[i].def.isCharge
+            }
+            guard let pick = pool.randomElement(using: &rng) else {
+                say("…하지만 실패했다!")
+                return
+            }
+            say("\(atkName)는 잠꼬대로 \(atk.moves[pick].def.display)을(를) 썼다!")
+            performMove(attacker: attacker, moveIndex: pick, skipCharge: true)
+            return
+        }
+
         if handleScriptedMove(move, attacker: attacker, defender: defender) { return }
 
         // 방어 계열 — 이번 턴 자신을 보호한다. 연속으로 쓰면 성공률이 떨어진다.
@@ -1288,6 +1367,23 @@ struct BattleEngine {
         if hits > 1 { say("\(hits)번 맞았다!") }
         if didCrit { say("급소에 맞았다!") }
         if let t = TypeChart.effectivenessText(lastMult) { say(t) }
+
+        // 뺨치기·소금뿌리기 — 위력이 두 배가 되는 대신 그 상태이상을 풀어준다
+        if totalDealt > 0, let cured = ConditionalMove.curesTargetStatus(move: move.name) {
+            var d2 = state.side(defender).active
+            if d2.status == cured {
+                d2.status = .none
+                d2.sleepTurns = 0
+                state.sides[defender.rawValue].team[state.side(defender).activeIndex] = d2
+                say("\(d2.name)의 \(cured.ko)이(가) 풀렸다!")
+            }
+        }
+        // 내던지기 — 도구가 날아가고, 도구에 따라 상대가 상태이상에 걸린다.
+        // (맹독구슬 → 맹독, 독바늘 → 독, 왕의징표석 → 풀죽음)
+        if move.name == "fling", totalDealt > 0 {
+            applyFlingSideEffect(attacker: attacker, defender: defender)
+        }
+        noteMoveUsed(attacker, moveIndex: moveIndex, failed: totalDealt == 0)
 
         // 흡수 / 반동
         if move.drainPercent != 0, totalDealt > 0 {
@@ -2182,6 +2278,13 @@ struct BattleEngine {
                names.contains(move.name) { extra *= m }
         }
 
+        // 조건에 따라 위력이 달라지는 기술 (마수말·오물웨이브·곡예 …)
+        extra *= ConditionalMove.powerMultiplier(
+            move: move.name, attacker: a, defender: d,
+            attackerSide: state.side(attacker),
+            movedFirst: firstMoverThisTurn == attacker,
+            field: state.field)
+
         // 날씨 — 불꽃/물 기술 배율
         if state.rules.weather, state.field.hasWeather {
             extra *= state.field.weather.damageMultiplier(for: move.type)
@@ -2338,6 +2441,11 @@ struct BattleEngine {
 
         let dealt = min(b.currentHP, amount)
         b.currentHP -= dealt
+        // 이번 턴에 맞았다는 표시 — 역전·리벤지·트릭플레이가 이걸 본다
+        if dealt > 0 {
+            b.wasHitThisTurn = true
+            b.damagedThisTurn = true
+        }
         state.sides[side.rawValue].team[state.side(side).activeIndex] = b
         return dealt
     }
@@ -2883,6 +2991,56 @@ extension BattleEngine {
         }
     }
 
+    /// 내던지기의 부가효과.
+    ///
+    /// 도구는 사라지고, 도구가 정해둔 상태이상이 상대에게 걸린다.
+    /// 이 표는 Showdown 의 `fling` 필드에서 그대로 온다 — 손으로 적으면
+    /// 반드시 빠뜨린다.
+    private mutating func applyFlingSideEffect(attacker: BattleSide, defender: BattleSide) {
+        var a = state.side(attacker).active
+        guard let item = a.heldItem, !a.itemConsumed else { return }
+        let sd = Showdown.item(item.name)
+
+        a.itemConsumed = true
+        state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+        say("\(a.name)는 \(item.koName)을(를) 내던졌다!")
+
+        guard state.rules.statusEffects else { return }
+        if let st = sd?.flingStatus, let ail = Self.flingAilment(st) {
+            inflictDirect(ail, on: defender, source: item.koName)
+        } else if sd?.flingVolatile == "flinch" {
+            var d = state.side(defender).active
+            d.mustFlinch = true
+            state.sides[defender.rawValue].team[state.side(defender).activeIndex] = d
+        }
+    }
+
+    /// Showdown 의 상태 약어 → 우리 Ailment
+    private static func flingAilment(_ code: String) -> Ailment? {
+        switch code {
+        case "brn": return .burn
+        case "par": return .paralysis
+        case "psn": return .poison
+        case "tox": return .toxic
+        case "slp": return .sleep
+        case "frz": return .freeze
+        default:    return nil
+        }
+    }
+
+    /// 몸을 숨겼다가 **내려오는 턴**에 띄우는 말.
+    /// 이 줄이 없으면 화면에 기술 이름만 뜨고 아무 일도 안 한 것처럼 보인다.
+    func releaseMessage(_ move: MoveDef, who: String) -> String {
+        switch move.name {
+        case "fly", "bounce":     return "\(who)는 하늘에서 내리꽂았다!"
+        case "dig":              return "\(who)는 땅속에서 튀어나왔다!"
+        case "dive":             return "\(who)는 물속에서 솟아올랐다!"
+        case "phantom-force", "shadow-force":
+                                 return "\(who)는 그림자에서 나타났다!"
+        default:                 return "\(who)는 모습을 드러냈다!"
+        }
+    }
+
     mutating func handleScriptedMove(_ move: MoveDef, attacker: BattleSide,
                                      defender: BattleSide) -> Bool {
         var a = state.side(attacker).active
@@ -3205,6 +3363,10 @@ extension BattleEngine {
         // 헤롱헤롱(매혹) — 확률로 움직이지 못한다.
         // 원작은 성별이 달라야 하지만 우리는 성별을 다루지 않아 항상 걸린다.
         case "attract":
+            if state.rules.abilities, d.isOblivious {
+                say("\(d.name)는 둔감으로 헤롱헤롱해지지 않는다!")
+                return true
+            }
             guard !d.infatuated else {
                 say("\(aName)의 헤롱헤롱! …하지만 실패했다!")
                 return true
@@ -3219,6 +3381,10 @@ extension BattleEngine {
 
         // 도발 — 3턴 동안 변화기를 쓸 수 없게 만든다
         case "taunt":
+            if state.rules.abilities, d.isOblivious {
+                say("\(d.name)는 둔감으로 도발에 넘어가지 않는다!")
+                return true
+            }
             guard d.tauntTurns == 0 else {
                 say("\(aName)의 도발! …하지만 실패했다!")
                 return true
@@ -3435,10 +3601,11 @@ extension BattleEngine {
         case "beat-up":
             return 30
 
-        // 내던지기 — 도구 종류마다 다르다. 도구가 없으면 실패한다.
+        // 내던지기 — **도구마다 위력이 다르다** (Showdown 표를 그대로 쓴다).
+        // 예전에는 전부 30 이었다. 독바늘 70, 하드스톤 100 처럼 차이가 크다.
         case "fling":
-            guard a.heldItem != nil, !a.itemConsumed else { return 0 }
-            return 30
+            guard let item = a.heldItem, !a.itemConsumed else { return 0 }
+            return Showdown.item(item.name)?.flingPower ?? 30
 
         // 자연의은혜 — 나무열매 종류마다 다르다. 열매가 없으면 실패한다.
         case "natural-gift":

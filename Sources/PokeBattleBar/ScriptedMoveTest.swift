@@ -324,6 +324,40 @@ enum ScriptedMoveTest {
             ok = show(r.foe.infatuated, "상대가 헤롱헤롱해진다") && ok
         }
 
+        // 사용자가 물었다: "공중날기 적용 안되고 있는것 같은데?"
+        // 실제로 안 되고 있었다 — Showdown 추출 스크립트가 onImmunity 를 봤는데
+        // 몸을 숨기는 것은 onInvulnerability 다. 공중날기·바운드·섀도다이브가
+        // 전부 빠져 있었다. 이제 **정말 피하는지**까지 확인한다.
+        print("\n-- 몸을 숨기는 기술 (공중날기·구멍파기·다이빙…) --")
+        for name in ["fly", "dig", "dive", "bounce", "phantom-force", "shadow-force"] {
+            guard let hit = await hiddenEvades(move: name, chart: chart) else {
+                ok = show(false, "\(name) 회피 검사") && ok; continue
+            }
+            ok = show(hit.evaded && hit.control,
+                      "\(hit.display) — 모으는 턴에는 상대 공격이 맞지 않는다",
+                      "숨었을 때 \(hit.hidden) 데미지 / 그냥 서 있으면 \(hit.plain)") && ok
+        }
+
+        print("\n-- 헤롱헤롱 (실제로 턴을 못 쓰는지) --")
+        if let r = await infatuationCheck(chart: chart) {
+            ok = show(r.applied, "상대가 헤롱헤롱해진다") && ok
+            ok = show(r.skipped > 0, "헤롱헤롱하면 실제로 움직이지 못하는 턴이 있다",
+                      "\(r.turns)턴 중 \(r.skipped)턴") && ok
+            ok = show(r.obliviousImmune, "둔감은 헤롱헤롱에 걸리지 않는다") && ok
+        } else { ok = show(false, "헤롱헤롱 검사") && ok }
+
+        // 사용자가 물었다: "꿈먹기가 그냥 써진다"
+        // 조건이 붙은 기술이 통째로 빠져 있었다 — PokeAPI 에 조건 정보가 없다.
+        print("\n-- 조건이 붙은 기술 (실패 조건) --")
+        if let r = await conditionGateCheck(chart: chart) {
+            for (label, pass, note) in r { ok = show(pass, label, note) && ok }
+        } else { ok = show(false, "실패 조건 검사") && ok }
+
+        print("\n-- 조건에 따라 위력이 바뀌는 기술 --")
+        if let r = await conditionalPowerCheck(chart: chart) {
+            for (label, pass, note) in r { ok = show(pass, label, note) && ok }
+        } else { ok = show(false, "조건 위력 검사") && ok }
+
         print("\n-- 일격필살 --")
         if let r = await ohkoCheck(chart: chart) {
             ok = show(r.canKO, "맞으면 한 방에 쓰러진다", r.detail) && ok
@@ -721,6 +755,192 @@ enum ScriptedMoveTest {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
     }
 
+    /// 조건이 안 맞으면 실패하는 기술들.
+    ///
+    /// 꿈먹기가 안 자는 상대에게 그냥 나가던 게 시작이었다.
+    private static func conditionGateCheck(chart: TypeChart) async -> [(String, Bool, String)]? {
+        guard let splash = try? await PokeAPI.shared.move("splash"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+        var out: [(String, Bool, String)] = []
+
+        /// 지정한 기술을 n번 쓰고, 마지막 턴에 데미지가 들어갔는지 본다.
+        func dealt(_ name: String, turns: Int, foe: MoveDef,
+                   setup: ((inout Battler) -> Void)? = nil) async -> Int? {
+            guard let mv = try? await PokeAPI.shared.move(name) else { return nil }
+            guard let e = await runTurns(userMoves: [mv], foeMoves: [foe],
+                                         picks: Array(repeating: 0, count: turns),
+                                         userID: 143, foeID: 151, chart: chart,
+                                         hp: 9999, userSetup: setup) else { return nil }
+            return 9999 - e.state.sides[1].team[0].currentHP
+        }
+
+        // 꿈먹기 — 안 자는 상대에게는 실패한다
+        if let awake = await dealt("dream-eater", turns: 1, foe: splash) {
+            out.append(("꿈먹기 — 안 자는 상대에게는 실패한다", awake == 0, "\(awake) 데미지"))
+        }
+        // 잠들어 있으면 나간다 (상대가 하품 대신 자기 자신을 재우게 만들 수는 없으니
+        // 최면술을 쓰는 대신 상대를 직접 재운다)
+        if let mv = try? await PokeAPI.shared.move("dream-eater"),
+           let e = await runTurns(userMoves: [mv], foeMoves: [splash], picks: [0],
+                                  userID: 143, foeID: 151, chart: chart, hp: 9999,
+                                  foeSetup: { $0.status = .sleep; $0.sleepTurns = 3 }) {
+            let d = 9999 - e.state.sides[1].team[0].currentHP
+            out.append(("꿈먹기 — 잠든 상대에게는 나간다", d > 0, "\(d) 데미지"))
+        }
+        // 속이기 — 두 번째 턴에는 실패한다
+        if let first = await dealt("fake-out", turns: 1, foe: tackle),
+           let second = await dealt("fake-out", turns: 2, foe: tackle) {
+            out.append(("속이기 — 나온 턴에만 성공한다",
+                        first > 0 && second == first,
+                        "1턴 \(first) / 2턴까지 합계 \(second)"))
+        }
+        // 마지막수단 — 다른 기술을 안 써봤으면 실패한다
+        if let d = await dealt("last-resort", turns: 1, foe: splash) {
+            out.append(("마지막수단 — 다른 기술을 다 쓰기 전에는 실패한다", d == 0, "\(d) 데미지"))
+        }
+        // 코피 — 상대가 도구를 지녀야 한다
+        if let d = await dealt("poltergeist", turns: 1, foe: splash) {
+            out.append(("코피 — 도구 없는 상대에게는 실패한다", d == 0, "\(d) 데미지"))
+        }
+        return out
+    }
+
+    /// 조건이 맞으면 위력이 뛰는 기술들. **대조군과 비교해야** 의미가 있다.
+    private static func conditionalPowerCheck(chart: TypeChart) async -> [(String, Bool, String)]? {
+        guard let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+        var out: [(String, Bool, String)] = []
+
+        /// 기술 **직후**의 HP 로 데미지를 재는 것이 중요하다.
+        /// 턴이 끝날 때의 화상·독 데미지까지 세면 배율이 엉뚱하게 나온다
+        /// (실제로 처음엔 ×377 이 나왔다).
+        func dealt(_ name: String, startHP: Int = 9999,
+                   foeSetup: ((inout Battler) -> Void)? = nil,
+                   userSetup: ((inout Battler) -> Void)? = nil) async -> Int? {
+            guard let mv = try? await PokeAPI.shared.move(name) else { return nil }
+            guard let e = await runTurns(userMoves: [mv], foeMoves: [splash], picks: [0],
+                                         userID: 143, foeID: 151, chart: chart, hp: 9999,
+                                         userSetup: userSetup, foeSetup: foeSetup) else { return nil }
+            // 우리가 먼저 움직인다(속도 999) — HP 가 처음 줄어든 단계가 우리 공격이다
+            for step in e.state.steps {
+                if let hp = step.guestHP.first, hp < startHP { return startHP - hp }
+            }
+            return 0
+        }
+        func compare(_ label: String, _ name: String,
+                     boosted: @escaping (inout Battler) -> Void,
+                     boostedStartHP: Int = 9999,
+                     factor: Double = 2.0) async {
+            guard let plain = await dealt(name),
+                  let up = await dealt(name, startHP: boostedStartHP,
+                                       foeSetup: boosted), plain > 0 else {
+                out.append((label, false, "측정 실패")); return
+            }
+            let ratio = Double(up) / Double(plain)
+            // 데미지 난수(85~100%) 때문에 정확히 배는 아니다 — 여유를 둔다
+            let pass = ratio > factor * 0.8 && ratio < factor * 1.25
+            out.append((label, pass, "\(plain) → \(up) (×\(String(format: "%.2f", ratio)))"))
+        }
+
+        await compare("병상첨병 — 상태이상인 상대에게 위력 두 배", "hex",
+                      boosted: { $0.status = .burn })
+        await compare("오물웨이브 — 독 상태인 상대에게 위력 두 배", "venoshock",
+                      boosted: { $0.status = .poison })
+        await compare("바다의소용돌이 — HP 절반 이하인 상대에게 위력 두 배", "brine",
+                      boosted: { $0.currentHP = $0.maxHP / 4 },
+                      boostedStartHP: 9999 / 4)
+
+        // 곡예 — 도구를 안 지녔을 때 두 배. 이건 **내** 상태라 방향이 반대다.
+        if let withItem = await dealt("acrobatics", startHP: 9999, userSetup: {
+                $0.heldItem = ItemDef(name: "leftovers", koName: "먹다남은음식",
+                                      category: "", shortEffect: "", kind: .none)
+            }),
+           let without = await dealt("acrobatics"), withItem > 0 {
+            let ratio = Double(without) / Double(withItem)
+            out.append(("애크러뱃 — 도구가 없으면 위력 두 배",
+                        ratio > 1.6 && ratio < 2.5,
+                        "도구 있음 \(withItem) → 없음 \(without)"))
+        }
+        return out
+    }
+
+    /// 모으는 턴에 몸을 숨기면 상대 공격이 빗나가는가.
+    ///
+    /// 대조군(제자리멀리뛰기)을 함께 돌린다 — 숨었을 때만 0 이어야 의미가 있다.
+    /// 둘 다 0 이면 그냥 그 기술이 안 맞는 것일 수도 있다.
+    private static func hiddenEvades(move name: String, chart: TypeChart) async -> (
+        display: String, evaded: Bool, control: Bool, hidden: Int, plain: Int
+    )? {
+        guard let mv = try? await PokeAPI.shared.move(name),
+              let splash = try? await PokeAPI.shared.move("splash"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+
+        /// 내가 먼저(속도 999) 기술을 쓰고, 그 다음 상대가 몸통박치기를 한다.
+        func damageTaken(using m: MoveDef) async -> Int {
+            guard let e = await runTurns(userMoves: [m], foeMoves: [tackle],
+                                         picks: [0], userID: 143, foeID: 151,
+                                         chart: chart, hp: 500) else { return -1 }
+            return 500 - e.state.sides[0].team[0].currentHP
+        }
+        let hidden = await damageTaken(using: mv)
+        let plain = await damageTaken(using: splash)
+        return (mv.display, hidden == 0, plain > 0, hidden, plain)
+    }
+
+    /// 헤롱헤롱이 걸리고, **실제로 턴을 날려먹는지**, 둔감이 막는지.
+    private static func infatuationCheck(chart: TypeChart) async -> (
+        applied: Bool, skipped: Int, turns: Int, obliviousImmune: Bool
+    )? {
+        guard let attract = try? await PokeAPI.shared.move("attract"),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let uSp = try? await PokeAPI.shared.species(94),
+              let fSp = try? await PokeAPI.shared.species(143) else { return nil }
+
+        func run(oblivious: Bool, seed: UInt64) -> (Bool, Int, Int) {
+            func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+                let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                      rarity: "common", isShiny: false, origin: .dex,
+                                      fullyEvolved: true)
+                var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+                for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+                b.stats[.speed] = speed
+                b.maxHP = 99_999; b.currentHP = 99_999
+                return b
+            }
+            var me = make(uSp, [attract], "h", speed: 999)
+            var foe = make(fSp, [tackle], "g", speed: 1)
+            if oblivious {
+                foe.ability = AbilityDef(name: "oblivious", koName: "둔감",
+                                         shortEffect: "", kind: .none)
+            }
+            _ = me
+            var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                                 sides: [SideState(playerName: "나", team: [me], activeIndex: 0),
+                                         SideState(playerName: "상대", team: [foe], activeIndex: 0)])
+            st.phase = .chooseLead
+            var e = BattleEngine(state: st, chart: chart, seed: seed)
+            e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+            e.beginBattle()
+            // 1턴: 헤롱헤롱을 건다
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            let applied = e.state.sides[1].team[0].infatuated
+            // 이후 20턴 — 상대가 못 움직인 턴을 센다
+            var skipped = 0, turns = 0
+            for _ in 0..<20 {
+                guard case .awaitingMoves = e.state.phase else { break }
+                let before = e.state.log.count
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                turns += 1
+                if e.state.log[before...].contains(where: { $0.contains("헤롱헤롱해서") }) {
+                    skipped += 1
+                }
+            }
+            return (applied, skipped, turns)
+        }
+        let (applied, skipped, turns) = run(oblivious: false, seed: 77)
+        let (obliviousApplied, _, _) = run(oblivious: true, seed: 77)
+        return (applied, skipped, turns, !obliviousApplied)
+    }
+
     /// 웅크리기가 데구르르의 위력을 두 배로 하는지
     private static func defenseCurlCheck(chart: TypeChart) async -> (
         boosted: Bool, detail: String, defenseUp: Bool, detail2: String
@@ -918,7 +1138,9 @@ enum ScriptedMoveTest {
     private static func runTurns(userMoves: [MoveDef], foeMoves: [MoveDef],
                                  picks: [Int], userID: Int, foeID: Int,
                                  chart: TypeChart, userSpeed: Int = 999,
-                                 hp: Int = 9999) async -> BattleEngine? {
+                                 hp: Int = 9999,
+                                 userSetup: ((inout Battler) -> Void)? = nil,
+                                 foeSetup: ((inout Battler) -> Void)? = nil) async -> BattleEngine? {
         guard let uSp = try? await PokeAPI.shared.species(userID),
               let fSp = try? await PokeAPI.shared.species(foeID) else { return nil }
         func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
@@ -931,13 +1153,13 @@ enum ScriptedMoveTest {
             b.maxHP = hp; b.currentHP = hp
             return b
         }
+        var me = make(uSp, userMoves, "h", speed: userSpeed)
+        var foe = make(fSp, foeMoves, "g", speed: 1)
+        userSetup?(&me)
+        foeSetup?(&foe)
         var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
-                             sides: [SideState(playerName: "나",
-                                               team: [make(uSp, userMoves, "h", speed: userSpeed)],
-                                               activeIndex: 0),
-                                     SideState(playerName: "상대",
-                                               team: [make(fSp, foeMoves, "g", speed: 1)],
-                                               activeIndex: 0)])
+                             sides: [SideState(playerName: "나", team: [me], activeIndex: 0),
+                                     SideState(playerName: "상대", team: [foe], activeIndex: 0)])
         st.phase = .chooseLead
         var e = BattleEngine(state: st, chart: chart, seed: 313)
         e.setLead(.host, index: 0); e.setLead(.guest, index: 0)

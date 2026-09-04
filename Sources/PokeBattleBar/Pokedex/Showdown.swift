@@ -126,6 +126,68 @@ enum Showdown {
         }
     }
 
+    // MARK: 도구 · 특성
+
+    /// 도구 데이터 (Showdown id 기준)
+    static let items: [String: ShowdownItem] = parseItems()
+    /// 특성 데이터 (Showdown id 기준)
+    static let abilities: [String: ShowdownAbility] = parseAbilities()
+
+    static func item(_ pokeAPIName: String) -> ShowdownItem? {
+        items[id(fromPokeAPI: pokeAPIName)]
+    }
+    static func ability(_ pokeAPIName: String) -> ShowdownAbility? {
+        abilities[id(fromPokeAPI: pokeAPIName)]
+    }
+
+    private static func parseItems() -> [String: ShowdownItem] {
+        guard let data = ShowdownData.itemsJSON.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var out: [String: ShowdownItem] = [:]
+        for (id, v) in raw {
+            guard let d = v as? [String: Any] else { continue }
+            var i = ShowdownItem()
+            i.flingPower = d["fl"] as? Int
+            i.flingStatus = d["fls"] as? String
+            i.flingVolatile = d["flv"] as? String
+            i.isBerry = d["berry"] != nil
+            i.isChoice = d["choice"] != nil
+            i.megaStone = d["mega"] as? String
+            i.zMoveType = d["zt"] as? String
+            i.itemUser = d["user"] as? [String]
+            i.nonstandard = d["ns"] as? String
+            i.plateType = d["plate"] as? String
+            i.boosts = d["bo"] as? [String: Int]
+            if let ng = d["ng"] as? [Any], ng.count == 2 {
+                i.naturalGiftPower = ng[0] as? Int
+                i.naturalGiftType = ng[1] as? String
+            }
+            i.hooks = Set((d["hooks"] as? [String]) ?? [])
+            out[id] = i
+        }
+        return out
+    }
+
+    private static func parseAbilities() -> [String: ShowdownAbility] {
+        guard let data = ShowdownData.abilitiesJSON.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var out: [String: ShowdownAbility] = [:]
+        for (id, v) in raw {
+            guard let d = v as? [String: Any] else { continue }
+            var a = ShowdownAbility()
+            a.nonstandard = d["ns"] as? String
+            a.isBreakable = d["brk"] != nil
+            a.suppressesWeather = d["sw"] != nil
+            a.hooks = Set((d["hooks"] as? [String]) ?? [])
+            out[id] = a
+        }
+        return out
+    }
+
     // MARK: 파싱
 
     private static func parseMoves() -> [String: ShowdownMove] {
@@ -188,4 +250,50 @@ enum Showdown {
         }
         return out
     }
+}
+
+/// Showdown 의 도구 데이터.
+///
+/// PokeAPI 의 짧은 설명으로는 "맹독구슬을 들면 다음 턴에 맹독" 같은 규칙을
+/// 구현할 수 없다. 무엇보다 **목록이 있어서** 우리가 무엇을 빼먹었는지 셀 수 있다.
+struct ShowdownItem: Sendable {
+    /// 내던지기 위력 (없으면 던질 수 없다)
+    var flingPower: Int?
+    /// 내던지면 상대가 걸리는 상태이상 (맹독구슬 → 맹독)
+    var flingStatus: String?
+    /// 내던지면 걸리는 일시 상태 (백금가루 → 풀죽음 등)
+    var flingVolatile: String?
+    var isBerry = false
+    var isChoice = false
+    var megaStone: String?
+    var zMoveType: String?
+    /// 특정 포켓몬만 쓸 수 있는 전용 도구
+    var itemUser: [String]?
+    var nonstandard: String?
+    var plateType: String?
+    var boosts: [String: Int]?
+    var naturalGiftPower: Int?
+    var naturalGiftType: String?
+    /// 배틀 중 동작하는 훅 이름들. 하나라도 있으면 구현이 필요한 도구다.
+    var hooks: Set<String> = []
+
+    /// 지금 세대에서 실제로 쓸 수 있는 도구인가
+    var isUsable: Bool { nonstandard == nil }
+    /// 배틀 중 무언가 하는 도구인가 (단순 판매용 아이템 제외)
+    var hasBattleEffect: Bool {
+        !hooks.isEmpty || isChoice || megaStone != nil || zMoveType != nil
+            || boosts != nil || naturalGiftPower != nil
+    }
+}
+
+/// Showdown 의 특성 데이터
+struct ShowdownAbility: Sendable {
+    var nonstandard: String?
+    /// 틀깨기로 무시되는 특성인가
+    var isBreakable = false
+    var suppressesWeather = false
+    var hooks: Set<String> = []
+
+    var isUsable: Bool { nonstandard == nil }
+    var hasBattleEffect: Bool { !hooks.isEmpty || suppressesWeather }
 }

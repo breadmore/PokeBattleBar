@@ -24,6 +24,9 @@ enum NetTest {
         //      이게 안 되면 한쪽만 업데이트했을 때 그냥 연결이 끊기고 이유를 알 수 없다.
         ok = versionTest() && ok
 
+        // 0-c) 다른 네트워크에서 붙을 때 쓰는 주소 파싱
+        ok = directAddressTest() && ok
+
         // 1) 실제 팀 준비 (직렬화 대상이 진짜 데이터여야 의미가 있다)
         guard let team = await buildTeam([87, 317]) else {
             print("✗ 팀 준비 실패")
@@ -353,4 +356,52 @@ enum NetTest {
         }
         return out
     }
+    /// 주소로 직접 접속할 때 쓰는 주소 파싱.
+    ///
+    /// 여기가 틀리면 다른 네트워크 접속이 통째로 안 된다 —
+    /// 특히 IPv6 의 콜론을 포트 구분으로 착각하기 쉽다.
+    private static func directAddressTest() -> Bool {
+        var ok = true
+        func check(_ input: String, host: String?, port: UInt16?, _ label: String) {
+            let e = DirectConnect.endpoint(from: input)
+            guard let host, let port else {
+                let pass = e == nil
+                print(pass ? "  ✓ \(label)" : "  ✗ \(label) — 받아들이면 안 되는 주소다")
+                ok = pass && ok
+                return
+            }
+            guard case .hostPort(let h, let p)? = e else {
+                print("  ✗ \(label) — 파싱 실패")
+                ok = false
+                return
+            }
+            let hs = "\(h)".split(separator: "%").first.map(String.init) ?? "\(h)"
+            let pass = hs == host && p.rawValue == port
+            print(pass ? "  ✓ \(label)"
+                       : "  ✗ \(label) — \(hs):\(p.rawValue) (기대 \(host):\(port))")
+            ok = pass && ok
+        }
+        print("-- 직접 접속 주소 --")
+        let def = RoomHost.preferredPort
+        check("100.64.1.2:51234", host: "100.64.1.2", port: 51234, "IPv4 + 포트")
+        check("100.64.1.2", host: "100.64.1.2", port: def, "포트를 생략하면 기본 포트")
+        check("  192.168.0.5:7000  ", host: "192.168.0.5", port: 7000, "앞뒤 공백을 무시한다")
+        check("example.com:51234", host: "example.com", port: 51234, "호스트 이름")
+        check("[fd00::1]:51234", host: "fd00::1", port: 51234, "IPv6 (대괄호)")
+        check("fd00::1", host: "fd00::1", port: def, "IPv6 (포트 없음 — 콜론을 포트로 보지 않는다)")
+        check("", host: nil, port: nil, "빈 문자열은 거절한다")
+        check("   ", host: nil, port: nil, "공백만 있으면 거절한다")
+
+        // 호스트가 안내하는 주소에 쓸모없는 것이 섞이지 않는지
+        let addrs = DirectConnect.myAddresses(port: def)
+        let clean = !addrs.contains { $0.address.hasPrefix("127.")
+                                   || $0.address.hasPrefix("169.254") }
+        print(clean ? "  ✓ 안내 주소에 루프백·링크로컬이 없다"
+                    : "  ✗ 안내 주소에 쓸 수 없는 주소가 섞였다")
+        ok = clean && ok
+        print("    안내 주소: \(addrs.map(\.address).joined(separator: ", "))")
+        print("")
+        return ok
+    }
+
 }

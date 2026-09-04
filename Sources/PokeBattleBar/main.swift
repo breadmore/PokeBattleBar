@@ -240,6 +240,37 @@ if args.contains("--pickertest") {
     RunLoop.main.run()
 }
 
+// 기술 하나의 턴 로그를 그대로 본다 (구현 확인용)
+if let i = args.firstIndex(of: "--movelog"), args.count > i + 1 {
+    let move = args[i + 1]
+    func opt(_ name: String, _ fallback: String) -> String {
+        guard let j = args.firstIndex(of: name), args.count > j + 1 else { return fallback }
+        return args[j + 1]
+    }
+    let turns = Int(opt("--turns", "3")) ?? 3
+    let foeMove = opt("--foe-move", "splash")
+    let speed = Int(opt("--speed", "999")) ?? 999
+    Task { @MainActor in
+        let extra = args.firstIndex(of: "--move2").flatMap { j in
+            args.count > j + 1 ? args[j + 1] : nil
+        }
+        let ok = await MoveLog.run(move: move, turns: turns,
+                                   foeMove: foeMove, userSpeed: speed,
+                                   extraMove: extra)
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
+// Showdown 데이터와 우리 구현을 대조한다 — 뭘 빼먹었는지 데이터가 말해준다
+if args.contains("--datagap") {
+    Task { @MainActor in
+        let ok = await DataGapAudit.run(verbose: args.contains("--all"))
+        exit(ok ? 0 : 1)
+    }
+    RunLoop.main.run()
+}
+
 if args.contains("--nettest") {
     Task {
         let passed = await NetTest.run()

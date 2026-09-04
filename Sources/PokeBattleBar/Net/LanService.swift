@@ -26,6 +26,15 @@ struct DiscoveredRoom: Identifiable, Sendable {
 
 /// 방을 광고하고 게스트 한 명을 받는다.
 final class RoomHost: @unchecked Sendable {
+    /// 다른 네트워크에서 붙을 때 안내할 기본 포트.
+    /// 포트포워딩을 걸거나 방화벽을 열 때 이 번호 하나만 알면 된다.
+    static let preferredPort: UInt16 = 51234
+
+    /// 실제로 열린 포트 (고정 포트가 이미 쓰이면 다른 번호가 된다)
+    var listeningPort: UInt16? {
+        listener?.port?.rawValue
+    }
+
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "poke.roomhost")
 
@@ -60,7 +69,18 @@ final class RoomHost: @unchecked Sendable {
         self.modeSummary = modeSummary
 
         do {
-            let l = try NWListener(using: PeerLink.params)
+            // **고정 포트를 먼저 시도한다.**
+            //
+            // 같은 LAN 은 Bonjour 로 찾지만, 다른 네트워크(Tailscale·포트포워딩·
+            // 터널)에서는 주소로 직접 붙어야 한다. 포트가 매번 바뀌면 안내할 수가
+            // 없다. 이미 쓰고 있으면 아무 포트나 받는다.
+            let l: NWListener
+            if let fixed = NWEndpoint.Port(rawValue: RoomHost.preferredPort),
+               let tryFixed = try? NWListener(using: PeerLink.params, on: fixed) {
+                l = tryFixed
+            } else {
+                l = try NWListener(using: PeerLink.params)
+            }
             l.service = NWListener.Service(
                 name: roomName,
                 type: pokeBattleServiceType,

@@ -277,7 +277,6 @@ actor AbilityCatalog {
         case "sand-veil2":      return .weatherEvasion(.sandstorm)
         case "stall":           return .priorityBoost(nil, -1)
         case "vital-spirit2":   return .flinchImmunity
-        case "oblivious", "own-tempo2": return .statusImmunity(.confusion)
         case "pure-power":      return .attackMultiplier(2.0)
         case "gorilla-tactics": return .statMultiplier(.attack, 1.5)
         case "transistor":      return .pinchBoost(.electric, 1.3)

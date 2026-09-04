@@ -17,6 +17,13 @@ mkdir -p "$OUT"
 BASE="https://raw.githubusercontent.com/smogon/pokemon-showdown/master"
 echo "==> 내려받기"
 curl -sfL --max-time 60 "$BASE/data/moves.ts" -o "$TMP/moves.ts"
+# 도구·특성도 받는다.
+#
+# "맹독구슬을 들면 다음 턴에 맹독", "내던지기로 그 상태를 상대에게" 같은 규칙은
+# PokeAPI 의 짧은 설명으로는 구현할 수 없다. Showdown 은 이걸 구조화해 갖고 있고,
+# 무엇보다 **목록 자체**가 있어서 "우리가 뭘 빼먹었는지" 를 셀 수 있다.
+curl -sfL --max-time 60 "$BASE/data/items.ts" -o "$TMP/items.ts"
+curl -sfL --max-time 60 "$BASE/data/abilities.ts" -o "$TMP/abilities.ts"
 curl -sfL --max-time 60 "$BASE/data/random-battles/gen9/sets.json" -o "$TMP/sets.json"
 # PokeAPI 의 기술 이름 목록도 받는다.
 # Showdown id 는 하이픈이 없어(thunderwave) 그대로는 PokeAPI 로 조회할 수 없다.
@@ -51,7 +58,10 @@ for (const [id, m] of Object.entries(Moves)) {
   if (m.self?.status) o.ss = m.self.status;
   if (m.target) o.tg = m.target;
   // 모으는 턴에 어디로 숨는지 (공중·땅속·물속 — 그 동안 대부분의 기술이 맞지 않는다)
-  if (m.condition?.onImmunity) o.hide = 1;
+  // 공중날기·땅속은 함수, 섀도다이브는 `onInvulnerability: false` 라 값이 falsy 다.
+  // 존재 여부로 봐야 한다. 스카이드롭만 onAnyInvulnerability 를 쓴다.
+  if (m.condition && ('onInvulnerability' in m.condition ||
+                      'onAnyInvulnerability' in m.condition)) o.hide = 1;
   const secs = m.secondaries || (m.secondary ? [m.secondary] : null);
   if (secs) o.sec = secs.filter(Boolean).map(s => {
     const x = {};
@@ -70,6 +80,57 @@ fs.writeFileSync(process.argv[3], JSON.stringify(out));
 console.log('    기술 ' + Object.keys(out).length + '개');
 JS
 node "$TMP/extract.mjs" "$TMP/moves.ts" "$TMP/moves.json"
+
+cat > "$TMP/extract-items.mjs" <<'JS'
+import fs from 'node:fs';
+const { Items } = await import(process.argv[2]);
+const out = {};
+for (const [id, it] of Object.entries(Items)) {
+  const o = {};
+  // 내던지기 — 위력과 부가효과가 도구마다 다르다
+  if (it.fling) {
+    o.fl = it.fling.basePower ?? 0;
+    if (it.fling.status) o.fls = it.fling.status;
+    if (it.fling.volatileStatus) o.flv = it.fling.volatileStatus;
+  }
+  if (it.isBerry) o.berry = 1;
+  if (it.naturalGift) o.ng = [it.naturalGift.basePower, it.naturalGift.type];
+  if (it.isChoice) o.choice = 1;
+  if (it.megaStone) o.mega = it.megaStone;
+  if (it.zMove) o.z = typeof it.zMove === 'string' ? it.zMove : 1;
+  if (it.zMoveType) o.zt = it.zMoveType;
+  if (it.itemUser) o.user = it.itemUser;
+  if (it.isNonstandard) o.ns = it.isNonstandard;
+  if (it.onPlate) o.plate = it.onPlate;
+  if (it.boosts) o.bo = it.boosts;
+  // 배틀 중에 **무언가 하는** 도구인가 (여기 하나라도 있으면 로직이 필요하다)
+  const hooks = Object.keys(it).filter(k => k.startsWith('on') && typeof it[k] === 'function');
+  if (hooks.length) o.hooks = hooks;
+  out[id] = o;
+}
+fs.writeFileSync(process.argv[3], JSON.stringify(out));
+console.log('    도구 ' + Object.keys(out).length + '개');
+JS
+node "$TMP/extract-items.mjs" "$TMP/items.ts" "$TMP/items.json"
+
+cat > "$TMP/extract-abilities.mjs" <<'JS'
+import fs from 'node:fs';
+const { Abilities } = await import(process.argv[2]);
+const out = {};
+for (const [id, ab] of Object.entries(Abilities)) {
+  const o = {};
+  if (ab.isNonstandard) o.ns = ab.isNonstandard;
+  if (ab.isBreakable) o.brk = 1;
+  if (ab.suppressWeather) o.sw = 1;
+  if (ab.flags && Object.keys(ab.flags).length) o.f = Object.keys(ab.flags);
+  const hooks = Object.keys(ab).filter(k => k.startsWith('on') && typeof ab[k] === 'function');
+  if (hooks.length) o.hooks = hooks;
+  out[id] = o;
+}
+fs.writeFileSync(process.argv[3], JSON.stringify(out));
+console.log('    특성 ' + Object.keys(out).length + '개');
+JS
+node "$TMP/extract-abilities.mjs" "$TMP/abilities.ts" "$TMP/abilities.json"
 
 python3 - "$TMP/sets.json" "$TMP/sets-slim.json" <<'PY'
 import json, sys
@@ -93,10 +154,12 @@ print(f"    추천 세팅 {len(slim)}종")
 PY
 
 echo "==> Swift 파일 생성"
-python3 - "$TMP/moves.json" "$TMP/sets-slim.json" "$TMP/pokeapi-moves.json" "$OUT/ShowdownData.swift" <<'PY'
+python3 - "$TMP/moves.json" "$TMP/sets-slim.json" "$TMP/pokeapi-moves.json" "$OUT/ShowdownData.swift" "$TMP/items.json" "$TMP/abilities.json" <<'PY'
 import json, sys
 moves = open(sys.argv[1], encoding='utf-8').read()
 sets  = open(sys.argv[2], encoding='utf-8').read()
+items = open(sys.argv[5], encoding='utf-8').read()
+abils = open(sys.argv[6], encoding='utf-8').read()
 
 # PokeAPI 이름 -> Showdown id 로 이어지도록, PokeAPI 쪽 이름 목록을 함께 담는다
 api = json.load(open(sys.argv[3], encoding='utf-8'))
@@ -123,6 +186,14 @@ enum ShowdownData {{
     /// Showdown id 는 하이픈이 없어 역변환이 안 되므로, 실제로 받아올 수 있는
     /// 이름은 이 목록에서 골라야 한다.
     static let pokeAPIMoveNamesJSON = {lit(names_json)}
+
+    /// 도구 데이터 (Showdown id -> 축약 필드).
+    /// `hooks` 는 배틀 중 무언가 하는 도구를 뜻한다 — 우리 구현 목록과
+    /// 맞춰보면 빼먹은 것을 셀 수 있다.
+    static let itemsJSON = {lit(items)}
+
+    /// 특성 데이터 (Showdown id -> 축약 필드)
+    static let abilitiesJSON = {lit(abils)}
 }}
 '''
 open(sys.argv[4], 'w', encoding='utf-8').write(out)

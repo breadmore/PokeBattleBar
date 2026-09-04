@@ -13,11 +13,11 @@ enum FormChange {
         sp.altForms.filter { name in
             !name.contains("-mega") && !name.hasSuffix("-gmax")
                 && !name.contains("-totem") && !name.contains("-cap")
-                // 지역폼은 사실상 다른 포켓몬이라 폼 선택에서 제외한다.
-                // **hasSuffix 로는 부족하다** — darmanitan-galar-standard 처럼
-                // 지역 표기 뒤에 폼 이름이 더 붙는 경우가 있다.
-                && !name.contains("-alola") && !name.contains("-galar")
-                && !name.contains("-hisui") && !name.contains("-paldea")
+                // 지역폼도 고를 수 있다.
+                //
+                // PokeTokenBar 도감은 전국번호(#555)만 들고 있어 얼음 불비달마를
+                // 따로 구분하지 않는다. 그래서 여기서 폼으로 고르게 한다 —
+                // 폼 선택은 우리 loadouts.json 에만 적히므로 도감은 그대로다.
                 // 배틀 중 자동 변신하는 폼은 고르는 대상이 아니다
                 && !isAutoForm(name)
         }
@@ -30,13 +30,28 @@ enum FormChange {
         return autoSuffixes.contains { name.hasSuffix($0) }
     }
 
-    /// 폼 이름을 사람이 읽을 수 있게
+    /// 폼 이름을 사람이 읽을 수 있게.
+    /// 지역폼은 "가라르 달마모드"처럼 지역과 폼 이름을 붙여 읽는다.
     static func label(_ name: String) -> String {
-        for (suffix, ko) in labels {
-            if name.hasSuffix(suffix) { return ko }
+        for (tag, ko) in regions where name.contains(tag) {
+            let rest = name.replacingOccurrences(of: tag, with: "")
+            let inner = plainLabel(rest)
+            // 지역 표기만 있거나 "노말" 이면 지역명만 쓴다 ("가라르 노말" 은 어색하다)
+            if inner == rest || inner == "노말" { return ko }
+            return "\(ko) \(inner)"
         }
+        return plainLabel(name)
+    }
+
+    private static func plainLabel(_ name: String) -> String {
+        for (suffix, ko) in labels where name.hasSuffix(suffix) { return ko }
         return name
     }
+
+    private static let regions: [(String, String)] = [
+        ("-alola", "알로라"), ("-galar", "가라르"),
+        ("-hisui", "히스이"), ("-paldea", "팔데아"),
+    ]
 
     private static let labels: [(String, String)] = [
         ("-heat", "히트"), ("-wash", "워시"), ("-frost", "프로스트"),
@@ -54,7 +69,8 @@ enum FormChange {
         ("-sunshine", "포지티브"), ("-overcast", "네거티브"),
         ("-solo", "단독"), ("-school", "어군"),
         ("-disguised", "화장"), ("-busted", "들킴"),
-        ("-full-belly", "만복"), ("-hangry", "허기")
+        ("-full-belly", "만복"), ("-hangry", "허기"),
+        ("-combat", "콤바트"), ("-blaze", "블레이즈"), ("-aqua", "아쿠아")
     ]
 
     // MARK: 배틀 중 자동 변신
@@ -72,7 +88,9 @@ enum FormChange {
     }
 
     /// 특성 이름 → 자동 변신 규칙
-    static func autoRule(ability: String, speciesID: Int) -> AutoRule? {
+    /// - Parameter form: 지금 쓰고 있는 폼 이름 (예: "darmanitan-galar-standard").
+    ///   가라르 불비달마처럼 **같은 특성인데 폼 이름이 다른** 경우가 있다.
+    static func autoRule(ability: String, speciesID: Int, form: String? = nil) -> AutoRule? {
         switch ability {
         case "forecast":
             return .byWeather([.sun: "castform-sunny",
@@ -82,7 +100,12 @@ enum FormChange {
         case "flower-gift":
             return .inSun("cherrim-sunshine", base: "cherrim")
         case "zen-mode":
-            // 가라르 불비달마는 다른 폼 이름을 쓴다
+            // 가라르 불비달마의 달마모드는 **얼음/불꽃**이고 폼 이름도 따로다.
+            // 이걸 안 보면 얼음 불비달마가 관동 달마모드 스프라이트로 변한다.
+            if let form, form.contains("-galar") {
+                return .belowHP(0.5, "darmanitan-galar-zen",
+                                base: "darmanitan-galar-standard")
+            }
             return .belowHP(0.5, "darmanitan-zen", base: "darmanitan-standard")
         case "schooling":
             return .aboveHP(0.25, "wishiwashi-school", base: "wishiwashi-solo")

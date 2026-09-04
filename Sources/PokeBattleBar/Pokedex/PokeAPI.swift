@@ -141,7 +141,21 @@ struct FormStats: Codable, Sendable {
     var name: String
     var types: [PType]
     var baseStats: [Stat: Int]
+    /// 이 폼이 **실제로 배울 수 있는** 기술 이름들.
+    ///
+    /// 지역폼은 배우는 기술이 다르다 — 얼음 불비달마는 불꽃 기술을 못 쓴다.
+    /// 폼을 고르고도 원래 종의 기술을 그대로 들고 가면 있을 수 없는 조합이 된다.
+    var learnableMoves: Set<String> = []
+    /// 폼별 무게 (헥토그램). 저울짓기·헤비봄버 계산이 이걸 본다.
+    var weight: Int = 0
     func base(_ s: Stat) -> Int { baseStats[s] ?? 1 }
+
+    /// 이 폼이 쓸 수 있는 기술인가.
+    /// 학습 목록을 못 받아왔으면(빈 집합) 막지 않는다 — 데이터가 없다고
+    /// 기술을 지워버리면 팀이 텅 비는 쪽이 더 나쁘다.
+    func canLearn(_ move: String) -> Bool {
+        learnableMoves.isEmpty || learnableMoves.contains(move)
+    }
 
     /// "charizard-mega-x" → "메가 X", "snorlax-gmax" → "거다이맥스"
     var suffixLabel: String {
@@ -346,10 +360,21 @@ actor PokeAPI {
                 stats[s] = v
             }
         }
+        // 이 폼의 학습 기술 — 지역폼은 원래 종과 다르다
+        var learnable: Set<String> = []
+        if let ms = poke["moves"] as? [[String: Any]] {
+            for entry in ms {
+                guard let m = entry["move"] as? [String: Any],
+                      let n = m["name"] as? String else { continue }
+                learnable.insert(n)
+            }
+        }
         // 폼 이름의 한글명은 species 쪽에 없으므로 접미사로 표시명을 만든다
         let f = FormStats(name: name,
                           types: types.isEmpty ? [.normal] : types,
-                          baseStats: stats)
+                          baseStats: stats,
+                          learnableMoves: learnable,
+                          weight: poke["weight"] as? Int ?? 0)
         forms[name] = f
         return f
     }

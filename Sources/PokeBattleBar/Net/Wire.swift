@@ -22,6 +22,12 @@ enum Wire: Codable, Sendable {
     case battleBegan(state: BattleState)
     case stateChanged(state: BattleState)
     case hostLeft
+    /// 접속하자마자 호스트가 보내는 방 정보.
+    ///
+    /// Bonjour 로 찾아온 게스트는 TXT 레코드에서 마리 수·레벨을 미리 알지만,
+    /// **주소로 직접 붙은 게스트는 아무것도 모른다.** 팀을 잘못된 레벨로
+    /// 만들면 그대로 불공평한 배틀이 되므로 먼저 알려준다.
+    case roomInfo(rules: BattleRules, hostName: String, roomName: String)
 }
 
 /// 와이어 프로토콜 버전.
@@ -30,8 +36,9 @@ enum Wire: Codable, Sendable {
 /// 쓰지 않으므로, 신규 필드가 하나만 늘어도 구버전이 보낸 JSON 은 디코딩이 실패한다.
 /// 버전을 함께 실어보내야 "그냥 연결이 끊겼다" 가 아니라 "버전이 다르다" 를 보여줄 수 있다.
 enum PokeBattleProtocol {
-    static let version = 11
+    static let version = 12
 
+    /// 12: 주소로 직접 접속 (다른 네트워크). 접속 직후 호스트가 roomInfo 를 보낸다
     /// 11: 로비 존재 알림(_pokelobby._tcp), 초대 주고받기
     /// 7: 게임 모드 4종 (랜덤기술·자유의지·자동변신·토게피 손가락흔들기),
     ///    다이맥스밴드/다이버섯 역할 분리

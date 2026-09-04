@@ -27,6 +27,17 @@ final class SpriteLoader: ObservableObject {
         return nil
     }
 
+    /// 5세대 애니메이션 GIF 주소. PokeTokenBar 스프라이트와 같은 그림체다.
+    /// 옛 폼(메가·거다이맥스)에는 없으므로 없으면 nil 을 돌려준다.
+    private nonisolated func animatedURL(in sprites: [String: Any], shiny: Bool) -> String? {
+        guard let versions = sprites["versions"] as? [String: Any],
+              let g5 = versions["generation-v"] as? [String: Any],
+              let bw = g5["black-white"] as? [String: Any],
+              let anim = bw["animated"] as? [String: Any] else { return nil }
+        if shiny, let u = anim["front_shiny"] as? String { return u }
+        return anim["front_default"] as? String
+    }
+
     private func downloadForm(_ form: String, shiny: Bool, key: String, to disk: URL) {
         guard !inFlight.contains(key) else { return }
         inFlight.insert(key)
@@ -37,7 +48,15 @@ final class SpriteLoader: ObservableObject {
                   let (d, _) = try? await URLSession.shared.data(from: api),
                   let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                   let sprites = j["sprites"] as? [String: Any] else { return }
-            var urlString = sprites[shiny ? "front_shiny" : "front_default"] as? String
+            // **애니메이션 GIF 를 먼저 쓴다.**
+            //
+            // 기본 스프라이트는 PokeTokenBar 가 받아둔 5세대 애니메이션 GIF 다.
+            // 폼만 정지 이미지로 받으면 변신하는 순간 그림체와 크기가 튄다 —
+            // 달마모드가 이상해 보이던 이유가 이것이다.
+            var urlString = animatedURL(in: sprites, shiny: shiny)
+            if urlString == nil {
+                urlString = sprites[shiny ? "front_shiny" : "front_default"] as? String
+            }
             if urlString == nil { urlString = sprites["front_default"] as? String }
             guard let us = urlString, let u = URL(string: us),
                   let (img, _) = try? await URLSession.shared.data(from: u),
