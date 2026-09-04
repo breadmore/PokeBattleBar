@@ -434,9 +434,11 @@ final class AppModel {
               var mv = try? await PokeAPI.shared.move(GameModes.Metronome.move) else { return [] }
         mv.pp = GameModes.maxPP(base: mv.pp)
         let item = await ItemCatalog.shared.item(GameModes.Metronome.item)
+        // 토게피는 **미진화**다 (토게틱 → 토게키스). 진화의휘석이 작동하려면
+        // 이 표시가 맞아야 한다 — true 로 두면 휘석이 아무 일도 하지 않는다.
         let slot = RosterSlot(id: "metronome-togepi", speciesID: sp.id,
                               nature: GameModes.Metronome.nature, rarity: "common",
-                              isShiny: false, origin: .dex, fullyEvolved: true)
+                              isShiny: false, origin: .dex, fullyEvolved: false)
         var b = Battler.make(slot: slot, species: sp, moves: [mv], level: rules.level,
                              heldItem: item, ability: nil)
         b.moves[0].ppLeft = mv.pp
@@ -1408,6 +1410,15 @@ final class AppModel {
         NSApplication.shared.setActivationPolicy(hideDockIcon ? .accessory : .regular)
     }
 
+    /// 상단 탭에서 "대전기록 보기" 를 눌렀는가 (창이 열리면 화면이 받아 연다)
+    var wantsHistory = false
+
+    /// 지난 대전 목록만 지운다 (승패·포인트는 남는다)
+    func clearHistory() async {
+        await RecordStore.shared.clearHistory()
+        record = await RecordStore.shared.record
+    }
+
     func markNoticesSeen() { unseenNotices = 0 }
     func dismissToast() { toast = nil; toastTask?.cancel() }
     func clearNotices() { notices = []; unseenNotices = 0 }
@@ -1893,12 +1904,45 @@ final class AppModel {
     private func recordResultIfNeeded(_ st: BattleState) {
         guard case .finished(let winner) = st.phase, lastPointsGained == nil else { return }
         let me = st.sides[mySide.rawValue]
+        let foe = st.sides[mySide.other.rawValue]
         let draw = winner == nil
         let won = winner == mySide.rawValue
+
+        // 무엇으로 싸웠고 누가 끝까지 남았는지 남긴다 —
+        // 승패 숫자만으로는 그 배틀이 어땠는지 알 수 없다
+        func mon(_ b: Battler) -> RecordStore.Record.Battle.Mon {
+            .init(speciesID: b.speciesID, name: b.name, fainted: b.isFainted,
+                  hpLeft: b.currentHP, maxHP: b.maxHP, isShiny: b.isShiny,
+                  form: b.spriteForm)
+        }
+        /// 마지막까지 남아 있던 포켓몬 — 쓰러지지 않은 것 중 **그때 나와 있던** 개체
+        func lastStanding(_ side: SideState) -> RecordStore.Record.Battle.Mon? {
+            let alive = side.team.filter { !$0.isFainted }
+            guard !alive.isEmpty else { return nil }
+            if side.team.indices.contains(side.activeIndex),
+               !side.team[side.activeIndex].isFainted {
+                return mon(side.team[side.activeIndex])
+            }
+            return alive.first.map(mon)
+        }
+
+        let log = RecordStore.Record.Battle(
+            opponent: opponentName.isEmpty ? "상대" : opponentName,
+            won: draw ? nil : won,
+            points: 0,                       // finish 가 채운다
+            turns: st.turn,
+            mode: modeSummary,
+            myTeam: me.team.map(mon),
+            foeTeam: foe.team.map(mon),
+            myLastStanding: lastStanding(me),
+            foeLastStanding: lastStanding(foe)
+        )
+
         Task { @MainActor in
             let gained = await RecordStore.shared.finish(
                 won: won, draw: draw, opponent: self.opponentName,
-                survivors: me.remaining, teamSize: me.team.count)
+                survivors: me.remaining, teamSize: me.team.count,
+                battle: log)
             self.lastPointsGained = gained
             self.record = await RecordStore.shared.record
         }

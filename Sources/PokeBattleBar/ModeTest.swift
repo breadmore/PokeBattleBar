@@ -42,10 +42,10 @@ enum ModeTest {
         // 실제 배틀 — 손가락흔들기가 매번 다른 기술을 부르는가
         mv.pp = maxed
         guard let togepi = try? await PokeAPI.shared.species(175),
-              let orb = await ItemCatalog.shared.item("life-orb") else {
-            print("  ✗ 토게피/생명의구슬 로드 실패"); return false
+              let orb = await ItemCatalog.shared.item(GameModes.Metronome.item) else {
+            print("  ✗ 토게피/도구 로드 실패"); return false
         }
-        // HP 를 크게 잡으면 생명의구슬 반동(최대HP의 10%) 도 같이 커져 금방 자멸한다.
+        // 실제 HP 로 짧은 배틀을 여러 번 돌려 표본을 모은다.
         // 실제 HP 로 짧은 배틀을 여러 번 돌려 표본을 모은다.
         var called = Set<String>()
         var sawMetronome = false, sawOrb = false
@@ -61,7 +61,7 @@ enum ModeTest {
                 }
             }
             if e.state.log.contains(where: { $0.contains("손가락흔들기") }) { sawMetronome = true }
-            if e.state.log.contains(where: { $0.contains("생명의구슬") }) { sawOrb = true }
+            if e.state.log.contains(where: { $0.contains("손가락흔들기") }) { sawOrb = true }
         }
         // 무슨 기술이 나왔고 그게 어떤 기술인지(타입·위력)까지 로그에 남아야 한다.
         // 손가락흔들기 대전에서는 모르는 기술이 나오므로 이름만으로는 알 수 없다.
@@ -76,10 +76,75 @@ enum ModeTest {
         }
         ok = show(sawDetail, "불려나온 기술의 타입·위력도 알려준다") && ok
 
+        // 무승부 빈도.
+        //
+        // 생명의구슬일 때는 매 공격마다 최대 HP 의 1/10 을 잃어 동시 전멸이
+        // 잦았다 (60회 중 6회, 10%). 진화의휘석으로 바꾼 뒤를 잰다 —
+        // 휘석은 능력치만 올리고 반동이 없다.
+        var mDraws = 0, mFinished = 0
+        for seed in 1...60 {
+            var e = engine(togepi, mv, orb, chart, pool,
+                           seed: UInt64(seed) * 3121, maxHP: nil)
+            for _ in 0..<80 {
+                guard case .awaitingMoves = e.state.phase else { break }
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            }
+            if case .finished(let w) = e.state.phase {
+                mFinished += 1
+                if w == nil { mDraws += 1 }
+            }
+        }
+        let pct = mFinished > 0 ? mDraws * 100 / mFinished : 0
+        print("  · 손가락흔들기 무승부: \(mDraws)/\(mFinished) (\(pct)%)")
+        // 자주 나오는 것 자체는 규칙상 정상일 수 있다 — 다만 절반을 넘으면 이상하다
+        ok = show(pct < 50, "무승부가 절반을 넘지는 않는다", "\(pct)%") && ok
+
+        // 휘석이 실제로 방어·특방을 올리는가 (미진화 표시가 틀리면 아무 일도 안 한다)
+        // 위 do 블록에서 쓰는 동기 조회 (기술은 이미 캐시에 있다)
+        let tackleDef = try? await PokeAPI.shared.move("tackle")
+        do {
+            // 휘석의 1.5배는 `effective` 가 아니라 **데미지 계산에서** 적용된다.
+            // 그래서 능력치 값을 비교하면 차이가 없다 — 실제로 맞아본다.
+            func damageTaken(withItem: ItemDef?) -> Int {
+                guard let tackle = tackleDef else { return -1 }
+                func mk(_ item: ItemDef?, _ tag: String, speed: Int) -> Battler {
+                    let slot = RosterSlot(id: tag, speciesID: togepi.id,
+                                          nature: GameModes.Metronome.nature,
+                                          rarity: "common", isShiny: false,
+                                          origin: .dex, fullyEvolved: false)
+                    var b = Battler.make(slot: slot, species: togepi, moves: [tackle],
+                                         level: 50, heldItem: item)
+                    b.moves[0].ppLeft = 99
+                    b.stats[.speed] = speed
+                    b.maxHP = 9999; b.currentHP = 9999
+                    return b
+                }
+                var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                                     sides: [SideState(playerName: "때리는쪽",
+                                                       team: [mk(nil, "a", speed: 999)],
+                                                       activeIndex: 0),
+                                             SideState(playerName: "맞는쪽",
+                                                       team: [mk(withItem, "d", speed: 1)],
+                                                       activeIndex: 0)])
+                st.phase = .chooseLead
+                var e = BattleEngine(state: st, chart: chart, seed: 2024)
+                e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+                e.beginBattle()
+                let before = e.state.sides[1].team[0].currentHP
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                return before - e.state.sides[1].team[0].currentHP
+            }
+            let bare = damageTaken(withItem: nil)
+            let ev = damageTaken(withItem: orb)
+            ok = show(ev > 0 && bare > 0, "데미지를 잴 수 있다", "\(bare) / \(ev)") && ok
+            ok = show(ev < bare, "진화의휘석을 끼면 덜 맞는다",
+                      "데미지 \(bare) → \(ev)") && ok
+        }
+
         ok = show(called.count >= 20, "손가락흔들기가 여러 기술을 부른다",
                   "서로 다른 로그 \(called.count)종") && ok
         ok = show(sawMetronome, "로그에 손가락흔들기가 남는다") && ok
-        ok = show(sawOrb, "생명의구슬 반동이 작동한다") && ok
+        ok = show(sawOrb, "손가락흔들기가 실제로 쓰인다") && ok
 
         // PP 가 최대치에서 시작해 줄어드는가
         var e2 = engine(togepi, mv, orb, chart, pool, seed: 77, maxHP: nil)
@@ -117,7 +182,7 @@ enum ModeTest {
         print("\n-- 랜덤 기술 --")
         guard let sp = try? await PokeAPI.shared.species(143) else { return false }
         let slot = RosterSlot(id: "randomtest", speciesID: 143, nature: "serious",
-                              rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+                              rarity: "common", isShiny: false, origin: .dex, fullyEvolved: false)
         let saved = await MovesetStore.shared.moveset(for: slot, species: sp).map(\.name)
         var draws = Set<String>()
         for _ in 0..<8 {
@@ -145,7 +210,7 @@ enum ModeTest {
         func mk(_ tag: String) -> Battler {
             let slot = RosterSlot(id: tag, speciesID: sp.id,
                                   nature: GameModes.Metronome.nature, rarity: "common",
-                                  isShiny: false, origin: .dex, fullyEvolved: true)
+                                  isShiny: false, origin: .dex, fullyEvolved: false)
             var b = Battler.make(slot: slot, species: sp, moves: [mv], level: 50,
                                  heldItem: orb, ability: nil)
             b.moves[0].ppLeft = mv.pp
@@ -177,7 +242,7 @@ enum ModeTest {
         for seed in 1...20 {
             func mk(_ s: SpeciesDef, _ m: [MoveDef], _ it: ItemDef?, _ tag: String) -> Battler {
                 let slot = RosterSlot(id: tag, speciesID: s.id, nature: "serious",
-                                      rarity: "common", isShiny: false, origin: .dex, fullyEvolved: true)
+                                      rarity: "common", isShiny: false, origin: .dex, fullyEvolved: false)
                 var b = Battler.make(slot: slot, species: s, moves: m, level: 50, heldItem: it)
                 for i in b.moves.indices { b.moves[i].ppLeft = 99 }
                 b.maxHP = 99999; b.currentHP = 99999

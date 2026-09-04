@@ -89,6 +89,49 @@ enum LobbyTest {
         m.simulateRoomScan([("a", "갑"), ("b", "을")])
         ok = show(m.unseenNotices == 2, "방 두 개면 배지도 2", "\(m.unseenNotices)") && ok
 
+        print("\n-- 대전기록 --")
+        // 승패 숫자만 남기면 그 배틀이 어땠는지 알 수 없다.
+        // 무엇으로 싸웠고 누가 끝까지 남았는지 들어가는지 본다.
+        let mon = { (id: Int, name: String, fainted: Bool, hp: Int) in
+            RecordStore.Record.Battle.Mon(speciesID: id, name: name, fainted: fainted,
+                                          hpLeft: hp, maxHP: 200, isShiny: false, form: nil)
+        }
+        let sample = RecordStore.Record.Battle(
+            opponent: "동료",
+            won: true,
+            points: 0,
+            turns: 14,
+            mode: "일반",
+            myTeam: [mon(143, "잠만보", false, 87), mon(94, "팬텀", true, 0)],
+            foeTeam: [mon(65, "후딘", true, 0), mon(151, "뮤", true, 0)],
+            myLastStanding: mon(143, "잠만보", false, 87),
+            foeLastStanding: nil
+        )
+        ok = show(sample.myRemaining == 1, "내 남은 마리 수를 센다", "\(sample.myRemaining)") && ok
+        ok = show(sample.foeRemaining == 0, "상대 남은 마리 수를 센다", "\(sample.foeRemaining)") && ok
+        ok = show(sample.myLastStanding?.name == "잠만보",
+                  "끝까지 남은 포켓몬이 들어간다", sample.myLastStanding?.name ?? "없음") && ok
+        ok = show(sample.foeTeam.allSatisfy(\.fainted), "전멸한 쪽은 전부 쓰러진 것으로") && ok
+
+        // 실제로 저장되고 다시 읽히는가
+        let store = RecordStore()
+        let histBefore = await store.record.history.count
+        _ = await store.finish(won: true, draw: false, opponent: "동료",
+                               survivors: 1, teamSize: 2, battle: sample)
+        let after = await store.record
+        ok = show(after.history.count == histBefore + 1, "기록이 쌓인다",
+                  "\(histBefore) → \(after.history.count)") && ok
+        if let last = after.history.last {
+            ok = show(last.points > 0, "포인트가 기록에 들어간다", "\(last.points)P") && ok
+            ok = show(last.myTeam.count == 2 && last.foeTeam.count == 2,
+                      "양쪽 팀이 다 들어간다") && ok
+            ok = show(last.turns == 14, "턴 수가 남는다", "\(last.turns)턴") && ok
+        }
+        await store.clearHistory()
+        let cleared = await store.record
+        ok = show(cleared.history.isEmpty, "기록만 지울 수 있다") && ok
+        ok = show(cleared.wins > 0, "지워도 승패는 남는다", "\(cleared.wins)승") && ok
+
         print(ok ? "\n✓ 통과" : "\n✗ 실패 항목 있음")
         return ok
     }
