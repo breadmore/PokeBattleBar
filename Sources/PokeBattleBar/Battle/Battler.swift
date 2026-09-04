@@ -57,6 +57,20 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     /// 원시회귀 상태인가 (등장할 때 자동으로 바뀐다)
     var isPrimal: Bool = false
 
+    // MARK: 난동부리기 · 미래예지 · 도발 · 기충전 · 길동무
+
+    /// 난동부리기 — 같은 기술이 강제로 나가는 남은 턴수. 끝나면 혼란에 빠진다.
+    var rampageTurns: Int = 0
+    var rampageMoveIndex: Int?
+    /// 도발 — 변화기를 쓸 수 없는 남은 턴수
+    var tauntTurns: Int = 0
+    /// 기충전 — 급소 랭크 (원작 +2)
+    var focusEnergy: Bool = false
+    /// 길동무 — 이번 턴에 쓰러지면 쓰러뜨린 쪽도 함께 쓰러진다
+    var destinyBond: Bool = false
+
+    var isRampaging: Bool { rampageTurns > 0 && rampageMoveIndex != nil }
+
     var isCharging: Bool { chargingMoveIndex != nil }
     var isEncored: Bool { encoreTurns > 0 && encoreMoveIndex != nil }
 

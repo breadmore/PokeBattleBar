@@ -23,6 +23,13 @@ struct ShowdownMove: Sendable {
     var nonstandard: String?
     var multiHitMin: Int?
     var multiHitMax: Int?
+    /// 반동 / 흡수 / 회복 비율 ([분자, 분모])
+    var recoil: [Int]?
+    var drain: [Int]?
+    var heal: [Int]?
+    /// 상대 / 자신 능력치 변화
+    var boosts: [String: Int]?
+    var selfBoosts: [String: Int]?
     var critRatio: Int?
     var ohko: Bool = false
     var forceSwitch: Bool = false
@@ -39,6 +46,10 @@ struct ShowdownMove: Sendable {
 
     /// 솔라빔처럼 **모으는 턴**이 있는 2턴 기술
     var isCharge: Bool { flags.contains("charge") }
+    /// 난동부리기처럼 **여러 턴 동안 조작할 수 없는** 기술
+    var locksUser: Bool { selfVolatile == "lockedmove" || volatileStatus == "lockedmove" }
+    /// 데구르르처럼 연속으로 굴러가는 기술
+    var rollsOn: Bool { selfVolatile == "rollout" || volatileStatus == "rollout" }
     /// 파괴광선처럼 쓴 다음 턴에 **움직일 수 없는** 기술
     var mustRecharge: Bool { flags.contains("recharge") || selfVolatile == "mustrecharge" }
 
@@ -148,6 +159,11 @@ enum Showdown {
             m.status = d["st"] as? String
             m.hasCustomCode = (d["cc"] as? Int) == 1
             m.selfVolatile = d["sv"] as? String
+            m.recoil = d["rc"] as? [Int]
+            m.drain = d["dr"] as? [Int]
+            m.heal = d["hl"] as? [Int]
+            m.boosts = d["bo"] as? [String: Int]
+            m.selfBoosts = d["sb"] as? [String: Int]
             m.selfStatus = d["ss"] as? String
             m.hidesUser = (d["hide"] as? Int) == 1
             m.target = d["tg"] as? String

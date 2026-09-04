@@ -27,6 +27,16 @@ enum MoveAudit {
         "magnetrise", "meanlook", "block", "spiderweb",
         // 연속으로 쓰면 세지는 기술
         "furycutter", "rollout", "iceball", "echoedvoice",
+        // 화면
+        "reflect", "lightscreen", "auroraveil", "brickbreak", "psychicfangs",
+        // 턴을 넘나드는 것
+        "outrage", "thrash", "petaldance", "ragingfury",
+        "futuresight", "doomdesire", "taunt", "focusenergy", "destinybond",
+        // 위력이 상황에 따라 바뀌는 것
+        "return", "frustration", "gyroball", "electroball", "flail", "reversal",
+        "wringout", "crushgrip", "psywave",
+        // 원시회귀
+        "groudonprimal", "kyogreprimal",
     ]
 
     /// 데이터로 일반화해 처리하는 기술 — 이름별 구현이 아니라 **한 경로**가 담당한다.

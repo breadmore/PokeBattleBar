@@ -177,7 +177,9 @@ enum ScriptedMoveTest {
                 continue
             }
             chargeChecked += 1
-            guard let r = await probe(move: name, user: 143, foe: 143, chart: chart) else {
+            // **에스퍼(뮤)를 대상으로 쓴다.** 에스퍼는 어떤 타입에도 무효가 없다 —
+            // 잠만보(노말)를 쓰면 고스트 기술이 0 데미지라 구현 문제로 오해하게 된다.
+            guard let r = await probe(move: name, user: 143, foe: 151, chart: chart) else {
                 ok = show(false, "\(mv.display) 실행") && ok; continue
             }
             let charging = r.user.isCharging
@@ -190,11 +192,17 @@ enum ScriptedMoveTest {
                       "\(mv.display) — 첫 턴에 모으고 데미지 없음"
                       + (hides ? " · 숨는다" : ""), note) && ok
 
-            // 두 번째 턴에 실제로 나가는가
+            // 두 번째 턴에 실제로 **데미지가 들어가는지**까지 본다.
+            // 예전에는 isCharging 이 풀리는 것만 봤다 — 그러면 발사가 안 돼도 통과한다.
             if let r2 = await twoTurn(first: name, then: name,
-                                     user: 143, foe: 143, chart: chart) {
+                                     user: 143, foe: 151, chart: chart) {
                 ok = show(!r2.user.isCharging && !r2.user.chargeHidden,
-                          "\(mv.display) — 두 번째 턴에 나가고 숨김이 풀린다") && ok
+                          "\(mv.display) — 두 번째 턴에 숨김이 풀린다") && ok
+                if (mv.power ?? 0) > 0 {
+                    ok = show(r2.foe.currentHP < r2.foe.maxHP,
+                              "\(mv.display) — 두 번째 턴에 데미지가 들어간다",
+                              "\(r2.foe.currentHP)/\(r2.foe.maxHP)") && ok
+                }
             }
         }
         ok = show(chargeChecked >= 8, "모으는 기술을 여러 개 확인했다",
@@ -226,6 +234,50 @@ enum ScriptedMoveTest {
         }
         ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
                   "\(rechargeChecked)개") && ok
+
+        // MARK: 난동부리기 · 도발 · 기충전 · 길동무 · 미래예지
+        print("\n-- 난동부리기 (조작 불가) --")
+        if let r = await probe(move: "outrage", user: 143, foe: 143, chart: chart) {
+            ok = show(r.user.isRampaging, "쓰면 묶인다",
+                      "남은 \(r.user.rampageTurns)턴") && ok
+            ok = show(r.foe.currentHP < r.foe.maxHP, "그 턴에 데미지는 들어간다") && ok
+        }
+        if let r = await rampageLock(chart: chart) {
+            ok = show(r.forced, "묶인 동안 다른 기술을 골라도 같은 기술이 나간다", r.detail) && ok
+            ok = show(r.confusedAfter, "끝나면 혼란에 빠진다", r.detail2) && ok
+        } else { ok = show(false, "난동부리기 강제 검사") && ok }
+
+        print("\n-- 도발 --")
+        if let r = await probe(move: "taunt", user: 94, foe: 143, chart: chart) {
+            ok = show(r.foe.tauntTurns > 0, "상대가 도발당한다", "\(r.foe.tauntTurns)턴") && ok
+        }
+        if let r = await tauntBlocks(chart: chart) {
+            ok = show(r.blocked, "도발당하면 변화기를 쓸 수 없다", r.detail) && ok
+        } else { ok = show(false, "도발 차단 검사") && ok }
+
+        print("\n-- 기충전 --")
+        if let r = await probe(move: "focus-energy", user: 143, foe: 143, chart: chart) {
+            ok = show(r.user.focusEnergy, "기합이 들어간다") && ok
+            ok = show(r.user.critStage >= 2, "급소 랭크가 오른다",
+                      "\(r.user.critStage)") && ok
+        }
+
+        print("\n-- 길동무 --")
+        if let r = await probe(move: "destiny-bond", user: 94, foe: 143, chart: chart) {
+            ok = show(r.user.destinyBond, "길동무 상태가 된다") && ok
+        }
+        if let r = await destinyBondWorks(chart: chart) {
+            ok = show(r.bothFainted, "길동무 상태에서 쓰러지면 상대도 쓰러진다", r.detail) && ok
+        } else { ok = show(false, "길동무 효과 검사") && ok }
+
+        print("\n-- 미래예지 --")
+        if let r = await probe(move: "future-sight", user: 65, foe: 143, chart: chart) {
+            ok = show(r.foe.currentHP == r.foe.maxHP, "쓴 턴에는 데미지가 없다",
+                      "\(r.foe.currentHP)/\(r.foe.maxHP)") && ok
+        }
+        if let r = await futureLands(chart: chart) {
+            ok = show(r.landed, "두 턴 뒤에 터진다", r.detail) && ok
+        } else { ok = show(false, "미래예지 검사") && ok }
 
         // MARK: 승부가 나는 시점
         //
@@ -571,6 +623,136 @@ enum ScriptedMoveTest {
                                 user: Int, foe: Int, chart: TypeChart,
                                 setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 여러 턴 돌리는 공용 도구 — 내가 지정한 인덱스대로 기술을 쓴다
+    private static func runTurns(userMoves: [MoveDef], foeMoves: [MoveDef],
+                                 picks: [Int], userID: Int, foeID: Int,
+                                 chart: TypeChart, userSpeed: Int = 999,
+                                 hp: Int = 9999) async -> BattleEngine? {
+        guard let uSp = try? await PokeAPI.shared.species(userID),
+              let fSp = try? await PokeAPI.shared.species(foeID) else { return nil }
+        func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = hp; b.currentHP = hp
+            return b
+        }
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make(uSp, userMoves, "h", speed: userSpeed)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make(fSp, foeMoves, "g", speed: 1)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 313)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+        for p in picks {
+            guard case .awaitingMoves = e.state.phase else { break }
+            e.resolveTurn(hostAction: .useMove(index: p), guestAction: .useMove(index: 0))
+        }
+        return e
+    }
+
+    /// 난동부리기에 묶인 동안 다른 기술을 골라도 같은 기술이 나가는지
+    private static func rampageLock(chart: TypeChart) async -> (
+        forced: Bool, detail: String, confusedAfter: Bool, detail2: String
+    )? {
+        guard let outrage = try? await PokeAPI.shared.move("outrage"),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+        // 1턴 난동부리기 → 2·3턴은 1번(몸통박치기)을 골라도 역린이 나가야 한다
+        guard let e = await runTurns(userMoves: [outrage, tackle], foeMoves: [splash],
+                                     picks: [0, 1, 1, 1], userID: 143, foeID: 143,
+                                     chart: chart) else { return nil }
+        let log = e.state.log
+        let outrageCount = log.filter { $0.contains(outrage.display) }.count
+        let tackleCount = log.filter { $0.contains("몸통박치기") }.count
+        let me = e.state.sides[0].team[0]
+        // 묶여 있는 동안만 강제된다 (2~3턴). 풀린 뒤에 다른 기술이 나가는 건 정상이다.
+        // 핵심은 **묶인 턴에 내가 고른 기술이 무시되는가** 다.
+        return (outrageCount >= 2,
+                "\(outrage.display) \(outrageCount)회 (묶인 동안 강제)"
+                + " / 풀린 뒤 몸통박치기 \(tackleCount)회",
+                me.confusionTurns > 0 || log.contains { $0.contains("혼란에 빠졌다") },
+                "혼란 \(me.confusionTurns)턴")
+    }
+
+    /// 길동무 상태에서 쓰러지면 쓰러뜨린 쪽도 함께 쓰러지는지
+    private static func destinyBondWorks(chart: TypeChart) async -> (
+        bothFainted: Bool, detail: String
+    )? {
+        // 고스트에게 노말 기술은 무효다 — 양쪽 다 노말 타입으로 둔다
+        // (그렇게 하지 않으면 상대가 나를 못 쓰러뜨려 검사가 헛돈다)
+        guard let bond = try? await PokeAPI.shared.move("destiny-bond"),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let uSp = try? await PokeAPI.shared.species(143),
+              let fSp = try? await PokeAPI.shared.species(143) else { return nil }
+
+        func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String,
+                  speed: Int, hp: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = hp; b.currentHP = hp
+            return b
+        }
+        // 내가 먼저 길동무를 쓰고(빠름), 상대가 나를 쓰러뜨린다(내 HP 1)
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make(uSp, [bond], "h", speed: 999, hp: 1)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make(fSp, [tackle], "g", speed: 1, hp: 300)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 88)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+
+        let me = e.state.sides[0].team[0]
+        let foe = e.state.sides[1].team[0]
+        let sawLog = e.state.log.contains { $0.contains("길동무로 삼았다") }
+        return (me.isFainted && foe.isFainted,
+                "나 쓰러짐=\(me.isFainted) 상대 쓰러짐=\(foe.isFainted) 로그=\(sawLog)")
+    }
+
+    /// 도발당한 쪽이 변화기를 쓸 수 없는지
+    private static func tauntBlocks(chart: TypeChart) async -> (blocked: Bool, detail: String)? {
+        guard let taunt = try? await PokeAPI.shared.move("taunt"),
+              let swords = try? await PokeAPI.shared.move("swords-dance"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+        // 내가 도발 → 상대는 칼춤(변화기)을 쓰려 하지만 막혀야 한다
+        guard let e = await runTurns(userMoves: [taunt, tackle], foeMoves: [swords],
+                                     picks: [0, 1], userID: 94, foeID: 143,
+                                     chart: chart) else { return nil }
+        let blocked = e.state.log.contains { $0.contains("도발당해서") }
+        let foe = e.state.sides[1].team[0]
+        return (blocked && (foe.stages[.attack] ?? 0) == 0,
+                "차단 로그=\(blocked) 상대 공격 랭크=\(foe.stages[.attack] ?? 0)")
+    }
+
+    /// 미래예지가 두 턴 뒤에 터지는지
+    private static func futureLands(chart: TypeChart) async -> (landed: Bool, detail: String)? {
+        guard let fs = try? await PokeAPI.shared.move("future-sight"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+        guard let e = await runTurns(userMoves: [fs, splash], foeMoves: [splash],
+                                     picks: [0, 1, 1], userID: 65, foeID: 143,
+                                     chart: chart) else { return nil }
+        let foeHP = e.state.sides[1].team[0].currentHP
+        let landed = e.state.log.contains { $0.contains("덮쳤다") }
+        return (landed && foeHP < 9999,
+                "터짐 로그=\(landed) 상대 HP=\(foeHP)")
     }
 
     /// 마지막 상대를 쓰러뜨렸을 때 승부가 어떻게 나는지 본다.
