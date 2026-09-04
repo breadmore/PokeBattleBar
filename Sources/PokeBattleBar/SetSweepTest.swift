@@ -52,9 +52,17 @@ enum SetSweepTest {
                         guard let mv = try? await PokeAPI.shared.move(mid) else {
                             unknownMoves.insert(mid); continue
                         }
-                        // 공격기인데 위력이 0 이면 아무 데미지도 안 들어간다
-                        if mv.damageClass != .status, mv.specialDamage == .none,
-                           (mv.power ?? 0) == 0,
+                        // 공격기인데 **아무 데미지도 못 넣는가.**
+                        //
+                        // 원시 `power` 만 보면 오탐이 난다 — 위력이 nil 이어도
+                        // 실제로는 데미지가 들어가는 기술이 있다:
+                        //   · 카운터·미러코트 — 받은 데미지의 두 배
+                        //   · 풀묶기·안다리걸기 — 상대 무게로 위력이 정해진다
+                        //   · 자이로볼·은혜갚기 — 상황으로 위력이 정해진다
+                        //   · 일격필살 — 위력 개념이 없다
+                        // `isDamaging` 이 이 경우를 모두 본다. 오탐이 섞이면
+                        // "빠진 기술 찾기" 라는 이 검사의 목적이 흐려진다.
+                        if mv.damageClass != .status, !mv.isDamaging,
                            MoveFlags.isCharge(mid) == false {
                             zeroPowerMoves.insert("\(mv.display)(\(mid))")
                         }
@@ -86,8 +94,21 @@ enum SetSweepTest {
         print("-- 이름이 풀리지 않는 항목 --")
         ok = show(unknownMoves.isEmpty, "모든 기술 이름이 PokeAPI 에서 풀린다",
                   unknownMoves.isEmpty ? "" : "\(unknownMoves.sorted().prefix(10))") && ok
-        ok = show(unknownItems.isEmpty, "모든 도구 이름이 우리 목록에 있다",
-                  unknownItems.isEmpty ? "" : "\(unknownItems.sorted().prefix(10))") && ok
+        // **PokeAPI 가 모르는 이름은 실패가 아니다.**
+        //
+        // 2세대 세팅에는 mint-berry·miracle-berry 처럼 3세대에 개명된 이름이
+        // 남아 있다 (지금은 리샘·유루열매다). 존재하지 않는 도구를 목록에
+        // 넣을 수는 없으므로 "해당 없음" 으로 가른다 — 섞어두면 진짜 구멍이
+        // 가려진다.
+        let known = Set(Showdown.pokeAPIItemNames)
+        let gone = unknownItems.filter { !known.contains($0) }.sorted()
+        let realGaps = unknownItems.filter { known.contains($0) }.sorted()
+        if !gone.isEmpty {
+            print("  · 지금은 없는 옛 이름 \(gone.count)개 (해당 없음): "
+                  + gone.joined(separator: ", "))
+        }
+        ok = show(realGaps.isEmpty, "실제로 존재하는 도구는 모두 우리 목록에 있다",
+                  realGaps.isEmpty ? "" : "\(realGaps.prefix(10))") && ok
 
         print("\n-- 위력이 0 이 되는 공격기 --")
         if zeroPowerMoves.isEmpty {

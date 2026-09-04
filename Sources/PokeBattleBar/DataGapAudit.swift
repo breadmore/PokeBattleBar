@@ -289,12 +289,17 @@ enum DataGapAudit {
     static func deadCaseNames() -> (abilities: [String], items: [String]) {
         let realAbilities = Set(Showdown.pokeAPIAbilityNames)
         let realItems = Set(Showdown.pokeAPIItemNames)
+        let realMoves = Set(Showdown.pokeAPIMoveNames)
         var deadAb: [String] = []
         var deadIt: [String] = []
         for name in switchCaseNames(inFile: "Abilities.swift")
         where !realAbilities.contains(name) { deadAb.append(name) }
         for name in switchCaseNames(inFile: "Items.swift")
         where !realItems.contains(name) { deadIt.append(name) }
+        // **기술 이름도 본다.** 여기가 빠져 있어서 "conversion2" (실제로는
+        // "conversion-2") 가 오랫동안 죽은 case 로 남아 있었다.
+        for name in BattleEngine.scriptedMoveNames.sorted()
+        where !realMoves.contains(name) { deadIt.append("기술 " + name) }
         return (deadAb, deadIt)
     }
 

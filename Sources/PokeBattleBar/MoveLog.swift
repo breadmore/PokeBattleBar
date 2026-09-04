@@ -46,6 +46,11 @@ enum MoveLog {
                                                activeIndex: 0)])
         st.phase = .chooseLead
         var e = BattleEngine(state: st, chart: chart, seed: 4242)
+        // 자연의힘처럼 **다른 기술을 부르는** 기술은 캐시가 있어야 돈다.
+        // 없으면 "실패했다" 만 찍혀 엔진 버그처럼 보인다.
+        for n in ["thunderbolt", "energy-ball", "moonblast", "psychic", "tri-attack"] {
+            if let m = try? await PokeAPI.shared.move(n) { e.naturePowerCache[n] = m }
+        }
         e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
         e.beginBattle()
 

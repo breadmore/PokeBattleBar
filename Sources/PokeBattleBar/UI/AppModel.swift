@@ -484,6 +484,8 @@ final class AppModel {
     private var gmaxCache: [String: FormStats] = [:]
     private var zMoveCache: [String: MoveDef] = [:]
     private var maxMoveCache: [String: MoveDef] = [:]
+    /// 자연의힘이 부르는 기술 (필드에 따라 달라진다)
+    private var naturePowerCache: [String: MoveDef] = [:]
 
     private func preloadForms(for team: [Battler]) async {
         for b in team {
@@ -503,7 +505,8 @@ final class AppModel {
 
     /// Z기술·맥스기술 정의는 타입별로 고정이라 한 번만 받아두면 된다.
     private func preloadTransformMoves() async {
-        guard zMoveCache.isEmpty || maxMoveCache.isEmpty else { return }
+        guard zMoveCache.isEmpty || maxMoveCache.isEmpty
+            || naturePowerCache.isEmpty else { return }
         for (_, base) in FormTables.zMoveBase {
             for suffix in ["--physical", "--special"] {
                 let n = base + suffix
@@ -520,6 +523,12 @@ final class AppModel {
         if let g = try? await PokeAPI.shared.move(FormTables.maxGuard) {
             maxMoveCache[FormTables.maxGuard] = g
         }
+        // 자연의힘이 부르는 기술들 — 미리 받아야 필드에 따라 바뀐다
+        for n in ["thunderbolt", "energy-ball", "moonblast", "psychic", "tri-attack"] {
+            if naturePowerCache[n] == nil, let m = try? await PokeAPI.shared.move(n) {
+                naturePowerCache[n] = m
+            }
+        }
     }
 
     private func installCaches(into e: inout BattleEngine) {
@@ -527,6 +536,7 @@ final class AppModel {
         e.gmaxCache = gmaxCache
         e.zMoveCache = zMoveCache
         e.maxMoveCache = maxMoveCache
+        e.naturePowerCache = naturePowerCache
         e.metronomePool = metronomePool
         e.formCache = formCache
     }

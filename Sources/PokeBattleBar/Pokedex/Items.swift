@@ -109,6 +109,23 @@ enum ItemKind: Codable, Hashable, Sendable {
     case metronomeItem(step: Double, max: Double)
     /// 부스트에너지 — 고대활성·쿼크차지를 조건 없이 발동시킨다
     case boosterEnergy
+    /// 열암·수암·냉암·유암 — 그 날씨를 8턴으로 늘린다
+    case weatherExtender(Weather, turns: Int)
+    /// **종족 전용 능력치 도구.** 굵은뼈·금속가루처럼 그 종에게만 통한다.
+    ///
+    /// 도구 파일 안에서 종족을 직접 검사하는 부류다 — 종족 데이터에만
+    /// 적어두면 도구를 바꾸거나 빼앗는 순간의 재계산을 놓친다.
+    /// 변신하지 않은 메타몽만 금속가루가 통하는 것도 여기서 본다.
+    case speciesStatBoost(species: [Int], Stat, Double, untransformedOnly: Bool)
+    /// 럭키펀치·대파 — 그 종의 급소율을 올린다
+    case speciesCritBoost(species: [Int], stages: Int)
+
+    /// 빛의점토 — 리플렉터·빛의장막·오로라베일을 8턴으로 늘린다.
+    ///
+    /// 효과는 예전부터 이름으로 처리했지만 `ItemKind` 가 없어서
+    /// `available(forSpecies:)` 가 목록에서 숨겼다 — 실전 세팅이
+    /// 빛의점토를 지정해도 조용히 다른 도구로 바뀌었다.
+    case screenExtender(turns: Int)
 
     // --- 확장 (3차) ---
 
@@ -253,6 +270,16 @@ actor ItemCatalog {
         "jaboca-berry", "rowap-berry", "kee-berry", "maranga-berry",
         "enigma-berry", "normal-gem", "adrenaline-orb", "destiny-knot",
         "rusted-sword", "rusted-shield",
+        // 종족 전용 능력치 도구 (도구가 종족을 직접 검사하는 부류)
+        "thick-club", "metal-powder", "quick-powder",
+        "deep-sea-tooth", "deep-sea-scale", "lucky-punch", "large-leek", "stick",
+        // 타입 젬 (한 번만 1.3배)
+        "normal-gem", "fire-gem", "water-gem", "electric-gem", "grass-gem",
+        "ice-gem", "fighting-gem", "poison-gem", "ground-gem", "flying-gem",
+        "psychic-gem", "bug-gem", "rock-gem", "ghost-gem", "dragon-gem",
+        "dark-gem", "steel-gem", "fairy-gem",
+        // 싱글에서 효과가 없지만 세팅에 실리므로 카탈로그에는 있어야 한다
+        "red-card", "shed-shell", "eject-button",
 
         "leftovers", "life-orb", "focus-sash", "expert-belt",
         "muscle-band", "wise-glasses", "choice-band", "choice-specs", "choice-scarf",
@@ -564,6 +591,27 @@ actor ItemCatalog {
         case "misty-seed":    return .terrainSeed(.misty, .spDefense, 1)
         case "psychic-seed":  return .terrainSeed(.psychic, .spDefense, 1)
 
+        // 날씨를 늘리는 돌 — 8턴이 된다
+        case "heat-rock":   return .weatherExtender(.sun, turns: 8)
+        case "damp-rock":   return .weatherExtender(.rain, turns: 8)
+        case "icy-rock":    return .weatherExtender(.snow, turns: 8)
+        case "smooth-rock": return .weatherExtender(.sandstorm, turns: 8)
+        case "light-clay":  return .screenExtender(turns: 8)
+
+        // 종족 전용 능력치 도구 — 그 종에게만 통한다
+        case "thick-club":       return .speciesStatBoost(species: [104, 105], .attack, 2.0,
+                                                          untransformedOnly: false)
+        case "metal-powder":     return .speciesStatBoost(species: [132], .defense, 2.0,
+                                                          untransformedOnly: true)
+        case "quick-powder":     return .speciesStatBoost(species: [132], .speed, 2.0,
+                                                          untransformedOnly: true)
+        case "deep-sea-tooth":   return .speciesStatBoost(species: [366], .spAttack, 2.0,
+                                                          untransformedOnly: false)
+        case "deep-sea-scale":   return .speciesStatBoost(species: [366], .spDefense, 2.0,
+                                                          untransformedOnly: false)
+        case "lucky-punch":      return .speciesCritBoost(species: [113], stages: 2)
+        case "large-leek", "stick": return .speciesCritBoost(species: [83, 865], stages: 2)
+
         case "metronome":       return .metronomeItem(step: 0.2, max: 2.0)
         case "booster-energy":  return .boosterEnergy
 
@@ -583,7 +631,11 @@ actor ItemCatalog {
         case "enigma-berry":  return .berryHealOnSuperEffective(4)
 
         // 노말젬 — 노말 기술 한 번만 1.3배
-        case "normal-gem":    return .typeGem(.normal, 1.3)
+        // 젬 — 그 타입 기술 한 번만 1.3배가 되고 사라진다
+        case _ where slug.hasSuffix("-gem"):
+            let base = String(slug.dropLast("-gem".count))
+            if let t = PType(rawValue: base) { return .typeGem(t, 1.3) }
+            return .none
 
         // 위협을 받으면 스피드가 오른다
         case "adrenaline-orb": return .adrenalineOrb

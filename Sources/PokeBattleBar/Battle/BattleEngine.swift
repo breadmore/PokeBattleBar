@@ -156,6 +156,8 @@ struct BattleState: Codable, Sendable, Equatable {
     /// 이번 턴을 순서대로 재생하기 위한 스냅샷.
     /// 결과만 보여주면 무슨 일이 있었는지 알 수 없어서, 단계별 HP·로그를 남긴다.
     var steps: [TurnStep] = []
+    /// 마지막으로 **누구든** 쓴 기술. 따라하기가 이걸 베낀다.
+    var lastMoveUsedAnywhere: MoveDef?
 
     func side(_ s: BattleSide) -> SideState { sides[s.rawValue] }
 }
@@ -219,6 +221,8 @@ struct BattleEngine {
     var maxMoveCache: [String: MoveDef] = [:]
     /// 폼 종족값 캐시 (캐스퐁·불비달마 자동 변신, 로토무 등 사전 선택 폼)
     var formCache: [String: FormStats] = [:]
+    /// 자연의힘이 부르는 기술들 (필드에 따라 달라진다)
+    var naturePowerCache: [String: MoveDef] = [:]
     /// 손가락흔들기가 부를 수 있는 기술 풀.
     /// 배틀 중엔 네트워크를 쓸 수 없으므로 미리 채워 넣는다.
     var metronomePool: [MoveDef] = []
@@ -238,6 +242,18 @@ struct BattleEngine {
 
     /// 이번 턴에 **먼저 움직인** 쪽. 역돌기(payback)가 이걸 본다.
     private var firstMoverThisTurn: BattleSide?
+
+    /// 연속으로 세지는 기술의 사슬을 끊는다 (빗나감·무효).
+    ///
+    /// 원작에서 데구르르·연속자르기는 **빗나가면 위력이 처음으로 돌아간다.**
+    /// 카운터는 명중 판정보다 **먼저** 올라가므로(그래야 이번 턴 위력에 반영된다),
+    /// 실패한 턴은 여기서 되돌려야 한다. 데구르르의 강제 턴도 이걸로 함께 풀린다.
+    private mutating func breakConsecutive(_ side: BattleSide) {
+        let i = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(i) else { return }
+        state.sides[side.rawValue].team[i].consecutiveMoveIndex = nil
+        state.sides[side.rawValue].team[i].consecutiveCount = 0
+    }
 
     /// 기술을 썼다는 것을 기록한다.
     /// 마지막수단은 "다른 기술을 다 써봤는가" 를 보고, 내던지기는
@@ -444,7 +460,7 @@ struct BattleEngine {
 
         // 날씨를 부르는 특성 (가뭄·잔비·모래날림·눈퍼뜨리기)
         if state.rules.weather, case .weatherOnEntry(let w) = b.abilityKind {
-            state.field.setWeather(w, turns: 5)
+            state.field.setWeather(w, turns: weatherTurns(for: w, holder: b))
             say("\(b.name)의 \(b.ability?.display ?? "특성")! \(w.ko) 상태가 되었다!")
         }
         // 끝의대지·시작의바다 — 날씨를 **고정**한다 (턴이 줄지 않는다)
@@ -692,6 +708,9 @@ struct BattleEngine {
             }
             let i = state.side(side).activeIndex
             guard state.side(side).team.indices.contains(i) else { continue }
+            if state.sides[side.rawValue].team[i].lockedOnTurns > 0 {
+                state.sides[side.rawValue].team[i].lockedOnTurns -= 1
+            }
             if state.sides[side.rawValue].team[i].embargoTurns > 0 {
                 state.sides[side.rawValue].team[i].embargoTurns -= 1
                 if state.sides[side.rawValue].team[i].embargoTurns == 0 {
@@ -1415,6 +1434,14 @@ struct BattleEngine {
             say(releaseMessage(move, who: atkName))
         }
 
+        // 따라하기·흉내내기·원한이 볼 기록.
+        //
+        // **부르는 기술 자체는 남기지 않는다.** 남기면 따라하기가 자기
+        // 자신을 보고 실패한다 (실제로 그랬다). 원작도 같은 규칙이다.
+        if !Self.uncopyableMoves.contains(move.name) {
+            state.lastMoveUsedAnywhere = move
+        }
+
         // 직전 기술 기록 (아무것도않기 판정용) + 연속 사용 횟수
         do {
             var a2 = state.side(attacker).active
@@ -1658,6 +1685,7 @@ struct BattleEngine {
         let def = state.side(defender).active
         if !accuracyCheck(move: move, attacker: atk, defender: def) {
             say("\(atkName)의 공격은 빗나갔다!")
+            breakConsecutive(attacker)      // 데구르르·연속자르기는 여기서 처음으로 돌아간다
             // 대폭발 계열은 빗나가도 쓴 쪽이 쓰러진다 (자폭이 판정보다 먼저이므로).
             // 목숨걸기 계열은 맞아야 쓰러지므로 여기서는 아무 일도 없다.
             if move.selfKO, move.selfKOBeforeMove { applySelfKO(attacker) }
@@ -1709,6 +1737,7 @@ struct BattleEngine {
             lastMult = r.typeMultiplier
             if r.multiplier == 0 {
                 say("\(state.side(defender).active.name)에게는 효과가 없는 것 같다…")
+                breakConsecutive(attacker)      // 통하지 않아도 사슬이 끊긴다
                 // 무효 타입이어도 대폭발 계열은 쓴 쪽이 쓰러진다
                 if move.selfKO, move.selfKOBeforeMove { applySelfKO(attacker) }
                 return
@@ -2625,6 +2654,8 @@ struct BattleEngine {
         if state.rules.itemEffects, !defender.grounded, move.type == .ground,
            move.damageClass != .status,
            case .airBalloon = defender.itemKind { return false }
+        // 록온으로 조준됐으면 반드시 맞는다
+        if defender.lockedOnTurns > 0 { return true }
         // 노가드 — 양쪽 중 하나라도 있으면 반드시 명중
         if state.rules.abilities {
             if case .noGuard = attacker.abilityKind { return true }
@@ -2777,11 +2808,17 @@ struct BattleEngine {
         // 연속으로 쓰면 세지는 기술 — 데이터에 없어 직접 처리한다.
         // 연속자르기·데구르르는 두 배씩, 에코보이스·울음소리는 더해진다.
         switch move.name {
-        case "fury-cutter", "rollout", "ice-ball":
-            // 1턴 40 → 80 → 160 → 320 (상한)
-            power = min(power * (1 << min(3, a.consecutiveCount)), power * 8)
+        // **상한이 기술마다 다르다.** 예전에는 셋을 한 줄로 묶어 ×8 로 통일했는데,
+        // 그래서 데구르르는 4단계에서 멈추고(원작은 5단계 ×16) 연속자르기는
+        // 반대로 320 까지 올라갔다(5세대 이후 상한은 160).
+        case "rollout", "ice-ball":
+            // 30 → 60 → 120 → 240 → 480 (5턴째 ×16)
+            power *= 1 << min(4, a.consecutiveCount)
             // 웅크리기를 먼저 쓰면 데구르르 계열이 두 배가 된다 (원작의 숨은 효과)
-            if a.defenseCurled, move.name != "fury-cutter" { power *= 2 }
+            if a.defenseCurled { power *= 2 }
+        case "fury-cutter":
+            // 40 → 80 → 160 (5세대 이후 상한)
+            power *= 1 << min(2, a.consecutiveCount)
         case "echoed-voice":
             // 40 → 80 → 120 → 160 → 200 (상한)
             power = min(power * (1 + min(4, a.consecutiveCount)), power * 5)
@@ -2804,10 +2841,11 @@ struct BattleEngine {
            d.status == ail || (ail == .poison && d.status == .toxic) {
             critStage = 3
         }
+        if state.rules.itemEffects, case .critStage(let n) = a.itemKind { critStage += n }
+        // 럭키펀치·대파 — 그 종에게만 통한다
         if state.rules.itemEffects,
-           ["scope-lens", "razor-claw"].contains(a.heldItem?.name ?? ""), !a.itemConsumed {
-            critStage += 1
-        }
+           case .speciesCritBoost(let ids, let n) = a.itemKind,
+           ids.contains(a.speciesID) { critStage += n }
         switch critStage {
         case 1: critPercent = max(critPercent, 12)
         case 2: critPercent = max(critPercent, 50)
@@ -3100,6 +3138,11 @@ struct BattleEngine {
             // 전기구슬 — 피카츄의 공격·특공이 두 배
             if case .lightBall(let sid) = b.itemKind, b.speciesID == sid,
                stat == .attack || stat == .spAttack { m *= 2.0 }
+            // 굵은뼈·심해의이빨 등 — 그 종에게만 통한다.
+            // 금속가루는 **변신하지 않은** 메타몽에게만 통한다 (원작 규칙).
+            if case .speciesStatBoost(let ids, let s2, let x, let untransformed) = b.itemKind,
+               s2 == stat, ids.contains(b.speciesID),
+               !(untransformed && b.isTransformed) { m *= x }
         }
         return m
     }
@@ -3116,6 +3159,10 @@ struct BattleEngine {
             // 초식피부 — 그래스필드에서 방어 상승
             if case .terrainStatBoost(let t, let s, let x) = b.abilityKind,
                s == stat, state.field.terrain == t { m *= x }
+            // 금속가루·심해의비늘 — 방어 쪽 종족 전용 도구
+            if case .speciesStatBoost(let ids, let s2, let x, let untransformed) = b.itemKind,
+               s2 == stat, ids.contains(b.speciesID),
+               !(untransformed && b.isTransformed) { m *= x }
             // 고대활성·쿼크차지는 방어에도 붙을 수 있다
             if case .paradoxBoost(let w, let t) = b.abilityKind {
                 let byField = (w != nil && state.field.weather == w!)
@@ -3266,6 +3313,34 @@ struct BattleEngine {
         state.sides[attacker.rawValue].team[idx] = b
         say("\(b.name)는 \(wantBlade ? "블레이드" : "실드") 폼이 되었다!")
     }
+
+    /// **다른 기술을 불러 쓴다** (따라하기·자연의힘·선취·잠꼬대).
+    ///
+    /// 부른 기술이 또 다른 기술을 부르면 끝없이 돌 수 있으므로, 부르는
+    /// 기술 자체는 부를 수 없게 막는다 (`uncopyableMoves`).
+    /// 모으는 턴도 건너뛴다 — 불러서 쓰는 기술은 그 자리에서 나간다.
+    private mutating func performCalledMove(_ move: MoveDef, attacker: BattleSide,
+                                            defender: BattleSide) {
+        // 임시 칸에 넣어 평소 경로로 보낸다. 그래야 상성·특성·도구가 모두 걸린다.
+        let idx = state.side(attacker).activeIndex
+        guard state.side(attacker).team.indices.contains(idx) else { return }
+        var a = state.sides[attacker.rawValue].team[idx]
+        let saved = a.moves
+        a.moves = [.init(def: move, ppLeft: 1)]
+        state.sides[attacker.rawValue].team[idx] = a
+        performMove(attacker: attacker, moveIndex: 0, skipCharge: true)
+        // 원래 기술 칸을 되돌린다 (PP 는 부른 기술이 아니라 원래 기술에서 깎였다)
+        var after = state.sides[attacker.rawValue].team[idx]
+        after.moves = saved
+        state.sides[attacker.rawValue].team[idx] = after
+    }
+
+    /// 불러 쓸 수 없는 기술 — 부르는 기술끼리 서로 부르면 끝나지 않는다
+    static let uncopyableMoves: Set<String> = [
+        "copycat", "metronome", "mimic", "sketch", "me-first",
+        "nature-power", "sleep-talk", "assist", "mirror-move",
+        "transform", "counter", "mirror-coat", "struggle",
+    ]
 
     /// 텔레키네시스가 통하지 않는 종족 (원작 예외).
     /// 디그다·닥트리오·모래꿍·모래성이당, 그리고 메가팬텀.
@@ -3432,8 +3507,10 @@ struct BattleEngine {
         // 날씨 / 필드 기술 — PokeAPI 는 whole-field-effect 라고만 알려주므로 이름으로 판정한다
         if state.rules.weather {
             if let w = Weather.from(moveName: move.name) {
-                state.field.setWeather(w, turns: 5)
-                say("\(w.ko) 상태가 되었다!")
+                let turns = weatherTurns(for: w, holder: state.side(attacker).active)
+                state.field.setWeather(w, turns: turns)
+                say("\(w.ko) 상태가 되었다!"
+                    + (turns > 5 ? " (\(turns)턴 — 돌의 효과)" : ""))
                 acted = true
             }
             if let t = Terrain.from(moveName: move.name) {
@@ -4204,7 +4281,7 @@ extension BattleEngine {
 
         // 텍스처2 — 상대가 마지막에 쓴 기술에 강한 타입이 된다.
         // 마지막 기술을 모르면 실패한다.
-        case "conversion2":
+        case "conversion-2":
             guard let li = d.lastMoveIndex, d.moves.indices.contains(li) else {
                 say("\(aName)의 텍스처2! …하지만 실패했다!")
                 return true
@@ -4569,6 +4646,213 @@ extension BattleEngine {
             return true
 
         // 검은눈빛 / 블랙아이즈 — 도망갈 수 없게 만든다
+        // 따라하기 — 마지막으로 나온 기술을 그대로 쓴다
+        case "copycat":
+            guard let last = state.lastMoveUsedAnywhere,
+                  last.name != "copycat",
+                  !Self.uncopyableMoves.contains(last.name) else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            say("\(aName)는 \(last.display)을(를) 따라했다!")
+            performCalledMove(last, attacker: attacker, defender: defender)
+            return true
+
+        // 흉내내기 — 상대의 마지막 기술을 **그 칸에 영구히** 베낀다
+        case "mimic":
+            guard let lastIdx = d.lastMoveIndex,
+                  d.moves.indices.contains(lastIdx),
+                  !a.moves.contains(where: { $0.def.name == d.moves[lastIdx].def.name }) else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            let copied = d.moves[lastIdx].def
+            guard let mySlot = a.moves.firstIndex(where: { $0.def.name == "mimic" }) else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            a.moves[mySlot] = .init(def: copied, ppLeft: min(5, copied.pp))
+            commit(a, attacker)
+            say("\(aName)는 \(copied.display)을(를) 흉내냈다!")
+            return true
+
+        // 자연의힘 — 필드에 따라 다른 기술이 된다
+        case "nature-power":
+            let called: String = {
+                switch state.field.terrain {
+                case .electric: return "thunderbolt"
+                case .grassy:   return "energy-ball"
+                case .misty:    return "moonblast"
+                case .psychic:  return "psychic"
+                case .none:     return "tri-attack"
+                }
+            }()
+            guard let mv = naturePowerCache[called] else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            say("\(aName)의 자연의힘은 \(mv.display)이 되었다!")
+            performCalledMove(mv, attacker: attacker, defender: defender)
+            return true
+
+        // 자기암시 — 상대의 능력 변화를 그대로 베낀다
+        case "psych-up":
+            a.stages = d.stages
+            a.accuracyStage = d.accuracyStage
+            a.evasionStage = d.evasionStage
+            commit(a, attacker)
+            say("\(aName)는 \(d.name)의 능력 변화를 베꼈다!")
+            return true
+
+        // 사이코시프트 — 자기 상태이상을 상대에게 넘긴다
+        case "psycho-shift":
+            guard a.status != .none, d.status == .none else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            let moved = a.status
+            a.status = .none
+            a.sleepTurns = 0
+            a.toxicCounter = 0
+            commit(a, attacker)
+            inflictDirect(moved, on: defender, source: "사이코시프트")
+            say("\(aName)는 \(moved.ko)을(를) 넘겼다!")
+            return true
+
+        // 트릭·바꿔치기 — 서로 도구를 맞바꾼다
+        case "trick", "switcheroo":
+            guard a.heldItem != nil || d.heldItem != nil else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            if case .stickyHold = d.abilityKind, state.rules.abilities {
+                say("\(d.name)는 점착으로 도구를 지켰다!")
+                return true
+            }
+            let mine = a.heldItem, theirs = d.heldItem
+            let mineUsed = a.itemConsumed, theirsUsed = d.itemConsumed
+            a.heldItem = theirs; a.itemConsumed = theirsUsed
+            d.heldItem = mine;   d.itemConsumed = mineUsed
+            commit(a, attacker)
+            commit(d, defender)
+            say("\(aName)는 도구를 맞바꿨다! "
+                + "(\(mine?.display ?? "없음") ↔ \(theirs?.display ?? "없음"))")
+            return true
+
+        // 리사이클 — 써버린 도구를 되돌린다
+        case "recycle":
+            guard a.itemConsumed, a.heldItem != nil else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            a.itemConsumed = false
+            commit(a, attacker)
+            say("\(aName)는 \(a.heldItem?.display ?? "도구")을(를) 되돌렸다!")
+            return true
+
+        // 리프레시 — 화상·독·마비를 낫게 한다 (잠듦·얼음은 낫지 않는다)
+        case "refresh":
+            guard [Ailment.burn, .poison, .toxic, .paralysis].contains(a.status) else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            a.status = .none
+            a.toxicCounter = 0
+            commit(a, attacker)
+            say("\(aName)는 상태이상을 회복했다!")
+            return true
+
+        // 원한 — 상대가 마지막에 쓴 기술의 PP 를 4 깎는다
+        case "spite":
+            guard let li = d.lastMoveIndex, d.moves.indices.contains(li),
+                  d.moves[li].ppLeft > 0 else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            let cut = min(4, d.moves[li].ppLeft)
+            d.moves[li].ppLeft -= cut
+            commit(d, defender)
+            say("\(d.name)의 \(d.moves[li].def.display) PP 가 \(cut) 줄었다!")
+            return true
+
+        // 스피드스왑 — 서로 스피드를 맞바꾼다
+        case "speed-swap":
+            let mine = a.stats[.speed] ?? 0
+            a.stats[.speed] = d.stats[.speed] ?? 0
+            d.stats[.speed] = mine
+            commit(a, attacker)
+            commit(d, defender)
+            say("서로의 스피드를 맞바꿨다!")
+            return true
+
+        // 고민씨 — 상대 특성을 불면으로 바꿔 잠들 수 없게 만든다
+        case "worry-seed":
+            if case .stickyHold = d.abilityKind, state.rules.abilities {
+                say("…하지만 실패했다!")
+                return true
+            }
+            d.ability = AbilityDef(name: "insomnia", koName: "불면",
+                                   shortEffect: "", kind: .statusImmunity(.sleep))
+            if d.status == .sleep { d.status = .none; d.sleepTurns = 0 }
+            commit(d, defender)
+            say("\(d.name)의 특성이 불면이 되었다!")
+            return true
+
+        // 록온 — 다음 공격이 반드시 맞는다
+        case "lock-on", "mind-reader":
+            guard d.lockedOnTurns == 0 else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            d.lockedOnTurns = 2
+            commit(d, defender)
+            say("\(aName)는 \(d.name)를 완전히 조준했다!")
+            return true
+
+        // 부식가스 — 상대 도구를 못 쓰게 만든다
+        case "corrosive-gas":
+            guard d.heldItem != nil, !d.itemConsumed else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            if case .stickyHold = d.abilityKind, state.rules.abilities {
+                say("\(d.name)는 점착으로 도구를 지켰다!")
+                return true
+            }
+            let name = d.heldItem?.display ?? "도구"
+            d.itemConsumed = true
+            commit(d, defender)
+            say("\(d.name)의 \(name)이(가) 녹아버렸다!")
+            return true
+
+        // 선취 — 상대가 쓰려는 공격기를 **먼저** 1.5배로 쓴다.
+        // 우리는 상대 선택을 미리 알 수 없으므로, 상대의 마지막 공격기를 쓴다
+        // (원작과 완전히 같지는 않지만 아무 일도 안 하는 것보다 낫다).
+        case "me-first":
+            let foeAttacks = d.moves.filter { $0.def.damageClass != .status && $0.usable }
+            guard let pick = foeAttacks.randomElement(using: &rng) else {
+                say("…하지만 실패했다!")
+                return true
+            }
+            var boosted = pick.def
+            boosted.power = boosted.power.map { Int(Double($0) * 1.5) }
+            say("\(aName)는 선취로 \(pick.def.display)을(를) 먼저 썼다!")
+            performCalledMove(boosted, attacker: attacker, defender: defender)
+            return true
+
+        // 프레젠트 — 20% 확률로 상대를 회복시켜 버린다 (원작 그대로)
+        case "present":
+            guard rng.chance(20) else { return false }   // 나머지는 평소 경로로
+            guard d.currentHP < d.maxHP else {
+                say("\(d.name)는 체력이 가득해 아무 일도 없었다!")
+                return true
+            }
+            let heal = max(1, d.maxHP / 4)
+            d.currentHP = min(d.maxHP, d.currentHP + heal)
+            commit(d, defender)
+            say("\(d.name)는 프레젠트로 체력을 회복했다!")
+            return true
+
         // 카운터·미러코트 — **이번 턴에 받은 데미지의 두 배**로 되돌려준다.
         // PokeAPI 는 위력을 주지 않아(power=null) 아무 일도 하지 않았다.
         case "counter", "mirror-coat":
@@ -4782,15 +5066,22 @@ extension BattleEngine {
         "return", "frustration", "gyro-ball", "electro-ball",
         "flail", "reversal", "wring-out", "crush-grip",
         "psywave", "spit-up", "beat-up", "fling", "natural-gift",
+        // 받은 데미지로 위력이 정해진다 (handleScriptedMove 가 처리한다).
+        // 여기 없으면 isDamaging 이 false 라 데미지 계산을 아예 타지 않는다.
+        "counter", "mirror-coat",
+        // 무작위 위력 / 상대 랭크로 위력이 정해진다
+        "present", "punishment",
         // 위력이 아니라 **상대 HP** 로 데미지가 정해지는 것
         "super-fang", "endeavor",
     ]
 
-    private func variablePower(_ move: MoveDef, attacker a: Battler, defender d: Battler) -> Int {
+    // 프레젠트가 난수를 쓰므로 mutating 이어야 한다 (rng 가 상태를 갖는다)
+    private mutating func variablePower(_ move: MoveDef, attacker a: Battler,
+                                        defender d: Battler) -> Int {
         switch move.name {
 
         // 친밀도 — 최대로 본다
-        case "return", "return-physical": return 102
+        case "return":                    return 102
         case "frustration":               return 1
 
         // 스피드 비율
@@ -4839,6 +5130,21 @@ extension BattleEngine {
         // 집단구타 — 원작은 팀 인원만큼 때린다. 1대1 이라 남은 마리 수로 본다.
         case "beat-up":
             return 30
+
+        // 프레젠트 — 무작위로 40/80/120, 20% 확률로는 상대를 회복시킨다.
+        // 회복은 handleScriptedMove 가 따로 처리하고 여기서는 위력만 낸다.
+        case "present":
+            switch Int.random(in: 1...10, using: &rng) {
+            case 1...4: return 40
+            case 5...7: return 80
+            case 8:     return 120
+            default:    return 0        // 회복 경로
+            }
+
+        // 혼내기 — 상대의 **올라간 랭크**만큼 위력이 오른다 (60 + 20씩, 최대 200)
+        case "punishment":
+            let up = d.stages.values.filter { $0 > 0 }.reduce(0, +)
+            return min(200, 60 + 20 * up)
 
         // 내던지기 — **도구마다 위력이 다르다** (Showdown 표를 그대로 쓴다).
         // 예전에는 전부 30 이었다. 독바늘 70, 하드스톤 100 처럼 차이가 크다.
@@ -4894,8 +5200,17 @@ extension BattleEngine {
 
     /// 화면 지속 턴수. 빛의점토를 들면 길어진다 (원작 5 → 8).
     private func screenTurns(for b: Battler) -> Int {
-        if state.rules.itemEffects, b.heldItem?.name == "light-clay" { return 8 }
+        // 이름 비교 대신 ItemKind 를 본다 — 금제·서투름으로 도구가 막혀도
+        // 일관되게 처리되고, 목록 노출도 같은 기준을 쓴다.
+        if state.rules.itemEffects, case .screenExtender(let t) = b.itemKind { return t }
         return 5
+    }
+
+    /// 날씨를 몇 턴 유지할지 (열암 계열을 지녔으면 8턴)
+    private func weatherTurns(for w: Weather, holder b: Battler) -> Int {
+        guard state.rules.itemEffects,
+              case .weatherExtender(let want, let t) = b.itemKind, want == w else { return 5 }
+        return t
     }
 
     private func s(_ side: BattleSide) -> SideState { state.side(side) }

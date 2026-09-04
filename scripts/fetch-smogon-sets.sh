@@ -41,23 +41,32 @@ tmp, out = sys.argv[1], sys.argv[2]
 # gen81v1 을 추가해도 파일만 내려받고 합치기에서 조용히 빠졌다.
 FORMATS = sys.argv[3].split()
 
+KINDS = {'1v1': '1대1', 'ou': 'OU', 'uu': 'UU', 'ubers': 'Ubers'}
+
+def parse(fmt):
+    """gen81v1 -> (8, '1v1'), gen5uu -> (5, 'uu'). 모르는 형식이면 (0, None).
+
+    **세대 숫자를 최소로 집고 뒤는 알려진 종류로 고정한다.** 예전에는
+    r'gen(\\d+)(.+)' 였는데 \\d+ 가 탐욕적이라 gen71v1 의 세대를 "71" 로,
+    나머지를 "v1" 로 잘라갔다 — 라벨이 "71세대 V1" 로 나오고
+    1대1 우선 정렬도 (group(2) != '1v1' 이므로) 조용히 죽어 있었다.
+    """
+    m = re.match(r'gen(\d+?)(' + '|'.join(KINDS) + r')$', fmt)
+    return (int(m.group(1)), m.group(2)) if m else (0, None)
+
 def label(fmt):
     """gen81v1 -> "8세대 1대1", gen5uu -> "5세대 UU" """
-    m = re.match(r'gen(\d+)(.+)', fmt)
-    if not m:
+    gen, kind = parse(fmt)
+    if kind is None:
         return fmt
-    gen, rest = m.group(1), m.group(2)
-    kind = {'1v1': '1대1', 'ou': 'OU', 'uu': 'UU', 'ubers': 'Ubers'}.get(rest, rest.upper())
-    return f'{gen}세대 {kind}'
+    return f'{gen}세대 {KINDS[kind]}'
 
 LABEL = {f: label(f) for f in FORMATS}
 # 1대1 포맷을 먼저 보여준다 (우리 배틀이 1대1 이다).
 # 같은 종류 안에서는 최신 세대가 앞에 온다.
 def sort_key(f):
-    m = re.match(r'gen(\d+)(.+)', f)
-    gen = int(m.group(1)) if m else 0
-    is1v1 = 0 if (m and m.group(2) == '1v1') else 1
-    return (is1v1, -gen)
+    gen, kind = parse(f)
+    return (0 if kind == '1v1' else 1, -gen)
 ORDER = sorted(FORMATS, key=sort_key)
 
 def slot_options(m):

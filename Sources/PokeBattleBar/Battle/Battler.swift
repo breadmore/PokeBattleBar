@@ -107,6 +107,8 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var damageClassTakenThisTurn: DamageClass = .status
     /// 금제 — 도구가 작동하지 않는 남은 턴
     var embargoTurns: Int = 0
+    /// 록온으로 조준됐는가 (남은 턴). 이 동안 상대 공격이 반드시 맞는다.
+    var lockedOnTurns: Int = 0
     /// 꿰뚫어보기·미라클아이로 간파됐는가 (회피율 상승 무시)
     var identified: Bool = false
     /// 변신한 상태인가 (두 번 변신할 수 없다)

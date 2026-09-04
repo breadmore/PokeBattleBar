@@ -27,6 +27,10 @@ enum NetTest {
         // 0-c) 다른 네트워크에서 붙을 때 쓰는 주소 파싱
         ok = directAddressTest() && ok
 
+        // 0-d) 중계기가 게임을 모른다는 성질.
+        //      깨지면 앱을 올릴 때마다 남의 기계에 있는 중계기를 고쳐달라고 해야 한다.
+        ok = await relayTest() && ok
+
         // 1) 실제 팀 준비 (직렬화 대상이 진짜 데이터여야 의미가 있다)
         guard let team = await buildTeam([87, 317]) else {
             print("✗ 팀 준비 실패")
@@ -185,6 +189,215 @@ enum NetTest {
         }
 
         print(ok ? "\n✓ 네트워크 검증 통과" : "\n✗ 네트워크 검증 실패")
+        return ok
+    }
+
+    // MARK: 중계 — 게임을 모른다는 성질
+
+    /// 테스트용 최소 중계기.
+    ///
+    /// `scripts/relay.py` 와 **같은 규약만** 지킨다: 길이 4바이트+JSON 핸드셰이크를
+    /// 한 프레임 읽고, 짝이 맞으면 그 뒤로는 바이트를 그대로 흘린다.
+    /// 파이썬 없이 돌려야 릴리스 게이트(--testall)에 넣을 수 있다.
+    private final class FakeRelay: @unchecked Sendable {
+        private var listener: NWListener?
+        private let queue = DispatchQueue(label: "poke.fakerelay")
+        private let lock = NSLock()
+        private var waitingHost: (conn: NWConnection, name: String)?
+
+        private var ready = false
+        /// 리스너가 실제로 열린 뒤에야 포트가 정해진다 —
+        /// 바로 읽으면 아직 바인딩 전이라 아무도 붙지 못한다.
+        var boundPort: UInt16? {
+            lock.lock(); defer { lock.unlock() }
+            return ready ? listener?.port?.rawValue : nil
+        }
+        var failure: String?
+
+        func start() throws {
+            let l = try NWListener(using: .tcp)
+            l.stateUpdateHandler = { [weak self] st in
+                guard let self else { return }
+                switch st {
+                case .ready:
+                    self.lock.lock(); self.ready = true; self.lock.unlock()
+                case .failed(let e):
+                    self.failure = "테스트 중계기 실패: \(e.localizedDescription)"
+                default: break
+                }
+            }
+            l.newConnectionHandler = { [weak self] conn in
+                conn.start(queue: self?.queue ?? .main)
+                self?.readHandshake(conn, buffer: Data())
+            }
+            listener = l
+            l.start(queue: queue)
+        }
+
+        func stop() {
+            listener?.cancel(); listener = nil
+            lock.lock(); let w = waitingHost?.conn; waitingHost = nil; lock.unlock()
+            w?.cancel()
+        }
+
+        /// 핸드셰이크 한 프레임이 다 올 때까지 모은다. 남은 바이트는 그대로 넘긴다.
+        private func readHandshake(_ conn: NWConnection, buffer: Data) {
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, done, _ in
+                guard let self else { return }
+                var buf = buffer
+                if let data { buf.append(data) }
+                if let hello = try? RelayCodec.decode(RelayHello.self, from: &buf) {
+                    self.pair(conn, hello: hello, leftover: buf)
+                    return
+                }
+                if done { conn.cancel(); return }
+                self.readHandshake(conn, buffer: buf)
+            }
+        }
+
+        private func send(_ conn: NWConnection, _ frame: RelayServerFrame) {
+            guard let data = try? RelayCodec.encode(frame) else { return }
+            conn.send(content: data, completion: .contentProcessed { _ in })
+        }
+
+        private func pair(_ conn: NWConnection, hello: RelayHello, leftover: Data) {
+            switch hello.role {
+            case .host:
+                lock.lock(); waitingHost = (conn, hello.name); lock.unlock()
+                send(conn, RelayServerFrame(ok: true, registered: true))
+            case .guest:
+                lock.lock(); let host = waitingHost; waitingHost = nil; lock.unlock()
+                guard let host else {
+                    send(conn, RelayServerFrame(ok: false, reason: "방이 없습니다"))
+                    conn.cancel()
+                    return
+                }
+                send(host.conn, RelayServerFrame(ok: true, paired: true, peer: hello.name))
+                send(conn, RelayServerFrame(ok: true, paired: true, peer: host.name))
+                // 이 뒤로는 게임을 모른다 — 바이트를 그대로 흘린다
+                if !leftover.isEmpty {
+                    host.conn.send(content: leftover, completion: .contentProcessed { _ in })
+                }
+                pump(host.conn, to: conn)
+                pump(conn, to: host.conn)
+            case .lobby:
+                send(conn, RelayServerFrame(ok: true, registered: true))
+            }
+        }
+
+        private func pump(_ from: NWConnection, to: NWConnection) {
+            from.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, done, err in
+                if let data, !data.isEmpty {
+                    to.send(content: data, completion: .contentProcessed { _ in })
+                }
+                if done || err != nil { from.cancel(); to.cancel(); return }
+                self?.pump(from, to: to)
+            }
+        }
+    }
+
+    /// 중계기를 거쳐도 **버전 협상은 두 앱 사이에서** 끝나는지.
+    ///
+    /// 이게 깨지면 앱 프로토콜을 올릴 때마다 중계기를 다시 배포해야 한다 —
+    /// 남의 기계에 띄워둔 중계기를 매번 고쳐달라고 부탁해야 한다는 뜻이다.
+    /// 그래서 "중계기는 게임을 모른다" 를 회귀로 잡아둔다.
+    private static func relayTest() async -> Bool {
+        print("-- 중계 (게임을 모르는 파이프) --")
+        var ok = true
+
+        guard let team = await buildTeam([87]) else {
+            print("  ✗ 팀 준비 실패"); return false
+        }
+
+        // 1라운드: 짝 맞춤 + 양방향 Wire 왕복
+        let relay = FakeRelay()
+        do { try relay.start() } catch {
+            print("  ✗ 테스트 중계기 시작 실패: \(error)"); return false
+        }
+        guard let port = await waitFor(timeout: 5, label: "중계기 준비", { relay.boundPort }),
+              let p = NWEndpoint.Port(rawValue: port) else {
+            print("  ✗ 테스트 중계기가 열리지 않았다 \(relay.failure ?? "")")
+            relay.stop(); return false
+        }
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: p)
+
+        let box = Box()
+        let host = RoomHost()
+        host.onGuestMessage = { msg in if case .chat = msg { box.hostGotJoin = msg } }
+        host.onGuestConnected = { link in link.send(.chat(from: "호스트", text: "내려간다")) }
+        host.onError = { box.errors.append($0) }
+        host.startRelay(server: endpoint, room: "T1", secret: nil,
+                        hostName: "중계호스트", rules: .init(maxTeamSize: 1, level: 50))
+
+        let guest = PeerLink(to: endpoint)
+        guest.startRelay(
+            hello: RelayHello(role: .guest, room: "T1", name: "중계게스트", secret: nil),
+            onRegistered: {},
+            onPaired: { _ in guest.send(.chat(from: "게스트", text: "올라간다")) },
+            onRejected: { box.errors.append("거절: \($0)") },
+            onMessage: { msg in if case .chat = msg { box.guestGotBegan = msg } },
+            onState: { if case .failed(let e) = $0 { box.errors.append("게스트: \(e)") } }
+        )
+
+        let up = await waitFor(timeout: 10, label: "게스트→호스트", { box.hostGotJoin })
+        let down = await waitFor(timeout: 10, label: "호스트→게스트", { box.guestGotBegan })
+        ok = check(up != nil, "중계를 거쳐 게스트→호스트 메시지 도착") && ok
+        ok = check(down != nil, "중계를 거쳐 호스트→게스트 메시지 도착") && ok
+        if up == nil || down == nil, !box.errors.isEmpty {
+            for e in Set(box.errors) { print("      · \(e)") }
+        }
+        guest.cancel(); host.stop(); relay.stop()
+        _ = team
+
+        // 2라운드: 상대가 **다른 프로토콜 버전**이면 중계기가 아니라 앱이 알아낸다
+        let relay2 = FakeRelay()
+        do { try relay2.start() } catch { print("  ✗ 중계기 시작 실패"); return false }
+        guard let port2 = await waitFor(timeout: 5, label: "중계기 준비", { relay2.boundPort }),
+              let p2 = NWEndpoint.Port(rawValue: port2) else {
+            print("  ✗ 테스트 중계기가 열리지 않았다 \(relay2.failure ?? "")")
+            relay2.stop(); return false
+        }
+        let endpoint2 = NWEndpoint.hostPort(host: "127.0.0.1", port: p2)
+
+        let box2 = Box()
+        let host2 = RoomHost()
+        host2.onProtocolError = { box2.errors.append($0) }
+        host2.onError = { _ in }
+        host2.startRelay(server: endpoint2, room: "T2", secret: nil,
+                         hostName: "중계호스트", rules: .default)
+
+        // 게스트는 손으로 만든다 — 다른 버전 프레임을 보내려면 raw 연결이 필요하다
+        let raw = NWConnection(to: endpoint2, using: .tcp)
+        let rawQueue = DispatchQueue(label: "poke.rawguest")
+        raw.stateUpdateHandler = { st in
+            guard st == .ready else { return }
+            if let hello = try? RelayCodec.encode(
+                RelayHello(role: .guest, room: "T2", name: "구버전클라", secret: nil)) {
+                raw.send(content: hello, completion: .contentProcessed { _ in })
+            }
+            // 짝이 맞았다는 응답을 기다린 뒤, 미래 버전 프레임을 흘려보낸다
+            raw.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in
+                let body = Data(#"{"v":\#(PokeBattleProtocol.version + 1),"msg":{"leave":{}}}"#.utf8)
+                var out = Data()
+                var len = UInt32(body.count).bigEndian
+                withUnsafeBytes(of: &len) { out.append(contentsOf: $0) }
+                out.append(body)
+                raw.send(content: out, completion: .contentProcessed { _ in })
+            }
+        }
+        raw.start(queue: rawQueue)
+
+        let detected = await waitFor(timeout: 10, label: "버전 불일치 감지", {
+            box2.errors.first { $0.contains("최신") || $0.contains("구버전") }
+        })
+        ok = check(detected != nil,
+                   "중계기를 거쳐도 앱이 버전 불일치를 알아낸다") && ok
+        if let detected { print("      \(detected)") }
+        ok = check(box2.errors.allSatisfy { !$0.contains("해석할 수 없습니다") },
+                   "그냥 끊기지 않고 이유가 붙는다") && ok
+
+        raw.cancel(); host2.stop(); relay2.stop()
+        print("")
         return ok
     }
 
