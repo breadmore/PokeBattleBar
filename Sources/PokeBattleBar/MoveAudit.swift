@@ -37,6 +37,12 @@ enum MoveAudit {
         "wringout", "crushgrip", "psywave",
         // 원시회귀
         "groudonprimal", "kyogreprimal",
+        // 지속 상태
+        "endure", "imprison", "aquaring", "minimize", "gastroacid",
+        "charge", "powertrick", "attract",
+        // 일격필살 · 상대 HP 기반
+        "horndrill", "fissure", "sheercold", "guillotine",
+        "superfang", "endeavor",
     ]
 
     /// 데이터로 일반화해 처리하는 기술 — 이름별 구현이 아니라 **한 경로**가 담당한다.

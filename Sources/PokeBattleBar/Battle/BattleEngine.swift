@@ -584,6 +584,14 @@ struct BattleEngine {
         out.tauntTurns = 0
         out.focusEnergy = false
         out.destinyBond = false
+        out.enduring = false
+        out.sealedMoves = []
+        out.aquaRing = false
+        out.minimized = false
+        out.abilitySuppressed = false
+        out.charged = false
+        out.powerTricked = false
+        out.infatuated = false
         out.chargingMoveIndex = nil
         out.chargeHidden = false
         out.mustRechargeTurns = 0
@@ -1033,6 +1041,12 @@ struct BattleEngine {
                 + "\(atk.moves[locked].def.display)밖에 쓸 수 없다!")
             moveIndex = locked
         }
+        // 봉인 — 상대가 봉인한 기술은 쓸 수 없다
+        if atk.sealedMoves.contains(atk.moves[moveIndex].def.name) {
+            say("\(atkName)의 \(atk.moves[moveIndex].def.display)은(는) 봉인되어 있다!")
+            return
+        }
+
         // 도발 — 변화기를 쓸 수 없다
         if atk.tauntTurns > 0, atk.moves[moveIndex].def.damageClass == .status {
             say("\(atkName)는 도발당해서 변화기를 쓸 수 없다!")
@@ -1828,6 +1842,11 @@ struct BattleEngine {
         default: break
         }
 
+        // 헤롱헤롱 — 절반 확률로 움직이지 못한다
+        if b.infatuated, rng.chance(50) {
+            return "\(KO.t(b.name)) 헤롱헤롱해서 움직일 수 없다!"
+        }
+
         if b.confusionTurns > 0 {
             b.confusionTurns -= 1
             if rng.chance(33) {
@@ -1840,6 +1859,16 @@ struct BattleEngine {
     }
 
     private mutating func accuracyCheck(move: MoveDef, attacker: Battler, defender: Battler) -> Bool {
+        // 일격필살 — 맞으면 즉시 쓰러진다. 명중률이 특수하다:
+        // 30 + (내 레벨 - 상대 레벨), 상대가 더 높으면 아예 실패한다.
+        if MoveFlags.isOHKO(move.name) {
+            guard attacker.level >= defender.level else {
+                say("\(defender.name)에게는 통하지 않는다!")
+                return false
+            }
+            let acc = 30 + (attacker.level - defender.level)
+            return rng.chance(max(1, min(100, acc)))
+        }
         // 땅속·공중·물속에 숨어 있으면 맞지 않는다.
         // (원작에는 땅속을 맞히는 지진처럼 예외가 있지만 여기서는 단순화한다)
         if defender.chargeHidden { return false }
@@ -1934,6 +1963,40 @@ struct BattleEngine {
         }
 
         var power = move.power ?? 0
+
+        // 충전 — 다음 전기 기술의 위력이 2배.
+        // **여기서 소모해야 한다** — 계산 전에 지우면 배수가 먹지 않는다.
+        if a.charged, move.type == .electric {
+            power *= 2
+            var a2 = state.side(attacker).active
+            a2.charged = false
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+        }
+
+        // 상대 HP 로 데미지가 정해지는 기술 — 위력 공식을 타지 않는다.
+        // 타입 상성(무효)은 그대로 적용된다.
+        switch move.name {
+        case "super-fang":
+            let mult = chart.multiplier(attack: move.type, defenders: d.types)
+            return DamageResult(damage: mult == 0 ? 0 : max(1, d.currentHP / 2),
+                                critical: false, typeMultiplier: mult, multiplier: mult)
+        case "endeavor":
+            let mult = chart.multiplier(attack: move.type, defenders: d.types)
+            // 내 HP 보다 상대가 많을 때만 통한다 (같아지게 깎는다)
+            guard mult != 0, d.currentHP > a.currentHP else {
+                return DamageResult(damage: 0, critical: false,
+                                    typeMultiplier: mult, multiplier: mult)
+            }
+            return DamageResult(damage: d.currentHP - a.currentHP,
+                                critical: false, typeMultiplier: mult, multiplier: mult)
+        default: break
+        }
+
+        // 일격필살 — 맞으면 남은 HP 를 모두 깎는다
+        if MoveFlags.isOHKO(move.name) {
+            return DamageResult(damage: max(1, d.currentHP), critical: false,
+                                typeMultiplier: 1, multiplier: 1)
+        }
 
         // 위력이 상황에 따라 바뀌는 기술 — PokéAPI 가 power: null 로 주므로
         // **직접 계산하지 않으면 데미지가 0 이 된다.** 원작 공식을 쓴다.
@@ -2240,6 +2303,15 @@ struct BattleEngine {
                 say("\(b.name)의 인형이 부서졌다!")
             }
             return absorbed
+        }
+
+        // 버티기 — 이번 턴에는 반드시 살아남는다 (HP 가 가득이 아니어도)
+        if b.enduring, amount >= b.currentHP, b.currentHP > 1 {
+            let dealt = b.currentHP - 1
+            b.currentHP = 1
+            state.sides[side.rawValue].team[state.side(side).activeIndex] = b
+            say("\(b.name)는 공격을 견뎌냈다!")
+            return dealt
         }
 
         let atFullHP = b.currentHP == b.maxHP
@@ -2559,6 +2631,16 @@ struct BattleEngine {
                     }
                 }
             }
+
+            // 아쿠아링 — 매 턴 최대 HP 의 1/16 회복
+            if b.aquaRing, b.currentHP > 0, b.currentHP < b.maxHP {
+                let heal = max(1, b.maxHP / 16)
+                b.currentHP = min(b.maxHP, b.currentHP + heal)
+                say("\(KO.t(b.name)) 아쿠아링으로 체력을 회복했다!")
+            }
+
+            // 버티기는 그 턴에만 유효하다
+            b.enduring = false
 
             // 길동무는 **내가 다시 행동할 때까지** 유지된다.
             // 턴 끝에 지우면 상대가 나를 쓰러뜨리기도 전에 사라진다.
@@ -3000,6 +3082,89 @@ extension BattleEngine {
             }
             return false   // 데미지 계산은 평소 경로로
 
+        // 버티기 — 이번 턴에는 쓰러지지 않고 HP 1 로 버틴다
+        case "endure":
+            a.enduring = true
+            commit(a, attacker)
+            say("\(aName)는 공격을 견딜 준비를 했다!")
+            return true
+
+        // 봉인 — 내가 가진 기술은 상대도 쓸 수 없게 된다
+        case "imprison":
+            let mine = Set(a.moves.map(\.def.name))
+            let shared = mine.intersection(d.moves.map(\.def.name))
+            guard !shared.isEmpty else {
+                say("\(aName)의 봉인! …하지만 실패했다!")
+                return true
+            }
+            d.sealedMoves.formUnion(shared)
+            commit(d, defender)
+            say("\(aName)는 상대의 기술을 봉인했다! (\(shared.count)개)")
+            return true
+
+        // 아쿠아링 — 매 턴 최대 HP 의 1/16 회복
+        case "aqua-ring":
+            guard !a.aquaRing else {
+                say("\(aName)의 아쿠아링! …하지만 실패했다!")
+                return true
+            }
+            a.aquaRing = true
+            commit(a, attacker)
+            say("\(aName)는 물의 베일을 둘렀다!")
+            return true
+
+        // 웅크리기 — 작아져서 잘 맞지 않는다 (회피 +2)
+        case "minimize":
+            a.minimized = true
+            a.evasionStage = min(6, a.evasionStage + 2)
+            commit(a, attacker)
+            say("\(aName)는 몸을 움츠렸다! 회피율이 크게 올라갔다")
+            return true
+
+        // 위액 — 상대 특성을 없앤다
+        case "gastro-acid":
+            guard !d.abilitySuppressed else {
+                say("\(aName)의 위액! …하지만 실패했다!")
+                return true
+            }
+            d.abilitySuppressed = true
+            commit(d, defender)
+            say("\(d.name)의 특성이 사라졌다!")
+            return true
+
+        // 충전 — 다음 전기 기술의 위력이 2배, 특방도 오른다
+        case "charge":
+            a.charged = true
+            bump(&a, .spDefense, +1)
+            commit(a, attacker)
+            say("\(aName)는 전기를 모았다! 다음 전기 기술의 위력이 오른다")
+            return true
+
+        // 파워트릭 — 공격과 방어를 맞바꾼다
+        case "power-trick":
+            let atkStat = a.stats[.attack] ?? 0
+            a.stats[.attack] = a.stats[.defense] ?? 0
+            a.stats[.defense] = atkStat
+            a.powerTricked.toggle()
+            commit(a, attacker)
+            say("\(aName)의 공격과 방어가 뒤바뀌었다!")
+            return true
+
+        // 헤롱헤롱(매혹) — 확률로 움직이지 못한다.
+        // 원작은 성별이 달라야 하지만 우리는 성별을 다루지 않아 항상 걸린다.
+        case "attract":
+            guard !d.infatuated else {
+                say("\(aName)의 헤롱헤롱! …하지만 실패했다!")
+                return true
+            }
+            d.infatuated = true
+            commit(d, defender)
+            say("\(d.name)는 헤롱헤롱해졌다!")
+            return true
+
+        // 뽐내기 · 이상한빛 — 혼란은 PokeAPI 가 주지만 랭크 변화가 함께 온다.
+        // 이 둘은 일반 경로로 처리되므로 여기서는 건드리지 않는다.
+
         // 도발 — 3턴 동안 변화기를 쓸 수 없게 만든다
         case "taunt":
             guard d.tauntTurns == 0 else {
@@ -3151,6 +3316,19 @@ extension BattleEngine {
     ///
     /// 친밀도는 **최대**로 본다 — PokeTokenBar 에서 직접 키운 동반 포켓몬이므로.
     /// 그래서 은혜갚기는 최대(102), 화풀이는 최소(1)다.
+    /// 위력이 상황에 따라 바뀌는 기술 이름.
+    ///
+    /// **`isDamaging` 이 이 목록을 봐야 한다.** 그러지 않으면 위력이 nil 이라는
+    /// 이유로 "데미지 없는 기술" 로 걸러져 계산 자체가 돌지 않는다 —
+    /// 실제로 그래서 은혜갚기·자이로볼 같은 기술이 아무 일도 하지 않았다.
+    static let variablePowerMoves: Set<String> = [
+        "return", "frustration", "gyro-ball", "electro-ball",
+        "flail", "reversal", "wring-out", "crush-grip",
+        "psywave", "spit-up", "beat-up", "fling", "natural-gift",
+        // 위력이 아니라 **상대 HP** 로 데미지가 정해지는 것
+        "super-fang", "endeavor",
+    ]
+
     private func variablePower(_ move: MoveDef, attacker a: Battler, defender d: Battler) -> Int {
         switch move.name {
 

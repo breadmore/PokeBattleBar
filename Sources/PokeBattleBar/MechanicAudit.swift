@@ -82,7 +82,8 @@ enum MechanicAudit {
               match: { m, _ in (m.maxHits ?? 1) > 1 }),
 
         .init(name: "일격필살", why: "맞으면 즉시 쓰러진다",
-              supported: false, note: "아직 — 명중률 규칙이 특수하다",
+              supported: true,
+              note: "명중률 30 + (내 레벨 - 상대 레벨), 상대가 높으면 실패",
               match: { _, s in s.ohko }),
 
         .init(name: "상대를 물러나게 한다", why: "울부짖기 계열",
@@ -130,12 +131,23 @@ enum MechanicAudit {
             let mark = g.supported ? "✓" : "·"
             print("\(mark) \(g.name) — \(hits.count)개   [\(g.why)]")
             print("    \(g.note)")
-            if verbose || !g.supported {
-                let names = hits.map(\.0.display).sorted()
-                print("    \(names.prefix(14).joined(separator: ", "))"
-                      + (names.count > 14 ? " …" : ""))
+            // 이미 손으로 구현한 기술은 남은 목록에서 뺀다 —
+            // 안 그러면 끝낸 것까지 계속 "남았다" 고 나온다
+            let remaining = hits.filter { m, _ in
+                let id = Showdown.id(fromPokeAPI: m.name)
+                return !MoveAudit.implemented.contains(id)
+                    && !MoveAudit.notApplicable.contains(id)
             }
-            if !g.supported { unsupportedTotal += hits.count }
+            if verbose || !g.supported {
+                let names = (g.supported ? hits : remaining).map(\.0.display).sorted()
+                if names.isEmpty {
+                    print("    (남은 것 없음)")
+                } else {
+                    print("    \(names.prefix(20).joined(separator: ", "))"
+                          + (names.count > 20 ? " …" : ""))
+                }
+            }
+            if !g.supported { unsupportedTotal += remaining.count }
             print("")
         }
 
