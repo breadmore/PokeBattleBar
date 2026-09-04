@@ -113,8 +113,15 @@ enum LobbyTest {
                   "끝까지 남은 포켓몬이 들어간다", sample.myLastStanding?.name ?? "없음") && ok
         ok = show(sample.foeTeam.allSatisfy(\.fainted), "전멸한 쪽은 전부 쓰러진 것으로") && ok
 
-        // 실제로 저장되고 다시 읽히는가
-        let store = RecordStore()
+        // 실제로 저장되고 다시 읽히는가.
+        //
+        // **반드시 임시 파일을 쓴다.** 예전에는 RecordStore() 가 실제
+        // record.json 을 열어서, 검증을 돌릴 때마다 사용자 전적에 가짜 승리가
+        // 쌓이고 아래 clearHistory() 가 대전기록을 전부 지웠다.
+        let store = RecordStore.forTesting("lobbytest")
+        let usedFile = await store.fileName
+        ok = show(usedFile != TestProfile.recordFileName,
+                  "검증은 실제 기록 파일을 건드리지 않는다", usedFile) && ok
         let histBefore = await store.record.history.count
         _ = await store.finish(won: true, draw: false, opponent: "동료",
                                survivors: 1, teamSize: 2, battle: sample)
@@ -128,6 +135,7 @@ enum LobbyTest {
             ok = show(last.turns == 14, "턴 수가 남는다", "\(last.turns)턴") && ok
         }
         await store.clearHistory()
+        await store.removeFile()          // 임시 파일을 남기지 않는다
         let cleared = await store.record
         ok = show(cleared.history.isEmpty, "기록만 지울 수 있다") && ok
         ok = show(cleared.wins > 0, "지워도 승패는 남는다", "\(cleared.wins)승") && ok

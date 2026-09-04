@@ -88,6 +88,27 @@ class Room:
         self.released = asyncio.Event()       # 방장 감시를 접었다 (파이프가 읽어도 된다)
 
 
+class LobbyClient:
+    """중계 로비에 상주하는 사람 하나.
+
+    배틀 연결과 **다른 연결**이다. 배틀 연결은 짝이 맞으면 바이트만 흘리는
+    파이프가 되어버려서, 그 위에 "누가 로비에 있는지" 를 얹을 수가 없다.
+    상주 연결을 따로 두면 중계기는 배틀에 대해 계속 아무것도 모른 채로
+    로비만 관리한다.
+    """
+
+    __slots__ = ("name", "status", "room", "writer", "lock", "joined")
+
+    def __init__(self, name, writer):
+        self.name = name
+        self.status = "free"
+        self.room = None
+        self.writer = writer
+        # 스냅샷을 보내는 곳이 둘(입장 직후·주기 푸시)이라 쓰기를 직렬화한다
+        self.lock = asyncio.Lock()
+        self.joined = time.monotonic()
+
+
 class Relay:
     def __init__(self, secret=None, max_rooms=50, idle=1800, port=51235):
         self.secret = secret
@@ -95,6 +116,8 @@ class Relay:
         self.idle = idle
         self.port = port
         self.rooms = {}
+        self.lobby = {}          # id -> LobbyClient (중계 로비 상주자)
+        self.next_id = 1
         self.active = 0          # 지금 중계 중인 배틀 수
         self.total = 0           # 시작 후 성사된 배틀 수
         self.started = time.monotonic()
@@ -141,6 +164,11 @@ class Relay:
             await self.reject(writer, "중계 서버 암호가 다릅니다")
             writer.close()
             return
+
+        # 방 코드 검사는 role 판별 뒤에 한다 — 로비 상주자는 방 코드가 없다
+        if role == "lobby":
+            await self.serve_lobby(name, reader, writer, peer)
+            return
         if not room_code:
             await self.reject(writer, "방 코드가 비어 있습니다")
             writer.close()
@@ -151,8 +179,144 @@ class Relay:
         elif role == "guest":
             await self.serve_guest(room_code, name, reader, writer, peer)
         else:
-            await self.reject(writer, "role 은 host 또는 guest 여야 합니다")
+            await self.reject(writer, "role 은 host · guest · lobby 중 하나여야 합니다")
             writer.close()
+
+    # --- 중계 로비 -------------------------------------------------------
+
+    def snapshot(self):
+        """로비 상주자와 대기 중인 방. 배틀 내용은 들어가지 않는다."""
+        now = time.monotonic()
+        return {
+            "type": "lobby",
+            "peers": [
+                {"name": c.name, "status": c.status, "room": c.room}
+                for c in sorted(self.lobby.values(), key=lambda c: c.joined)
+            ],
+            "rooms": [
+                {"code": r.code, "host": r.host_name, "waiting": int(now - r.created)}
+                for r in sorted(self.rooms.values(), key=lambda r: r.created)
+            ],
+        }
+
+    async def send_to(self, client, payload):
+        try:
+            async with client.lock:
+                await self.write_frame(client.writer, payload)
+            return True
+        except (OSError, ConnectionError):
+            return False
+
+    async def broadcast_lobby(self):
+        if not self.lobby:
+            return
+        payload = self.snapshot()
+        dead = []
+        for cid, client in list(self.lobby.items()):
+            if not await self.send_to(client, payload):
+                dead.append(cid)
+        for cid in dead:
+            self.lobby.pop(cid, None)
+
+    async def lobby_pusher(self, interval=3):
+        """방 목록은 배틀 연결 쪽에서 바뀌므로 주기적으로도 밀어준다.
+
+        이벤트마다 broadcast 를 심는 것보다 단순하고, 3초면 사람이 기다리는
+        체감으로 충분하다. 상주자 변화는 즉시 밀어준다.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            self.sweep()
+            await self.broadcast_lobby()
+
+    def find_lobby(self, name):
+        """이름으로 로비 상주자를 찾는다 (같은 이름이면 먼저 들어온 사람)."""
+        for client in sorted(self.lobby.values(), key=lambda c: c.joined):
+            if client.name == name:
+                return client
+        return None
+
+    async def forward_invite(self, sender, frame):
+        """초대를 전달한다. 중계기는 방이 실제로 있는지만 확인한다.
+
+        수락·거절은 두 앱이 알아서 하고, 중계기는 메시지를 옮기기만 한다 —
+        여기에 규칙을 넣으면 앱을 고칠 때마다 중계기도 고쳐야 한다.
+        """
+        target_name = str(frame.get("to", ""))[:64]
+        room = str(frame.get("room", "")).strip().upper()[:16]
+
+        def fail(reason):
+            return self.send_to(sender, {"type": "invitefailed",
+                                         "peer": target_name, "reason": reason})
+
+        if room not in self.rooms:
+            await fail("방이 열려 있지 않습니다")
+            return
+        target = self.find_lobby(target_name)
+        if target is None:
+            await fail("상대가 중계 로비에 없습니다")
+            return
+        if target is sender:
+            await fail("자신을 초대할 수 없습니다")
+            return
+        if target.status != "free":
+            await fail("상대가 지금 배틀 중이거나 방을 열어둔 상태입니다")
+            return
+
+        ok = await self.send_to(target, {"type": "invite",
+                                         "peer": sender.name, "room": room})
+        if ok:
+            log.info("초대 전달 %s → %s (방 %s)", sender.name, target_name, room)
+        else:
+            await fail("상대에게 전달하지 못했습니다")
+
+    async def forward_decline(self, sender, frame):
+        target = self.find_lobby(str(frame.get("to", ""))[:64])
+        if target is None:
+            return
+        await self.send_to(target, {"type": "declined", "peer": sender.name})
+
+    async def serve_lobby(self, name, reader, writer, peer):
+        cid = self.next_id
+        self.next_id += 1
+        client = LobbyClient(name, writer)
+        self.lobby[cid] = client
+        log.info("로비 입장 %s from %s — 현재 %d명", name, peer, len(self.lobby))
+
+        try:
+            await self.write_frame(writer, {"ok": True, "registered": True})
+        except (OSError, ConnectionError):
+            self.lobby.pop(cid, None)
+            writer.close()
+            return
+        await self.broadcast_lobby()
+
+        try:
+            while True:
+                frame = await self.read_frame(reader)
+                kind = frame.get("type")
+                if kind == "status":
+                    status = str(frame.get("status", "free"))
+                    if status not in ("free", "hosting", "battling"):
+                        status = "free"
+                    room = frame.get("room")
+                    client.status = status
+                    client.room = str(room)[:16] if room else None
+                    await self.broadcast_lobby()
+                elif kind == "invite":
+                    await self.forward_invite(client, frame)
+                elif kind == "decline":
+                    await self.forward_decline(client, frame)
+                elif kind == "ping":
+                    pass            # 연결 유지용 — 응답은 주기 푸시로 대신한다
+        except (OSError, ConnectionError, asyncio.IncompleteReadError, ValueError,
+                json.JSONDecodeError):
+            pass
+        finally:
+            self.lobby.pop(cid, None)
+            log.info("로비 퇴장 %s — 남은 %d명", name, len(self.lobby))
+            writer.close()
+            await self.broadcast_lobby()
 
     async def serve_host(self, code, name, reader, writer, peer):
         self.sweep()
@@ -535,6 +699,8 @@ async def main():
     server = await asyncio.start_server(relay.handle, args.host, args.port)
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     log.info("중계기 시작 %s%s", addrs, " (암호 있음)" if args.secret else "")
+
+    asyncio.ensure_future(relay.lobby_pusher())
 
     servers = [server]
     if args.web_port:

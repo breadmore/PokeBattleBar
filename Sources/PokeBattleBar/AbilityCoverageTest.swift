@@ -112,7 +112,8 @@ enum AbilityCoverageTest {
 
         /// 특성을 붙여 한 턴 돌리고 로그와 최종 상태를 돌려준다.
         func run(ability: String, kind: AbilityKind, myMove: MoveDef, foeMove: MoveDef,
-                 foeAbility: String? = nil) async -> (log: [String], me: Battler, foe: Battler)? {
+                 foeAbility: String? = nil,
+                 forms: [String] = []) async -> (log: [String], me: Battler, foe: Battler)? {
             guard let uSp = try? await PokeAPI.shared.species(143),
                   let fSp = try? await PokeAPI.shared.species(151) else { return nil }
             func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String,
@@ -142,6 +143,12 @@ enum AbilityCoverageTest {
                                                    activeIndex: 0)])
             st.phase = .chooseLead
             var e = BattleEngine(state: st, chart: chart, seed: 909)
+            // 폼을 쓰는 특성은 데이터가 있어야 동작한다 (실제 앱은 preloadAutoForms 가 채운다)
+            for name in forms {
+                if let f = try? await PokeAPI.shared.form(named: name) {
+                    e.formCache[name] = f
+                }
+            }
             e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
             e.beginBattle()
             guard case .awaitingMoves = e.state.phase else { return nil }
@@ -206,10 +213,68 @@ enum AbilityCoverageTest {
             ok = show(b > a, "재의검이 상대 방어를 깎는다", "\(a) → \(b)") && ok
         } else { ok = show(false, "재의검") && ok }
 
+        // 변신(임포스터) — **등장하자마자** 상대를 베낀다.
+        // 사용자가 물었다: "만나자마자 상대로 변하는건 구현 됐어?"
+        // 메타몽(143) 이 뮤(151) 로 변해야 한다.
+        if let r = await run(ability: "imposter", kind: .imposter,
+                             myMove: splash, foeMove: splash) {
+            ok = show(r.log.contains { $0.contains("변신했다") },
+                      "임포스터가 등장 시 변신한다") && ok
+            ok = show(r.me.isTransformed, "변신 상태로 표시된다") && ok
+            ok = show(r.me.types == r.foe.types,
+                      "상대 타입을 그대로 가져온다",
+                      "\(r.me.types.map(\.ko)) vs \(r.foe.types.map(\.ko))") && ok
+            ok = show(r.me.stats[.attack] == r.foe.stats[.attack],
+                      "상대 능력치를 그대로 가져온다",
+                      "공격 \(r.me.stats[.attack] ?? 0) vs \(r.foe.stats[.attack] ?? 0)") && ok
+            ok = show(r.me.moves.map(\.def.name) == r.foe.moves.map(\.def.name),
+                      "상대 기술을 그대로 가져온다",
+                      "\(r.me.moves.map(\.def.display))") && ok
+            ok = show(r.me.moves.allSatisfy { $0.ppLeft <= 5 },
+                      "베낀 기술의 PP 는 5 다",
+                      "\(r.me.moves.map(\.ppLeft))") && ok
+            // HP 는 **자기 것**을 쓴다 (원작 규칙)
+            ok = show(r.me.maxHP == 400, "HP 는 자기 것을 쓴다",
+                      "\(r.me.maxHP)") && ok
+        } else { ok = show(false, "임포스터") && ok }
+
+        // 배틀스위치 — 공격기를 쓰면 블레이드(공격 140), 킹실드를 쓰면 실드(방어 140).
+        // 능력치가 통째로 뒤바뀌므로 숫자로 확인한다.
+        let aegisForms = [FormChange.aegislashShield, FormChange.aegislashBlade]
+        if let r = await run(ability: "stance-change", kind: .stanceChange,
+                             myMove: tackle, foeMove: splash, forms: aegisForms) {
+            ok = show(r.log.contains { $0.contains("블레이드 폼이 되었다") },
+                      "공격기를 쓰면 블레이드 폼이 된다") && ok
+            ok = show(r.me.visualForm == FormChange.aegislashBlade,
+                      "스프라이트도 블레이드로 바뀐다", r.me.visualForm ?? "nil") && ok
+            // 블레이드는 공격이 방어보다 훨씬 높다 (140 / 50)
+            let atk = r.me.stats[.attack] ?? 0
+            let def = r.me.stats[.defense] ?? 0
+            ok = show(atk > def * 2, "블레이드는 공격이 방어보다 훨씬 높다",
+                      "공격 \(atk) / 방어 \(def)") && ok
+        } else { ok = show(false, "배틀스위치") && ok }
+
+        // 킹실드를 쓰면 실드 폼으로 돌아온다
+        if let kings = try? await PokeAPI.shared.move("kings-shield"),
+           let r = await run(ability: "stance-change", kind: .stanceChange,
+                             myMove: kings, foeMove: splash, forms: aegisForms) {
+            let atk = r.me.stats[.attack] ?? 0
+            let def = r.me.stats[.defense] ?? 0
+            ok = show(def > atk * 2, "킹실드를 쓰면 실드 폼(방어가 높다)",
+                      "공격 \(atk) / 방어 \(def)") && ok
+        } else { ok = show(false, "킹실드") && ok }
+
+        // 변화기는 폼을 바꾸지 않는다 (실드 폼으로 변화기를 쓸 수 있어야 한다)
+        if let r = await run(ability: "stance-change", kind: .stanceChange,
+                             myMove: growl, foeMove: splash, forms: aegisForms) {
+            ok = show(!r.log.contains { $0.contains("블레이드 폼이 되었다") },
+                      "변화기는 폼을 바꾸지 않는다") && ok
+        } else { ok = show(false, "배틀스위치 변화기") && ok }
+
         // 옷무늬 — 첫 공격이 막힌다
         if let r = await run(ability: "no-guard", kind: .noGuard,
                              myMove: tackle, foeMove: splash,
-                             foeAbility: "disguise") {
+                             foeAbility: "disguise", forms: ["mimikyu-busted"]) {
             ok = show(r.foe.currentHP == r.foe.maxHP && r.foe.shieldUsed,
                       "옷무늬가 첫 공격을 막는다",
                       "\(r.foe.currentHP)/\(r.foe.maxHP)") && ok

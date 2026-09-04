@@ -51,6 +51,16 @@ GUARD="$SUP/loadouts-test-releasecheck.json"
 mkdir -p "$SUP"
 echo '{"guard":{"item":"life-orb","ability":"cursed-body","form":null}}' > "$GUARD"
 
+# **실제 전적 파일의 지문을 떠 둔다.**
+#
+# 전에 --testall 의 로비 검증이 RecordStore() 를 그냥 열어서 실제
+# record.json 에 가짜 승리를 쌓고 clearHistory() 로 대전기록을 지웠다.
+# 릴리스마다 --testall 이 도니까 배포할 때마다 기록이 사라졌다.
+# 파일 존재 여부만 보면 이 사고를 못 잡는다 — 내용을 봐야 한다.
+REC="$SUP/record.json"
+REC_BEFORE=""
+[ -f "$REC" ] && REC_BEFORE=$(shasum -a 256 "$REC" | cut -d' ' -f1)
+
 echo "==> 번들"
 VERSION="$VERSION" ./scripts/bundle.sh >/dev/null
 
@@ -124,6 +134,20 @@ else
     echo "==> 경고: 사용자 데이터가 유지되지 않았습니다" >&2
     exit 1
 fi
+
+# 전적이 검증 때문에 바뀌었으면 배포를 멈춘다
+if [ -n "$REC_BEFORE" ]; then
+    REC_AFTER=$(shasum -a 256 "$REC" | cut -d' ' -f1)
+    if [ "$REC_BEFORE" != "$REC_AFTER" ]; then
+        echo "==> 경고: 검증이 실제 전적(record.json)을 바꿨습니다 — 배포를 멈춥니다" >&2
+        echo "    검증 코드는 RecordStore.forTesting(...) 만 써야 합니다" >&2
+        exit 1
+    fi
+    echo "==> 전적 파일 보존 확인 (해시 일치)"
+fi
+
+# 검증이 남긴 임시 전적 파일이 있으면 지운다
+rm -f "$SUP"/record-test-lobbytest.json
 
 echo "==> 완료"
 echo "   ${BLD:-}설치 파일 : $VINST  ($(du -h "$VINST" | cut -f1))${RST:-}"

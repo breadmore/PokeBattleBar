@@ -102,6 +102,21 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     var perishTurns: Int = 0
     /// 옷무늬·아이스페이스의 한 번 방어를 이미 썼는가
     var shieldUsed: Bool = false
+    /// 변신한 상태인가 (두 번 변신할 수 없다)
+    var isTransformed: Bool = false
+    /// 변신 전 모습. 되돌릴 때 쓴다.
+    var preTransform: Snapshot?
+
+    /// 변신 전 상태를 담아 두는 그릇
+    struct Snapshot: Codable, Sendable, Equatable {
+        var name: String
+        var types: [PType]
+        var stats: [Stat: Int]
+        var moves: [MoveSlot]
+        var ability: AbilityDef?
+        var spriteForm: String?
+        var weight: Int
+    }
 
     /// 쓸 수 있는 도구를 지니고 있는가 (곡예·성원의칼날 판정)
     var hasUsableItem: Bool { heldItem != nil && !itemConsumed }
@@ -429,6 +444,62 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         isMega = true
         visualForm = form.name
         formLabel = form.suffixLabel
+    }
+
+    /// **변신** — 상대의 모습·타입·능력치·기술·특성을 그대로 가져온다.
+    ///
+    /// HP 는 자기 것을 그대로 쓴다 (원작 규칙). 기술은 PP 5 로 복사되고,
+    /// 랭크 변화도 함께 복사된다. 메타몽이 배우는 기술은 변신 하나뿐이라
+    /// 이게 없으면 메타몽은 배틀에서 아무것도 할 수 없다.
+    mutating func applyTransform(into target: Battler) {
+        guard !isTransformed else { return }
+        // 되돌릴 수 있게 원래 모습을 남긴다
+        preTransform = Snapshot(name: name, types: types, stats: stats,
+                                moves: moves, ability: ability,
+                                spriteForm: spriteForm, weight: weight)
+        name = target.name
+        types = target.types
+        // HP 를 뺀 능력치만 가져온다
+        for s in [Stat.attack, .defense, .spAttack, .spDefense, .speed] {
+            stats[s] = target.stats[s]
+        }
+        stages = target.stages
+        // 변신으로 복사한 기술은 PP 가 5 다 (원작)
+        moves = target.moves.map { .init(def: $0.def, ppLeft: min(5, $0.def.pp)) }
+        ability = target.ability
+        weight = target.weight
+        visualForm = target.spriteForm
+        isTransformed = true
+        formLabel = "변신"
+    }
+
+    /// 변신을 되돌린다 (배틀이 끝나거나 물러날 때)
+    mutating func revertTransform() {
+        guard let snap = preTransform else { return }
+        name = snap.name
+        types = snap.types
+        stats = snap.stats
+        moves = snap.moves
+        ability = snap.ability
+        weight = snap.weight
+        visualForm = snap.spriteForm
+        stages = [:]
+        isTransformed = false
+        preTransform = nil
+        formLabel = nil
+    }
+
+    /// 킬가르도의 배틀스위치 — 공격기를 쓰면 블레이드, 킹실드를 쓰면 실드.
+    /// 능력치가 통째로 뒤바뀌므로(공격 150 ↔ 방어 150) 배틀 내내 영향이 크다.
+    mutating func applyStance(_ form: FormStats, label: String, nature: Nature) {
+        let iv = 31
+        for s in [Stat.attack, .defense, .spAttack, .spDefense, .speed] {
+            let inner = (2 * form.base(s) + iv) * level / 100 + 5
+            stats[s] = max(1, Int(Double(inner) * nature.multiplier(for: s)))
+        }
+        types = form.types
+        visualForm = form.name
+        formLabel = label
     }
 
     /// 다이맥스 / 거다이맥스 — HP 상한과 현재 HP 가 배율만큼 늘고, 정해진 턴 뒤 되돌아간다.

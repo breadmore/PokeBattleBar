@@ -22,6 +22,11 @@ enum RelayRole: String, Codable, Sendable {
     case host
     /// 방 코드로 찾아 들어간다
     case guest
+    /// 로비에 상주해서 "누가 있는지 · 어떤 방이 열렸는지" 를 받는다.
+    ///
+    /// **배틀 연결과 별개의 연결이다.** 배틀 연결은 짝이 맞는 순간 바이트만
+    /// 흘리는 파이프가 되므로 그 위에 로비를 얹을 수 없다.
+    case lobby
 }
 
 /// 접속 직후 중계기에 보내는 첫 프레임
@@ -35,22 +40,93 @@ struct RelayHello: Codable, Sendable {
     var secret: String?
 }
 
-/// 중계기가 돌려주는 프레임.
+// (중계기가 보내는 프레임은 아래 RelayServerFrame 하나로 다룬다 —
+//  등록 응답·짝 맞춤·로비 스냅샷이 같은 스트림으로 온다)
+
+// MARK: - 중계 로비
+
+/// 중계기가 주기적으로 밀어주는 로비 상황.
 ///
-/// 호스트는 **두 번** 받는다: 방이 등록됐을 때(`registered`), 그리고 상대가
-/// 들어왔을 때(`paired`). 게스트는 짝이 맞는 순간 한 번 받는다.
-/// 그래서 호스트는 "등록됐다" 와 "상대가 왔다" 를 구분해 화면에 띄울 수 있다.
-struct RelayReply: Codable, Sendable {
-    var ok: Bool
+/// **로컬 네트워크 로비(Bonjour)와 섞지 않는다** — 출처가 다르고, 할 수 있는
+/// 것도 다르다(중계 로비에서는 방 코드로 들어가고, 로컬에서는 초대를 보낸다).
+struct RelayLobbySnapshot: Codable, Sendable {
+    var peers: [Peer] = []
+    var rooms: [Room] = []
+
+    struct Peer: Codable, Sendable, Identifiable, Equatable {
+        var name: String
+        var status: String
+        /// 방을 열어둔 사람이면 그 방 코드
+        var room: String?
+
+        var id: String { name }
+        var state: PeerStatus { PeerStatus(rawValue: status) ?? .free }
+    }
+
+    struct Room: Codable, Sendable, Identifiable, Equatable {
+        var code: String
+        var host: String
+        /// 기다린 시간 (초)
+        var waiting: Int
+
+        var id: String { code }
+    }
+}
+
+/// 로비 연결에서 앱이 중계기로 보내는 프레임.
+/// 핸드셰이크 뒤에 오가는 것이라 `type` 으로 구분한다.
+struct RelayClientFrame: Codable, Sendable {
+    var type: String
+    var status: String?
+    var room: String?
+    /// 초대·거절을 받을 상대 이름
+    var to: String?
+
+    static func status(_ s: PeerStatus, room: String?) -> RelayClientFrame {
+        RelayClientFrame(type: "status", status: s.rawValue, room: room)
+    }
+    static let ping = RelayClientFrame(type: "ping")
+    static func invite(to peer: String, room: String) -> RelayClientFrame {
+        RelayClientFrame(type: "invite", room: room, to: peer)
+    }
+    static func decline(to peer: String) -> RelayClientFrame {
+        RelayClientFrame(type: "decline", to: peer)
+    }
+}
+
+/// 중계기가 보내는 프레임 — 세 가지가 같은 스트림으로 온다.
+///
+///  - 등록됐다 (`registered`). 방을 연 호스트, 그리고 로비 상주자가 받는다.
+///  - 짝이 맞았다 (`paired` + `peer`). 배틀 연결에서 이 뒤로는 게임 스트림이다.
+///  - 로비 상황 (`type: "lobby"`). 로비 연결에 주기적으로 온다.
+///
+/// 하나의 타입으로 받는 이유는 프레임을 미리 구분할 수 없기 때문이다 —
+/// 호스트는 등록 응답 뒤에 짝 맞춤을 기다리고, 로비는 등록 응답 뒤에
+/// 스냅샷을 계속 받는다.
+struct RelayServerFrame: Codable, Sendable {
+    var type: String?
+    var ok: Bool?
     /// 실패 이유 (방 없음·암호 불일치·이미 찬 방)
     var reason: String?
     var registered: Bool?
     var paired: Bool?
-    /// 짝이 된 상대 이름
+    /// 짝이 된 상대 이름, 또는 초대를 보낸/거절한 사람
     var peer: String?
+    /// 초대에 실린 방 코드
+    var room: String?
+    var peers: [RelayLobbySnapshot.Peer]?
+    var rooms: [RelayLobbySnapshot.Room]?
 
+    var isLobbyUpdate: Bool { type == "lobby" }
+    var isRejection: Bool { ok == false }
     var isRegistered: Bool { registered == true }
     var isPaired: Bool { paired == true }
+    /// 로비 연결에서 오는 것인가 (스냅샷·초대·거절·전달 실패)
+    var isLobbyEvent: Bool { type != nil }
+
+    var snapshot: RelayLobbySnapshot {
+        RelayLobbySnapshot(peers: peers ?? [], rooms: rooms ?? [])
+    }
 }
 
 /// 핸드셰이크 프레이밍. `WireCodec` 과 같은 형식(길이 4바이트 빅엔디안 + JSON)

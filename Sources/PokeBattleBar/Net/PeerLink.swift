@@ -32,6 +32,14 @@ final class PeerLink: @unchecked Sendable {
     private var onRelayPaired: (@Sendable (String?) -> Void)?
     /// 중계기가 거절했다
     private var onRelayRejected: (@Sendable (String) -> Void)?
+    /// 로비 연결에서 온 프레임 (스냅샷·초대·거절).
+    ///
+    /// 이 연결은 짝 맞춤이 없어서 **핸드셰이크가 끝나지 않는다** — 같은 형식의
+    /// 프레임이 계속 흘러오므로 Wire 로 넘기지 않고 여기서 계속 받는다.
+    /// 종류를 나누지 않고 프레임째로 올린다 — 판단은 RelayLobby 가 한다.
+    private var onRelayLobby: (@Sendable (RelayServerFrame) -> Void)?
+    /// 로비 연결인가 (게임 스트림으로 넘어가지 않는다)
+    private var isLobbyLink = false
     /// 프레임 해석 실패 (특히 프로토콜 버전 불일치) 를 위로 올린다.
     /// 이걸 안 하면 그냥 연결이 끊겨서 사용자는 이유를 알 수 없다.
     var onProtocolError: (@Sendable (String) -> Void)?
@@ -118,6 +126,34 @@ final class PeerLink: @unchecked Sendable {
         connection.start(queue: queue)
     }
 
+    /// 중계 로비 연결을 시작한다.
+    ///
+    /// 배틀 연결과 달리 **끝까지 중계기와 이야기한다** — 짝을 맞추는 것이 아니라
+    /// "누가 있는지" 를 계속 받는 것이 목적이다. 그래서 Wire 로 넘어가지 않는다.
+    func startRelay(hello: RelayHello,
+                    onRegistered: @escaping @Sendable () -> Void,
+                    onPaired: @escaping @Sendable (String?) -> Void,
+                    onRejected: @escaping @Sendable (String) -> Void,
+                    onLobby: @escaping @Sendable (RelayServerFrame) -> Void,
+                    onState: @escaping @Sendable (NWConnection.State) -> Void) {
+        isLobbyLink = true
+        onRelayLobby = onLobby
+        startRelay(hello: hello, onRegistered: onRegistered, onPaired: onPaired,
+                   onRejected: onRejected, onMessage: { _ in }, onState: onState)
+    }
+
+    /// 로비 연결로 프레임 하나를 보낸다 (상태 알림·핑)
+    func sendRelay(_ frame: RelayClientFrame) {
+        do {
+            let data = try RelayCodec.encode(frame)
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error { NSLog("PokeBattleBar: 중계 로비 전송 실패 \(error)") }
+            })
+        } catch {
+            NSLog("PokeBattleBar: 중계 로비 인코딩 실패 \(error)")
+        }
+    }
+
     private func sendHelloIfNeeded() {
         guard let hello = pendingHello else { return }
         do {
@@ -135,20 +171,28 @@ final class PeerLink: @unchecked Sendable {
     /// - Returns: 계속 진행해도 되는가 (false 면 연결이 끊겼다)
     private func consumeHandshake() throws -> Bool {
         while pendingHello != nil {
-            guard let reply = try RelayCodec.decode(RelayReply.self, from: &buffer) else {
+            // 로비 연결은 스냅샷도 같은 스트림으로 오므로 함께 해석한다
+            guard let frame = try RelayCodec.decode(RelayServerFrame.self, from: &buffer) else {
                 return true             // 아직 다 안 왔다 — 더 기다린다
             }
-            guard reply.ok else {
-                let why = reply.reason ?? "알 수 없는 이유"
+            if frame.isRejection {
+                let why = frame.reason ?? "알 수 없는 이유"
                 pendingHello = nil
                 onRelayRejected?(why)
                 return false
             }
-            if reply.isPaired {
-                pendingHello = nil      // 이 뒤로는 평범한 게임 연결이다
-                onRelayPaired?(reply.peer)
-            } else if reply.isRegistered {
-                onRelayRegistered?()    // 아직 기다린다 (호스트)
+            if frame.isLobbyEvent {
+                onRelayLobby?(frame)
+                continue                // 로비 연결은 계속 여기서 받는다
+            }
+            if frame.isRegistered {
+                onRelayRegistered?()
+                continue                // 호스트는 짝 맞춤을, 로비는 스냅샷을 더 기다린다
+            }
+            if frame.isPaired {
+                // 이 뒤로는 평범한 게임 연결이다
+                pendingHello = nil
+                onRelayPaired?(frame.peer)
             }
         }
         return true

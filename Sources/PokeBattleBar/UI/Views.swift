@@ -104,9 +104,9 @@ struct LobbyView: View {
 
                 LoadoutWarningBanner(model: model)
 
-                GBPanel("로비") { LobbyPeopleSection(model: model) }
+                GBPanel("로비 — 같은 네트워크") { LobbyPeopleSection(model: model) }
 
-                GBPanel("중계 서버로 만나기 (다른 네트워크)") { RelaySection(model: model) }
+                GBPanel("로비 — 중계 서버 (다른 네트워크)") { RelaySection(model: model) }
 
                 HStack(alignment: .top, spacing: 14) {
                     GBPanel("방 만들기") { HostSection(model: model) }
@@ -767,6 +767,7 @@ func abilitySummary(_ a: AbilityDef) -> String {
     case .neutralizingGas:             "양쪽 특성을 없앤다"
     case .mimicry:                     "필드에 따라 자기 타입이 바뀐다"
     case .imposter:                    "등장 시 상대로 변신한다"
+    case .stanceChange:                "공격기를 쓰면 블레이드, 킹실드를 쓰면 실드 폼"
     case .parentalBond:                "한 번 더, 약하게 때린다"
     case .stealOnContact(let item):    item ? "접촉해 온 상대의 도구를 빼앗는다"
                                             : "접촉해 온 상대와 특성을 바꾼다"
@@ -1226,6 +1227,123 @@ struct RelaySection: View {
                      + "중계기 설치는 scripts/install-relay.sh 로 합니다.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
+
+            Divider().padding(.vertical, 2)
+            RelayLobbyView(model: model)
+        }
+    }
+}
+
+/// 중계 서버 로비 — 그 중계기에 붙어 있는 사람과 열린 방.
+///
+/// 로컬 로비와 **분리해서** 보여준다. 여기 있는 사람에게는 초대를 보낼 수 없고
+/// (중계기는 초대를 중개하지 않는다), 대신 열린 방에 코드 없이 바로 들어간다.
+struct RelayLobbyView: View {
+    let model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(model.relayLobbyConnected ? Color.green : Color.secondary)
+                    .frame(width: 7, height: 7)
+                Text(model.relayLobbyConnected ? "중계 로비 접속됨" : "중계 로비 접속 안 됨")
+                    .font(.caption.bold())
+                if model.relayLobbyConnected {
+                    Text("\(model.relayPeers.count)명 · 열린 방 \(model.relayRooms.count)개")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.relayLobbyConnected {
+                    Button("접속 끊기") { model.disconnectRelayLobby() }
+                        .font(.caption)
+                } else {
+                    Button("중계 로비 접속") { model.connectRelayLobby() }
+                        .font(.caption)
+                        .disabled(!model.canUseRelay)
+                        .help("이 중계기에 붙어 있는 사람과 열린 방이 보입니다")
+                }
+            }
+
+            if let s = model.relayLobbyStatus {
+                Text(s).font(.caption2).foregroundStyle(.secondary)
+            }
+
+            if model.relayLobbyConnected {
+                if model.relayPeers.isEmpty && model.relayRooms.isEmpty {
+                    Text("이 중계기에 붙어 있는 다른 사람이 없습니다.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if !model.relayRooms.isEmpty {
+                    Text("열린 방 — 코드 없이 바로 들어갈 수 있습니다")
+                        .font(.system(size: 10, weight: .heavy)).foregroundStyle(GB.hilite)
+                    ForEach(model.relayRooms) { room in
+                        HStack(spacing: 8) {
+                            Text(room.code)
+                                .font(.system(.caption, design: .monospaced).bold())
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(RoundedRectangle(cornerRadius: 4)
+                                    .fill(GB.hpAmber.opacity(0.35)))
+                            Text(room.host).font(.callout.bold())
+                            Text("\(room.waiting)초 기다리는 중")
+                                .font(.system(size: 10)).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("참가") { Task { await model.joinRelayRoom(room) } }
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 7)
+                            .fill(Color(nsColor: .controlBackgroundColor)))
+                    }
+                }
+
+                if !model.relayPeers.isEmpty {
+                    Text("접속자")
+                        .font(.system(size: 10, weight: .heavy)).foregroundStyle(GB.hilite)
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 8) {
+                            ForEach(model.relayPeers) { peer in
+                                HStack(spacing: 6) {
+                                    Circle().fill(dot(peer.state)).frame(width: 7, height: 7)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(peer.name).font(.callout.bold())
+                                        Text(peer.state.ko)
+                                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                    if peer.state.invitable {
+                                        if model.invitesSent.contains(peer.name) {
+                                            Text("보냄").font(.caption2).foregroundStyle(.orange)
+                                        } else if model.canInviteViaRelay {
+                                            Button("초대") { model.inviteRelayPeer(peer) }
+                                                .font(.caption)
+                                                .help("이 사람을 내 중계 방으로 부릅니다")
+                                        }
+                                    }
+                                }
+                                .padding(.horizontal, 9).padding(.vertical, 6)
+                                .background(RoundedRectangle(cornerRadius: 8)
+                                    .fill(.quaternary.opacity(0.5)))
+                            }
+                        }
+                        .padding(.bottom, 2)
+                    }
+                    .scrollIndicators(.visible)
+                    if !model.canInviteViaRelay {
+                        Text("중계로 방을 열면 여기서 바로 초대할 수 있습니다. "
+                             + "또는 위의 열린 방에 들어가세요.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private func dot(_ s: PeerStatus) -> Color {
+        switch s {
+        case .free:     .green
+        case .hosting:  .blue
+        case .battling: .orange
         }
     }
 }
@@ -1432,7 +1550,20 @@ struct WaitingView: View {
             // 방을 연 뒤에 초대한다 — 여기가 초대를 보내는 자리다
             if model.canInvite {
                 VStack(alignment: .leading, spacing: 8) {
-                    LobbyPeopleSection(model: model)
+                    // 중계로 연 방이면 중계 로비에서 부른다 (LAN 로비에는 안 보인다)
+                    if model.hostingViaRelay {
+                        if !model.relayRoom.isEmpty {
+                            HStack(spacing: 6) {
+                                Text("방 코드").font(.caption.bold())
+                                Text(model.relayRoom)
+                                    .font(.system(.title3, design: .monospaced).bold())
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        RelayLobbyView(model: model)
+                    } else {
+                        LobbyPeopleSection(model: model)
+                    }
                 }
                 .frame(maxWidth: 520)
                 .padding(.top, 4)

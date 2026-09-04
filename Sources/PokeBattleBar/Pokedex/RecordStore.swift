@@ -80,17 +80,43 @@ actor RecordStore {
     private let fileURL: URL
     private(set) var record = Record()
 
-    init() {
+    /// 저장 폴더 (실제 앱과 테스트가 같은 곳을 쓴다 — 파일 이름만 다르다)
+    static var storageDir: URL {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Application Support/PokeBattleBar")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // 테스트 인스턴스는 별도 파일을 쓴다 — 같은 파일에 두 앱이 쓰면 기록이 덮인다
-        fileURL = dir.appending(path: TestProfile.recordFileName)
+        return dir
+    }
+
+    /// - Parameter fileName: 쓸 파일 이름.
+    ///
+    ///   **검증 코드는 반드시 자기 파일 이름을 넘겨야 한다.** 예전에는 이
+    ///   생성자가 무조건 실제 `record.json` 을 열었고, 그래서 `--testall` 을
+    ///   돌릴 때마다 테스트가 사용자의 전적에 가짜 승리를 더하고
+    ///   `clearHistory()` 로 **대전기록을 전부 지웠다.**
+    init(fileName: String = TestProfile.recordFileName) {
+        fileURL = Self.storageDir.appending(path: fileName)
         if let d = try? Data(contentsOf: fileURL),
            let r = try? JSONDecoder().decode(Record.self, from: d) {
             record = r
         }
     }
+
+    /// 검증용 임시 저장소. 실제 기록 파일을 절대 건드리지 않는다.
+    ///
+    /// 이름에 `-test-` 가 들어가야 `TestProfile.fileName` 규칙과 어긋나지 않고,
+    /// 사용자가 폴더를 봤을 때도 무엇인지 알 수 있다.
+    static func forTesting(_ tag: String) -> RecordStore {
+        RecordStore(fileName: "record-test-\(tag).json")
+    }
+
+    /// 검증이 끝난 뒤 임시 파일을 지운다
+    func removeFile() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    /// 이 저장소가 쓰는 파일 이름 (검증에서 실제 파일이 아닌지 확인하는 데 쓴다)
+    var fileName: String { fileURL.lastPathComponent }
 
     private func persist() {
         if let d = try? JSONEncoder().encode(record) { try? d.write(to: fileURL) }

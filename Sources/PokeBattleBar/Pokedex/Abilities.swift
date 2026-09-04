@@ -246,6 +246,8 @@ enum AbilityKind: Codable, Hashable, Sendable, Equatable {
     case mimicry
     /// 변신(임포스터) — 등장 시 상대로 변신한다
     case imposter
+    /// 배틀스위치 — 쓰는 기술에 따라 실드/블레이드 폼이 바뀐다
+    case stanceChange
     /// 부모의사랑 — 한 번 더, 약하게 때린다
     case parentalBond(Double)
     /// 도둑질(픽포켓)·방랑령 — 접촉해 온 상대의 도구/특성을 가져온다
@@ -685,7 +687,13 @@ actor AbilityCatalog {
 
         // 폼이 바뀌는데 FormChange 에 규칙이 없는 것들 — 표시만 한다.
         // 규칙을 넣기 전에 표시라도 맞춰두면 "구현했다" 는 오해가 없다.
-        case "hunger-switch", "shields-down", "stance-change",
+        // 배틀스위치 — 공격기를 쓰면 블레이드, 킹실드를 쓰면 실드.
+        // 공격 150 ↔ 방어 150 이 통째로 뒤바뀌므로 배틀 내내 영향이 크다.
+        case "stance-change": return .stanceChange
+        // 변신(임포스터) — 등장 시 상대를 그대로 베낀다 (메타몽의 숨겨진 특성)
+        case "imposter":      return .imposter
+
+        case "hunger-switch", "shields-down",
              "power-construct", "gulp-missile", "illusion",
              "zero-to-hero", "tera-shift", "teraform-zero":
             return .formSwitchDisplay

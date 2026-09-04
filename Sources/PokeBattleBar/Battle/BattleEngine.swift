@@ -494,6 +494,20 @@ struct BattleEngine {
             }
             say("\(b.name)의 스크린클리너! 양쪽 화면이 사라졌다!")
         }
+        // 변신(임포스터) — 등장 시 상대를 그대로 베낀다 (메타몽의 숨겨진 특성)
+        if case .imposter = b.abilityKind {
+            let foe = side.other
+            let fi = state.side(foe).activeIndex
+            if state.side(foe).team.indices.contains(fi) {
+                let target = state.side(foe).team[fi]
+                var me = state.sides[side.rawValue].team[idx]
+                if !me.isTransformed, !target.isTransformed, !target.isFainted {
+                    me.applyTransform(into: target)
+                    state.sides[side.rawValue].team[idx] = me
+                    say("\(b.name)는 \(target.name)으로 변신했다!")
+                }
+            }
+        }
         // 오거폰 — 쓰고 있는 가면이 어느 능력치를 올리는지 정한다
         if case .embodyAspect = b.abilityKind {
             let form = b.chosenForm ?? b.visualForm ?? ""
@@ -1320,6 +1334,13 @@ struct BattleEngine {
             say("(\(move.type.ko) · 위력 \(move.power.map(String.init) ?? "-"))")
         } else {
             say("\(atkName)의 \(move.display)!")
+        }
+
+        // 배틀스위치 — 공격기면 블레이드, 킹실드면 실드로 바뀐다.
+        // 데미지 계산 **전에** 바뀌어야 그 턴 공격에 반영된다.
+        if state.rules.abilities, case .stanceChange = atk.abilityKind {
+            applyStanceChange(attacker: attacker, move: move)
+            atk = state.side(attacker).active
         }
 
         // 몸을 숨기고 있다가 내려오는 턴 — **한 줄 알려준다.**
@@ -3103,6 +3124,32 @@ struct BattleEngine {
         return true
     }
 
+    /// 킬가르도의 배틀스위치.
+    ///
+    /// 공격기를 쓰면 블레이드(공격 150·방어 50), 킹실드를 쓰면 실드로 돌아온다.
+    /// 변화기는 폼을 바꾸지 않는다 — 실드 폼으로 도발·해제 같은 것을 쓸 수 있다.
+    private mutating func applyStanceChange(attacker: BattleSide, move: MoveDef) {
+        let idx = state.side(attacker).activeIndex
+        guard state.side(attacker).team.indices.contains(idx) else { return }
+        var b = state.sides[attacker.rawValue].team[idx]
+
+        let wantBlade: Bool
+        if move.name == "kings-shield" {
+            wantBlade = false
+        } else if move.damageClass == .status {
+            return                       // 변화기는 폼을 바꾸지 않는다
+        } else {
+            wantBlade = true
+        }
+
+        let wanted = wantBlade ? FormChange.aegislashBlade : FormChange.aegislashShield
+        guard b.visualForm != wanted, let stats = formCache[wanted] else { return }
+        b.applyStance(stats, label: wantBlade ? "블레이드" : "실드",
+                      nature: Nature.named(natureOf(b)))
+        state.sides[attacker.rawValue].team[idx] = b
+        say("\(b.name)는 \(wantBlade ? "블레이드" : "실드") 폼이 되었다!")
+    }
+
     /// 이 기술이 실제로 갖는 우선도. 여왕의위엄이 이걸 본다.
     /// 짓궂은마음·질풍날개로 올라간 우선도도 선공으로 취급된다.
     private func effectivePriority(_ move: MoveDef, attacker: Battler) -> Int {
@@ -4389,6 +4436,22 @@ extension BattleEngine {
             }
             say(hit ? "멸망의노래가 울려퍼졌다! 3턴 후에 쓰러진다!"
                     : "\(aName)의 멸망의노래! …하지만 실패했다!")
+            return true
+
+        // 변신 — 상대를 그대로 베낀다. 메타몽이 배우는 기술은 이것뿐이다.
+        case "transform":
+            guard !a.isTransformed else {
+                say("\(aName)의 변신! …하지만 실패했다!")
+                return true
+            }
+            // 이미 변신한 상대나 대타출동 중인 상대는 베낄 수 없다 (원작)
+            guard !d.isTransformed, d.substituteHP == nil else {
+                say("\(aName)의 변신! …하지만 실패했다!")
+                return true
+            }
+            a.applyTransform(into: d)
+            commit(a, attacker)
+            say("\(aName)는 \(d.name)으로 변신했다!")
             return true
 
         case "mean-look", "block", "spider-web":

@@ -51,6 +51,7 @@ final class AppModel {
             guard newValue != screenStorage else { return }
             screenStorage = newValue
             syncPresenceStatus()
+            syncRelayStatus()
         }
     }
     private var screenStorage: Screen = .loading
@@ -79,6 +80,10 @@ final class AppModel {
     /// 설치 파일을 받는 중인가
     var updateDownloading = false
     var updateStatus: String?
+    /// 업데이트를 확인하는 중인가 (버튼에 로딩을 돌린다)
+    var updateChecking = false
+    /// 확인해봤지만 최신이었을 때 띄우는 말. 잠시 뒤 사라진다.
+    var updateUpToDateNote: String?
 
     // MARK: 중계 서버 (다른 네트워크의 사람과 만나기)
     //
@@ -96,10 +101,127 @@ final class AppModel {
     }
     /// 방 코드 — 방을 연 사람이 상대에게 알려준다
     var relayRoom: String = ""
+    /// 지금 열어둔 방이 중계 방인가 (LAN 방이면 중계 초대를 보낼 수 없다)
+    private(set) var hostingViaRelay = false
 
     /// 중계 서버를 쓸 준비가 됐는가 (주소를 적었는가)
     var canUseRelay: Bool {
         !relayServer.trimmingCharacters(in: .whitespaces).isEmpty && !roster.isEmpty
+    }
+
+    // MARK: 중계 로비 (로컬 네트워크 로비와 **분리해서** 보여준다)
+    //
+    // 출처가 다르고 할 수 있는 것도 다르다:
+    //   로컬  — Bonjour 로 찾고, 초대를 보낸다
+    //   중계  — 중계기가 알려주고, 방 코드로 들어간다
+    // 한 목록에 합치면 "이 사람에게 초대를 보낼 수 있나" 를 화면에서 알 수 없다.
+
+    /// 중계 로비에 붙어 있는가
+    var relayLobbyConnected = false
+    /// 중계 로비에 있는 사람들 (나는 제외되어 온다)
+    var relayPeers: [RelayLobbySnapshot.Peer] = []
+    /// 중계기에서 상대를 기다리는 방들
+    var relayRooms: [RelayLobbySnapshot.Room] = []
+    var relayLobbyStatus: String?
+
+    private let relayLobby = RelayLobby()
+
+    /// 중계 로비에 상주 접속한다. 배틀 연결과는 별개다.
+    func connectRelayLobby() {
+        guard let endpoint = DirectConnect.endpoint(from: relayServer,
+                                                    defaultPort: RelayConfig.defaultPort) else {
+            errorMessage = "중계 서버 주소를 알아볼 수 없습니다."
+            return
+        }
+        relayLobby.onConnectedChanged = { [weak self] on in
+            Task { @MainActor in
+                guard let self else { return }
+                self.relayLobbyConnected = on
+                if !on {
+                    self.relayPeers = []
+                    self.relayRooms = []
+                    self.relayLobbyStatus = "중계 로비 연결이 끊겼습니다 — 다시 붙는 중…"
+                } else {
+                    self.relayLobbyStatus = nil
+                    self.syncRelayStatus()
+                }
+            }
+        }
+        relayLobby.onSnapshot = { [weak self] snap in
+            Task { @MainActor in
+                guard let self else { return }
+                // 내 이름은 목록에서 뺀다 (중계기는 이름으로만 구분한다)
+                self.relayPeers = snap.peers.filter { $0.name != self.playerName }
+                self.relayRooms = snap.rooms.filter { $0.host != self.playerName }
+            }
+        }
+        relayLobby.onRejected = { [weak self] why in
+            Task { @MainActor in
+                guard let self else { return }
+                self.relayLobbyConnected = false
+                self.relayLobbyStatus = nil
+                self.errorMessage = "중계 로비 접속이 거절됐습니다: \(why)"
+            }
+        }
+        relayLobby.onInvite = { [weak self] from, room in
+            Task { @MainActor in
+                guard let self else { return }
+                // 배틀 중이면 자동으로 거절한다 (초대창이 배틀을 가리면 안 된다)
+                guard self.screen == .lobby else {
+                    self.relayLobby.decline(to: from)
+                    return
+                }
+                self.incomingInvite = Invite(from: from, roomName: room, viaRelay: true)
+                self.notify(.invite, "\(from) 님이 중계 서버에서 초대했습니다 (방 \(room))")
+            }
+        }
+        relayLobby.onDeclined = { [weak self] who in
+            Task { @MainActor in
+                guard let self else { return }
+                self.invitesSent.remove(who)
+                self.notify(.declined, "\(who) 님이 초대를 거절했습니다")
+            }
+        }
+        relayLobby.onInviteFailed = { [weak self] who, why in
+            Task { @MainActor in
+                guard let self else { return }
+                self.invitesSent.remove(who)
+                self.notify(.info, "\(who) 님에게 초대를 보낼 수 없었습니다 — \(why)")
+            }
+        }
+        relayLobby.onError = { [weak self] e in
+            Task { @MainActor in self?.relayLobbyStatus = e }
+        }
+        relayLobbyStatus = "중계 로비에 접속하는 중…"
+        relayLobby.start(server: endpoint, displayName: playerName,
+                         secret: relaySecret.isEmpty ? nil : relaySecret)
+    }
+
+    func disconnectRelayLobby() {
+        relayLobby.stop()
+        relayLobbyConnected = false
+        relayPeers = []
+        relayRooms = []
+        relayLobbyStatus = nil
+    }
+
+    /// 내 상태를 중계 로비에도 반영한다 (로컬 로비와 같은 규칙)
+    private func syncRelayStatus() {
+        let state: PeerStatus
+        switch screen {
+        case .lobby:                                  state = .free
+        case .hostingRoom, .joiningRoom:              state = .hosting
+        case .chooseLead, .battle, .result, .loading:  state = .battling
+        }
+        // 방을 열어둔 경우에만 방 코드를 알려준다 — 남이 들어올 수 있는 방이다
+        let room = (state == .hosting && role == .host) ? relayRoom : nil
+        relayLobby.update(status: state, room: room?.isEmpty == false ? room : nil)
+    }
+
+    /// 중계 로비 목록에서 방을 골라 바로 들어간다
+    func joinRelayRoom(_ room: RelayLobbySnapshot.Room) async {
+        relayRoom = room.code
+        await joinViaRelay()
     }
 
     // 로비 (누가 있는지 / 초대 / 새 방 알림)
@@ -107,6 +229,11 @@ final class AppModel {
     struct Invite: Equatable, Sendable {
         var from: String
         var roomName: String
+        /// 중계 서버를 거쳐 온 초대인가.
+        ///
+        /// 수락하는 방법이 다르다 — 로컬은 Bonjour 로 그 방을 찾아 들어가고,
+        /// 중계는 방 코드로 중계기에 붙는다. 출처를 안 들고 있으면 수락할 수 없다.
+        var viaRelay = false
     }
     var incomingInvite: Invite?
     /// 내가 초대를 보낸 상대 (회신을 기다리는 중)
@@ -299,6 +426,7 @@ final class AppModel {
     /// 첫 검색 결과는 "새 방" 이 아니다 (이미 열려 있던 방들이다)
     private var didFirstRoomScan = false
     private var toastTask: Task<Void, Never>?
+    private var upToDateNoteTask: Task<Void, Never>?
     private var guestLink: PeerLink?
     /// 주소로 직접 붙는 중이라 방 정보를 기다리고 있는가
     private var awaitingRoomInfo = false
@@ -745,6 +873,25 @@ final class AppModel {
 
     /// 배틀 중 자동 변신에 필요한 폼들을 미리 받아둔다
     private func preloadAutoForms(for team: [Battler]) async {
+        // 킬가르도·따라큐·아이스페이스는 특성 규칙(autoRule)이 아니라
+        // 엔진이 직접 폼을 바꾸므로 여기서 미리 받아 둔다.
+        // 데이터가 없으면 폼이 조용히 바뀌지 않는다.
+        for b in team {
+            var extra: [String] = []
+            switch b.ability?.name {
+            case "stance-change":
+                extra = [FormChange.aegislashShield, FormChange.aegislashBlade]
+            case "disguise":
+                extra = ["mimikyu-busted"]
+            case "ice-face":
+                extra = ["eiscue-noice"]
+            default:
+                break
+            }
+            for n in extra where formCache[n] == nil {
+                formCache[n] = try? await PokeAPI.shared.form(named: n)
+            }
+        }
         for b in team {
             guard let ab = b.ability?.name,
                   let rule = FormChange.autoRule(ability: ab, speciesID: b.speciesID,
@@ -1079,6 +1226,7 @@ final class AppModel {
 
     func startHosting() async {
         guard await prepareToHost() else { return }
+        hostingViaRelay = false
         wireHostCallbacks()
         host.start(roomName: roomName.isEmpty ? "\(playerName)의 방" : roomName,
                    hostName: playerName, rules: rules, modeSummary: modeSummary)
@@ -1106,6 +1254,7 @@ final class AppModel {
         let code = RelayConfig.normalize(room: relayRoom)
         relayRoom = code.isEmpty ? RelayConfig.makeRoomCode() : code
 
+        hostingViaRelay = true
         wireHostCallbacks()
         host.onRelayRegistered = { [weak self] in
             Task { @MainActor in
@@ -1380,6 +1529,7 @@ final class AppModel {
         presence.stop()
         host.stop()
         browser.stop()
+        relayLobby.stop()       // 중계기 쪽 목록에 유령으로 남지 않게
     }
 
     func startPresence() {
@@ -1460,8 +1610,16 @@ final class AppModel {
     func acceptInvite() async {
         guard let inv = incomingInvite else { return }
         incomingInvite = nil
-        presence.closeInvite(from: inv.from)
         markNoticesSeen()
+
+        // 중계 초대는 방 코드로 바로 들어간다 (Bonjour 로는 찾을 수 없는 방이다)
+        if inv.viaRelay {
+            relayRoom = inv.roomName
+            await joinViaRelay()
+            return
+        }
+
+        presence.closeInvite(from: inv.from)
 
         // 초대에 실린 방을 찾는다. 아직 검색에 안 걸렸으면 잠깐 기다려본다.
         for _ in 0..<20 {
@@ -1477,8 +1635,31 @@ final class AppModel {
     func declineInvite() {
         guard let inv = incomingInvite else { return }
         incomingInvite = nil
-        presence.decline(from: inv.from, myName: playerName)
+        if inv.viaRelay {
+            relayLobby.decline(to: inv.from)
+        } else {
+            presence.decline(from: inv.from, myName: playerName)
+        }
         markNoticesSeen()
+    }
+
+    // MARK: 중계 로비 초대
+
+    /// 중계 로비에서 초대를 보낼 수 있는가.
+    /// **중계로 방을 열어둔 상태**여야 한다 — 들어올 방이 없으면 의미가 없다.
+    var canInviteViaRelay: Bool {
+        relayLobbyConnected && hostingViaRelay
+            && screen == .hostingRoom && !relayRoom.isEmpty
+    }
+
+    func inviteRelayPeer(_ peer: RelayLobbySnapshot.Peer) {
+        guard canInviteViaRelay else {
+            relayLobbyStatus = "먼저 중계로 방을 열어주세요 — 그 뒤에 초대할 수 있습니다."
+            return
+        }
+        invitesSent.insert(peer.name)
+        relayLobby.sendInvite(to: peer.name, room: relayRoom)
+        status = "\(peer.name) 님에게 초대를 보냈습니다 — 수락을 기다립니다"
     }
 
     // MARK: 알림
@@ -1504,6 +1685,40 @@ final class AppModel {
         availableUpdate = await UpdateChecker.check(current: appVersion)
         if let u = availableUpdate {
             notify(.info, "새 버전 v\(u.version) 이 있습니다 — 우측 상단에서 업데이트하세요")
+        }
+    }
+
+    /// 사용자가 **직접** 눌러서 확인한다.
+    ///
+    /// 시작할 때 한 번만 확인하면, 앱을 켜둔 채로 새 버전이 나왔을 때
+    /// 강제 종료하고 다시 켜야 업데이트 버튼이 보인다. 그래서 손으로
+    /// 확인할 길을 만든다 — 확인하는 동안 로딩을 돌리고, 최신이면
+    /// 그렇다고 알려준다 (아무 반응이 없으면 눌린 건지 알 수 없다).
+    func checkForUpdateManually() async {
+        guard !updateChecking else { return }
+        guard UpdateChecker.isConfigured else {
+            updateUpToDateNote = "업데이트 주소가 설정되지 않았습니다"
+            clearUpToDateNoteSoon()
+            return
+        }
+        updateChecking = true
+        updateUpToDateNote = nil
+        defer { updateChecking = false }
+
+        let found = await UpdateChecker.check(current: appVersion)
+        availableUpdate = found
+        if found == nil {
+            updateUpToDateNote = "최신 버전입니다 (v\(appVersion))"
+            clearUpToDateNoteSoon()
+        }
+    }
+
+    private func clearUpToDateNoteSoon() {
+        upToDateNoteTask?.cancel()
+        upToDateNoteTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self?.updateUpToDateNote = nil
         }
     }
 
@@ -2346,6 +2561,7 @@ final class AppModel {
         chosenLead = nil
         waitingForOpponent = false
         role = .none
+        hostingViaRelay = false
         status = ""
         playbackTask?.cancel()
         clearPlayback()

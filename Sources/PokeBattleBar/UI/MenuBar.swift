@@ -281,13 +281,68 @@ struct InviteSheet: View {
 
 /// 업데이트 버튼.
 ///
-/// 새 버전이 없으면 조용히 사라진다 — 늘 회색 버튼이 있으면 눈에 걸린다.
-/// 프로토콜 버전이 다르면 배틀 자체가 안 되므로, 있을 때는 확실히 보이게 한다.
+/// 세 가지 모습을 한 자리에서 돌려 쓴다:
+///  - 새 버전이 있으면 **업데이트** (강조색)
+///  - 확인하는 중이면 로딩
+///  - 그 외에는 **업데이트 확인** (눌러서 직접 확인)
+///
+/// 예전에는 시작할 때 한 번만 확인해서, 앱을 켜둔 채 새 버전이 나오면
+/// 강제 종료하고 다시 켜야 버튼이 나타났다.
 struct UpdateButton: View {
     let model: AppModel
     @State private var showNotes = false
 
     var body: some View {
+        if model.availableUpdate != nil {
+            updateAvailableButton
+        } else {
+            checkButton
+        }
+    }
+
+    /// 새 버전이 없을 때 — 직접 확인해보는 버튼
+    @ViewBuilder
+    private var checkButton: some View {
+        Button {
+            Task { await model.checkForUpdateManually() }
+        } label: {
+            HStack(spacing: 5) {
+                if model.updateChecking {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(model.updateChecking ? "확인 중…" : "업데이트 확인")
+                        .font(.system(size: 11, weight: .semibold))
+                    if let note = model.updateUpToDateNote {
+                        Text(note)
+                            .font(.system(size: 9))
+                            .opacity(0.75)
+                    } else {
+                        Text("v\(model.appVersion)")
+                            .font(.system(size: 9).monospacedDigit())
+                            .opacity(0.6)
+                    }
+                }
+            }
+            .foregroundStyle(GB.ink)
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 7).fill(GB.plateHi))
+            .overlay(RoundedRectangle(cornerRadius: 7)
+                .stroke(GB.ink.opacity(0.18), lineWidth: 1))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.updateChecking)
+        .help(model.updateUpToDateNote ?? "새 버전이 있는지 확인합니다")
+        .animation(.easeOut(duration: 0.15), value: model.updateChecking)
+        .animation(.easeOut(duration: 0.15), value: model.updateUpToDateNote)
+    }
+
+    /// 새 버전이 있을 때 — 원래의 강조 버튼
+    @ViewBuilder
+    private var updateAvailableButton: some View {
         if let u = model.availableUpdate {
             Button {
                 showNotes = true
