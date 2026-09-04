@@ -592,6 +592,8 @@ struct BattleEngine {
         out.charged = false
         out.powerTricked = false
         out.infatuated = false
+        out.grounded = false
+        out.defenseCurled = false
         out.chargingMoveIndex = nil
         out.chargeHidden = false
         out.mustRechargeTurns = 0
@@ -1872,8 +1874,9 @@ struct BattleEngine {
         // 땅속·공중·물속에 숨어 있으면 맞지 않는다.
         // (원작에는 땅속을 맞히는 지진처럼 예외가 있지만 여기서는 단순화한다)
         if defender.chargeHidden { return false }
-        // 전자부유 중에는 땅 기술이 맞지 않는다 (부유 특성과 같은 취급)
-        if defender.magnetRiseTurns > 0, move.type == .ground,
+        // 전자부유 중에는 땅 기술이 맞지 않는다 (부유 특성과 같은 취급).
+        // 단 떨어뜨리기로 땅에 끌어내려졌으면 소용없다.
+        if !defender.grounded, defender.magnetRiseTurns > 0, move.type == .ground,
            move.damageClass != .status { return false }
         // 노가드 — 양쪽 중 하나라도 있으면 반드시 명중
         if state.rules.abilities {
@@ -2010,6 +2013,8 @@ struct BattleEngine {
         case "fury-cutter", "rollout", "ice-ball":
             // 1턴 40 → 80 → 160 → 320 (상한)
             power = min(power * (1 << min(3, a.consecutiveCount)), power * 8)
+            // 웅크리기를 먼저 쓰면 데구르르 계열이 두 배가 된다 (원작의 숨은 효과)
+            if a.defenseCurled, move.name != "fury-cutter" { power *= 2 }
         case "echoed-voice":
             // 40 → 80 → 120 → 160 → 200 (상한)
             power = min(power * (1 + min(4, a.consecutiveCount)), power * 5)
@@ -2082,13 +2087,16 @@ struct BattleEngine {
             && { if case .ignoreAbility = a.abilityKind { return true }; return false }()
         let foeAbility: AbilityKind = ignoreFoeAbility ? .none : d.abilityKind
 
-        // 특성: 부유 등 타입 무효 — 단 중력 중에는 무효가 사라진다
+        // 특성: 부유 등 타입 무효 — 단 중력 중이거나 땅에 끌어내려졌으면 사라진다
         let gravityOn = state.rules.weather && state.field.hasGravity
-        if state.rules.abilities, case .typeImmunity(let t) = foeAbility, move.type == t, !gravityOn {
+        // 떨어뜨리기를 맞으면 땅 기술을 피할 수 없다 (중력과 같은 취급)
+        let earthbound = gravityOn || (d.grounded && move.type == .ground)
+        if state.rules.abilities, case .typeImmunity(let t) = foeAbility, move.type == t,
+           !earthbound {
             typeMult = 0
         }
-        // 중력 중에는 땅 기술이 비행 타입에게도 통한다
-        if gravityOn, move.type == .ground, d.types.contains(.flying) {
+        // 중력 중이거나 떨어뜨려졌으면 땅 기술이 비행 타입에게도 통한다
+        if earthbound, move.type == .ground, d.types.contains(.flying) {
             let without = d.types.filter { $0 != .flying }
             typeMult = without.isEmpty ? 1.0 : chart.multiplier(attack: .ground, defenders: without)
         }
@@ -3081,6 +3089,50 @@ extension BattleEngine {
                 say("\(aName)가 상대의 화면을 부쉈다!")
             }
             return false   // 데미지 계산은 평소 경로로
+
+        // 웅크리기 — 방어 상승은 데이터가 처리한다. 여기서는 **숨은 효과**만 건다:
+        // 데구르르·아이스볼의 위력이 두 배가 된다.
+        case "defense-curl":
+            a.defenseCurled = true
+            commit(a, attacker)
+            return false        // 방어 +1 은 평소 경로로
+
+        // 떨어뜨리기 — 상대를 땅으로 끌어내린다.
+        // 비행 타입·부유·전자부유가 모두 무시되어 땅 기술을 맞게 된다.
+        case "smack-down", "thousand-arrows":
+            guard !d.grounded else {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            d.grounded = true
+            d.magnetRiseTurns = 0
+            commit(d, defender)
+            say("\(d.name)는 땅으로 떨어졌다!")
+            return move.name == "smack-down" ? false : false   // 데미지는 평소대로
+
+        // 트집 — 같은 기술을 연속으로 쓸 수 없게 만든다
+        case "torment":
+            guard !d.tormented else {
+                say("\(aName)의 트집! …하지만 실패했다!")
+                return true
+            }
+            d.tormented = true
+            commit(d, defender)
+            say("\(d.name)는 트집을 잡혀 같은 기술을 연속으로 쓸 수 없게 되었다!")
+            return true
+
+        // 사슬묶기 — 상대가 마지막에 쓴 기술을 4턴 동안 봉인한다
+        case "disable":
+            guard let li = d.lastMoveIndex, d.moves.indices.contains(li),
+                  d.disabledTurns == 0 else {
+                say("\(aName)의 사슬묶기! …하지만 실패했다!")
+                return true
+            }
+            d.disabledMoveIndex = li
+            d.disabledTurns = 4
+            commit(d, defender)
+            say("\(d.name)의 \(d.moves[li].def.display)은(는) 사슬묶기로 봉인되었다! (4턴)")
+            return true
 
         // 버티기 — 이번 턴에는 쓰러지지 않고 HP 1 로 버틴다
         case "endure":

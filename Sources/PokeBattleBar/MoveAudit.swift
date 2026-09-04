@@ -43,6 +43,18 @@ enum MoveAudit {
         // 일격필살 · 상대 HP 기반
         "horndrill", "fissure", "sheercold", "guillotine",
         "superfang", "endeavor",
+        // 마지막 묶음
+        "smackdown", "thousandarrows", "torment", "disable", "defensecurl",
+    ]
+
+    /// PokeAPI 가 효과를 구조화해 줘서 **일반 경로로 처리되는** 기술.
+    /// 손으로 구현할 필요가 없다 — 감사에서 "남았다" 고 세면 안 된다.
+    static let handledByData: Set<String> = [
+        "swagger",      // 혼란 + 상대 공격 +2 (둘 다 데이터에 있다)
+        "flatter",      // 혼란 + 상대 특공 +1
+        "confuseray", "supersonic", "sweetkiss", "teeterdance",  // 혼란
+        "minimize",     // 회피 +2
+        "dragoncheer",  // 더블 전용 (아군 급소율) — 1대1 에서는 해당 없음
     ]
 
     /// 데이터로 일반화해 처리하는 기술 — 이름별 구현이 아니라 **한 경로**가 담당한다.
@@ -66,7 +78,9 @@ enum MoveAudit {
         "protect", "detect",
     ]
 
-    static var implemented: Set<String> { verified.union(genericMechanism) }
+    static var implemented: Set<String> {
+        verified.union(genericMechanism).union(handledByData)
+    }
 
     /// 1대1 에서는 의미가 없어 구현하지 않는 것 (미구현이 아니라 해당 없음)
     static let notApplicable: Set<String> = [

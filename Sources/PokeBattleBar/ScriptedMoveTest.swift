@@ -235,6 +235,30 @@ enum ScriptedMoveTest {
         ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
                   "\(rechargeChecked)개") && ok
 
+        // MARK: 떨어뜨리기 · 트집 · 사슬묶기
+        print("\n-- 떨어뜨리기 --")
+        if let r = await smackDownCheck(chart: chart) {
+            ok = show(r.grounded, "상대를 땅으로 끌어내린다", r.detail) && ok
+            ok = show(r.groundHits, "그 뒤에는 땅 기술이 비행 타입에게도 통한다",
+                      r.detail2) && ok
+        } else { ok = show(false, "떨어뜨리기 검사") && ok }
+
+        print("\n-- 웅크리기 --")
+        if let r = await defenseCurlCheck(chart: chart) {
+            ok = show(r.boosted, "웅크리기 뒤 데구르르가 두 배가 된다", r.detail) && ok
+            ok = show(r.defenseUp, "방어도 오른다", r.detail2) && ok
+        } else { ok = show(false, "웅크리기 검사") && ok }
+
+        print("\n-- 트집 --")
+        if let r = await probe(move: "torment", user: 94, foe: 143, chart: chart) {
+            ok = show(r.foe.tormented, "같은 기술을 연속으로 못 쓰게 된다") && ok
+        }
+
+        print("\n-- 사슬묶기 --")
+        if let r = await disableCheck(chart: chart) {
+            ok = show(r.disabled, "상대가 마지막에 쓴 기술이 봉인된다", r.detail) && ok
+        } else { ok = show(false, "사슬묶기 검사") && ok }
+
         // MARK: 위력이 상황에 따라 정해지는 기술이 **실제로 데미지를 주는가**
         //
         // 이런 기술은 PokéAPI 가 power: null 로 준다. 그것 때문에 "데미지 없는
@@ -695,6 +719,94 @@ enum ScriptedMoveTest {
                                 user: Int, foe: Int, chart: TypeChart,
                                 setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 웅크리기가 데구르르의 위력을 두 배로 하는지
+    private static func defenseCurlCheck(chart: TypeChart) async -> (
+        boosted: Bool, detail: String, defenseUp: Bool, detail2: String
+    )? {
+        guard let curl = try? await PokeAPI.shared.move("defense-curl"),
+              let rollout = try? await PokeAPI.shared.move("rollout"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        func dmg(withCurl: Bool) async -> (Int, Int) {
+            // 웅크리기를 쓰고 데구르르 / 그냥 데구르르 — 첫 데구르르 데미지를 비교한다
+            let picks = withCurl ? [0, 1] : [1]
+            guard let e = await runTurns(userMoves: [curl, rollout], foeMoves: [splash],
+                                         picks: picks, userID: 143, foeID: 151,
+                                         chart: chart) else { return (-1, 0) }
+            let dealt = 9999 - e.state.sides[1].team[0].currentHP
+            return (dealt, e.state.sides[0].team[0].stages[.defense] ?? 0)
+        }
+        let (plain, _) = await dmg(withCurl: false)
+        let (curled, def) = await dmg(withCurl: true)
+        return (curled > plain, "데구르르 \(plain) → 웅크리기 후 \(curled)",
+                def > 0, "방어 랭크 \(def)")
+    }
+
+    /// 떨어뜨리기가 비행 타입을 땅으로 끌어내리는지
+    private static func smackDownCheck(chart: TypeChart) async -> (
+        grounded: Bool, detail: String, groundHits: Bool, detail2: String
+    )? {
+        guard let smack = try? await PokeAPI.shared.move("smack-down"),
+              let quake = try? await PokeAPI.shared.move("earthquake"),
+              let splash = try? await PokeAPI.shared.move("splash"),
+              let flyer = try? await PokeAPI.shared.species(6) else { return nil }   // 리자몽(비행)
+
+        func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String, speed: Int) -> Battler {
+            let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                  rarity: "common", isShiny: false, origin: .dex,
+                                  fullyEvolved: true)
+            var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50)
+            for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+            b.stats[.speed] = speed
+            b.maxHP = 9999; b.currentHP = 9999
+            return b
+        }
+        guard let me = try? await PokeAPI.shared.species(143) else { return nil }
+        var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                             sides: [SideState(playerName: "나",
+                                               team: [make(me, [smack, quake], "h", speed: 999)],
+                                               activeIndex: 0),
+                                     SideState(playerName: "상대",
+                                               team: [make(flyer, [splash], "g", speed: 1)],
+                                               activeIndex: 0)])
+        st.phase = .chooseLead
+        var e = BattleEngine(state: st, chart: chart, seed: 21)
+        e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+        e.beginBattle()
+
+        // 1턴: 지진 — 비행 타입이라 통하지 않아야 한다
+        let before1 = e.state.sides[1].team[0].currentHP
+        e.resolveTurn(hostAction: .useMove(index: 1), guestAction: .useMove(index: 0))
+        let quakeBefore = before1 - e.state.sides[1].team[0].currentHP
+
+        // 2턴: 떨어뜨리기
+        e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+        let grounded = e.state.sides[1].team[0].grounded
+
+        // 3턴: 다시 지진 — 이번엔 통해야 한다
+        let before3 = e.state.sides[1].team[0].currentHP
+        e.resolveTurn(hostAction: .useMove(index: 1), guestAction: .useMove(index: 0))
+        let quakeAfter = before3 - e.state.sides[1].team[0].currentHP
+
+        return (grounded, "땅에 붙음=\(grounded)",
+                quakeBefore == 0 && quakeAfter > 0,
+                "떨어뜨리기 전 지진 \(quakeBefore) → 후 \(quakeAfter)")
+    }
+
+    /// 사슬묶기가 상대의 마지막 기술을 봉인하는지
+    private static func disableCheck(chart: TypeChart) async -> (disabled: Bool, detail: String)? {
+        guard let disable = try? await PokeAPI.shared.move("disable"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+        // 1턴: 상대가 몸통박치기 → 2턴: 내가 사슬묶기 → 상대의 그 기술이 봉인된다
+        guard let e = await runTurns(userMoves: [disable, tackle], foeMoves: [tackle],
+                                     picks: [1, 0], userID: 94, foeID: 143,
+                                     chart: chart) else { return nil }
+        let foe = e.state.sides[1].team[0]
+        let sawLog = e.state.log.contains { $0.contains("사슬묶기로 봉인") }
+        return (foe.disabledTurns > 0 && foe.disabledMoveIndex != nil,
+                "봉인 \(foe.disabledTurns)턴 · 로그=\(sawLog)")
     }
 
     /// 버티기로 살아남는지
