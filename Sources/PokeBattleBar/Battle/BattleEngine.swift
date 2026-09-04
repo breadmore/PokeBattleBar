@@ -90,6 +90,15 @@ struct SideState: Codable, Sendable, Equatable {
     // 진영 전체에 걸리고 턴이 지나면 사라진다. 데이터에는 지속 턴수가 없어
     // 원작 값(5턴, 빛의점토면 8턴)을 직접 쓴다.
 
+    /// 미래예지처럼 **몇 턴 뒤에 터지는** 예약 데미지
+    struct PendingFuture: Codable, Sendable, Equatable {
+        var turnsLeft: Int
+        var damage: Int
+        var moveName: String
+        var fromName: String
+    }
+    var pendingFuture: PendingFuture?
+
     /// 리플렉터 — 물리 데미지 절반
     var reflectTurns: Int = 0
     /// 빛의장막 — 특수 데미지 절반
@@ -570,6 +579,11 @@ struct BattleEngine {
         out.consecutiveCount = 0
         out.magnetRiseTurns = 0
         out.cannotFlee = false
+        out.rampageTurns = 0
+        out.rampageMoveIndex = nil
+        out.tauntTurns = 0
+        out.focusEnergy = false
+        out.destinyBond = false
         out.chargingMoveIndex = nil
         out.chargeHidden = false
         out.mustRechargeTurns = 0
@@ -992,6 +1006,20 @@ struct BattleEngine {
         // 그래도 다른 인덱스가 들어오면(구버전 상대 등) 여기서 바로잡는다.
         var moveIndex = moveIndex
 
+        // 길동무는 다음에 내가 행동하면 풀린다 (원작 규칙)
+        if atk.destinyBond, atk.moves.indices.contains(moveIndex),
+           atk.moves[moveIndex].def.name != "destiny-bond" {
+            var a2 = state.side(attacker).active
+            a2.destinyBond = false
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+        }
+
+        // 난동부리기 — 조작할 수 없다. 같은 기술이 계속 나간다.
+        if atk.isRampaging, let forced = atk.rampageMoveIndex,
+           atk.moves.indices.contains(forced) {
+            moveIndex = forced
+        }
+
         // 앙코르 — 지정된 기술만 나간다. 구애와 같은 이유로 턴을 날리지 않는다.
         if atk.isEncored, let forced = atk.encoreMoveIndex,
            forced != moveIndex, atk.moves.indices.contains(forced), atk.moves[forced].usable {
@@ -1004,6 +1032,11 @@ struct BattleEngine {
             say("\(atkName)는 \(atk.heldItem?.display ?? "구애 도구") 때문에 "
                 + "\(atk.moves[locked].def.display)밖에 쓸 수 없다!")
             moveIndex = locked
+        }
+        // 도발 — 변화기를 쓸 수 없다
+        if atk.tauntTurns > 0, atk.moves[moveIndex].def.damageClass == .status {
+            say("\(atkName)는 도발당해서 변화기를 쓸 수 없다!")
+            return
         }
         // 돌격조끼: 변화기를 쓸 수 없다
         if state.rules.itemEffects, case .assaultVest = atk.itemKind,
@@ -1066,17 +1099,49 @@ struct BattleEngine {
                 a2.consecutiveMoveIndex = moveIndex
                 a2.consecutiveCount = 0
             }
+            // 난동부리기 — 처음 쓰면 2~3턴 묶인다. 끝나면 혼란에 빠진다.
+            if MoveFlags.locksUser(move.name), !a2.isRampaging {
+                a2.rampageTurns = Int.random(in: 2...3, using: &rng)
+                a2.rampageMoveIndex = moveIndex
+            }
             state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
         }
 
-        // 모으는 턴 — 솔라빔·공중날기 등은 이번 턴에 나가지 않는다
+        // 모으는 턴 — 솔라빔·공중날기 등은 이번 턴에 나가지 않는다.
+        //
+        // 단 **바로 나가는 경우**가 있다: 맑은 날의 솔라빔, 비 오는 날의
+        // 일렉트로빔, 파워허브를 지녔을 때. 그리고 모으는 턴에 능력치가
+        // 오르는 기술도 있다 (메테오빔·일렉트로빔) — 그게 없으면 모으는 턴이
+        // 그냥 흘러가는 것처럼 보인다.
         if move.isCharge, !skipCharge {
-            var a2 = state.side(attacker).active
-            a2.chargingMoveIndex = moveIndex
-            a2.chargeHidden = move.chargeHides
-            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
-            say(chargeMessage(move, who: atkName))
-            return
+            if let why = chargeSkipReason(move, attacker: attacker) {
+                say("\(atkName)는 \(why)")
+                // 파워허브는 여기서 소비된다
+                if why.contains("파워허브") {
+                    var a2 = state.side(attacker).active
+                    a2.itemConsumed = true
+                    state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                }
+                // 모으지 않고 이번 턴에 그대로 나간다
+            } else {
+                var a2 = state.side(attacker).active
+                a2.chargingMoveIndex = moveIndex
+                a2.chargeHidden = move.chargeHides
+                // 모으는 동안 능력치가 오르는 기술
+                if let (stat, n) = Self.chargeBoost(move.name) {
+                    let cur = a2.stages[stat] ?? 0
+                    if cur < 6 {
+                        a2.stages[stat] = min(6, cur + n)
+                        state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                        say(chargeMessage(move, who: atkName))
+                        say("\(atkName)의 \(stat.ko)이(가) 올라갔다!")
+                        return
+                    }
+                }
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                say(chargeMessage(move, who: atkName))
+                return
+            }
         }
 
         // 파괴광선 계열 — 다음 턴에 움직일 수 없다.
@@ -1255,7 +1320,7 @@ struct BattleEngine {
         tryEatBerry(attacker)
 
         let defenderFaintedNow = state.side(defender).active.isFainted
-        checkFaint(defender)
+        checkFaint(defender, killedBy: attacker)
 
         // 자기과신 — 쓰러뜨리면 능력치가 오른다
         if state.rules.abilities, defenderFaintedNow,
@@ -1700,7 +1765,7 @@ struct BattleEngine {
         _ = physical
 
         let dealt = applyDamage(max(1, Int(dmg)), to: defender)
-        checkFaint(defender)
+        checkFaint(defender, killedBy: attacker)
 
         // 반동 — 최대 HP 의 1/4 (매직가드도 막지 못한다)
         var me = state.side(attacker).active
@@ -2476,9 +2541,47 @@ struct BattleEngine {
                     say("\(b.name)의 전자부유가 끝났다!")
                 }
             }
+
+            // 도발 — 남은 턴을 줄인다
+            if b.tauntTurns > 0 {
+                b.tauntTurns -= 1
+                if b.tauntTurns == 0 { say("\(b.name)의 도발이 풀렸다!") }
+            }
+
+            // 난동부리기 — 끝나면 혼란에 빠진다 (원작 규칙)
+            if b.rampageTurns > 0 {
+                b.rampageTurns -= 1
+                if b.rampageTurns == 0 {
+                    b.rampageMoveIndex = nil
+                    if b.currentHP > 0, b.confusionTurns == 0, state.rules.statusEffects {
+                        b.confusionTurns = Int.random(in: 2...5, using: &rng)
+                        say("\(KO.t(b.name)) 난동을 부린 뒤 혼란에 빠졌다!")
+                    }
+                }
+            }
+
+            // 길동무는 **내가 다시 행동할 때까지** 유지된다.
+            // 턴 끝에 지우면 상대가 나를 쓰러뜨리기도 전에 사라진다.
             state.sides[s.rawValue].team[state.side(s).activeIndex] = b
             checkFaint(s)
         }
+        // 미래예지 — 예약해둔 데미지가 터진다
+        for side in [BattleSide.host, .guest] {
+            guard var f = state.sides[side.rawValue].pendingFuture else { continue }
+            f.turnsLeft -= 1
+            if f.turnsLeft <= 0 {
+                state.sides[side.rawValue].pendingFuture = nil
+                let idx = state.side(side).activeIndex
+                guard state.side(side).team.indices.contains(idx),
+                      !state.side(side).team[idx].isFainted else { continue }
+                say("\(f.fromName)의 \(f.moveName)이(가) 덮쳤다!")
+                _ = applyDamage(f.damage, to: side)
+                checkFaint(side)
+            } else {
+                state.sides[side.rawValue].pendingFuture = f
+            }
+        }
+
         // 화면 — 진영마다 남은 턴을 줄이고 끝나면 알려준다
         for side in [BattleSide.host, .guest] {
             var sd = state.sides[side.rawValue]
@@ -2612,9 +2715,19 @@ struct BattleEngine {
         }
     }
 
-    private mutating func checkFaint(_ side: BattleSide) {
+    private mutating func checkFaint(_ side: BattleSide, killedBy: BattleSide? = nil) {
         let b = state.side(side).active
         guard b.isFainted else { return }
+
+        // 길동무 — 쓰러뜨린 쪽도 함께 쓰러진다
+        if b.destinyBond, let killer = killedBy {
+            var k = state.side(killer).active
+            if !k.isFainted {
+                k.currentHP = 0
+                state.sides[killer.rawValue].team[state.side(killer).activeIndex] = k
+                say("\(b.name)가 \(k.name)를 길동무로 삼았다!")
+            }
+        }
         // 같은 종이 여러 마리일 수 있으므로 직전 로그와만 중복을 막는다
         let marker = "\(KO.t(b.name)) 쓰러졌다!"
         if state.log.last != marker { say(marker) }
@@ -2887,6 +3000,50 @@ extension BattleEngine {
             }
             return false   // 데미지 계산은 평소 경로로
 
+        // 도발 — 3턴 동안 변화기를 쓸 수 없게 만든다
+        case "taunt":
+            guard d.tauntTurns == 0 else {
+                say("\(aName)의 도발! …하지만 실패했다!")
+                return true
+            }
+            d.tauntTurns = 4      // 이번 턴 종료에 한 번 깎이므로 3턴 유효
+            commit(d, defender)
+            say("\(d.name)는 도발당했다! 3턴 동안 변화기를 쓸 수 없다")
+            return true
+
+        // 기충전 — 급소에 맞기 쉬워진다 (원작 +2 랭크)
+        case "focus-energy":
+            guard !a.focusEnergy else {
+                say("\(aName)의 기충전! …하지만 실패했다!")
+                return true
+            }
+            a.focusEnergy = true
+            a.critStage = min(3, a.critStage + 2)
+            commit(a, attacker)
+            say("\(aName)는 기합을 넣었다! 급소에 맞히기 쉬워졌다")
+            return true
+
+        // 길동무 — 이번 턴에 쓰러지면 쓰러뜨린 쪽도 함께 쓰러진다
+        case "destiny-bond":
+            a.destinyBond = true
+            commit(a, attacker)
+            say("\(aName)는 상대를 길동무로 삼으려 하고 있다!")
+            return true
+
+        // 미래예지 · 파멸의소원 — 두 턴 뒤에 데미지가 들어간다
+        case "future-sight", "doom-desire":
+            guard state.sides[defender.rawValue].pendingFuture == nil else {
+                say("\(aName)의 \(move.display)! …하지만 실패했다!")
+                return true
+            }
+            // 지금의 공격력으로 미리 계산해 예약한다 (원작도 시전 시점 기준)
+            let dmg = futureDamage(move, attacker: attacker, defender: defender)
+            state.sides[defender.rawValue].pendingFuture =
+                .init(turnsLeft: 2, damage: dmg, moveName: move.display,
+                      fromName: aName)
+            say("\(aName)는 \(move.display)을(를) 미래에 보냈다!")
+            return true
+
         // 앙코르 — 상대가 마지막에 쓴 기술만 3턴 동안 쓰게 만든다
         case "encore":
             guard let li = d.lastMoveIndex, d.moves.indices.contains(li),
@@ -3063,6 +3220,40 @@ extension BattleEngine {
             // 편이 낫다 — 0 이면 "아무 일도 안 일어난다" 로 보인다.
             return 50
         }
+    }
+
+    /// 미래예지의 데미지를 시전 시점에 계산해 둔다.
+    /// 원작도 쓴 시점의 능력치로 계산하므로, 그 뒤에 랭크가 바뀌어도 영향이 없다.
+    private mutating func futureDamage(_ move: MoveDef, attacker: BattleSide,
+                                       defender: BattleSide) -> Int {
+        let r = computeDamage(move: move, attacker: attacker, defender: defender)
+        return max(1, r.damage)
+    }
+
+    /// 모으는 턴에 오르는 능력치 (데이터에 없어 직접 적는다)
+    static func chargeBoost(_ move: String) -> (Stat, Int)? {
+        switch move {
+        case "meteor-beam", "electro-shot": return (.spAttack, 1)
+        default:                            return nil
+        }
+    }
+
+    /// 모으는 턴을 건너뛸 수 있으면 그 이유. 없으면 nil.
+    private func chargeSkipReason(_ move: MoveDef, attacker: BattleSide) -> String? {
+        let a = state.side(attacker).active
+        // 파워허브 — 어떤 2턴 기술이든 한 번 바로 나가게 해준다
+        if state.rules.itemEffects, a.heldItem?.name == "power-herb", !a.itemConsumed {
+            return "파워허브로 힘을 모을 필요가 없었다!"
+        }
+        guard state.rules.weather else { return nil }
+        switch move.name {
+        case "solar-beam", "solar-blade":
+            if state.field.weather == .sun { return "햇살이 강해 곧바로 쏘았다!" }
+        case "electro-shot":
+            if state.field.weather == .rain { return "비를 맞아 곧바로 쏘았다!" }
+        default: break
+        }
+        return nil
     }
 
     /// 화면 지속 턴수. 빛의점토를 들면 길어진다 (원작 5 → 8).

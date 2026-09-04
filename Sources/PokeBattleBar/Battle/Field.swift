@@ -172,6 +172,8 @@ enum MoveFlags {
     static func isSelfDestruct(_ name: String) -> Bool { Showdown.move(name)?.selfDestruct ?? false }
     /// 솔라빔처럼 모으는 턴이 있는 기술인가
     static func isCharge(_ name: String) -> Bool { Showdown.move(name)?.isCharge ?? false }
+    /// 난동부리기처럼 여러 턴 조작할 수 없게 되는 기술인가
+    static func locksUser(_ name: String) -> Bool { Showdown.move(name)?.locksUser ?? false }
     /// 모으는 동안 몸을 숨기는가 (땅속·공중·물속)
     static func chargeHides(_ name: String) -> Bool { Showdown.move(name)?.hidesUser ?? false }
     /// 파괴광선처럼 쓴 다음 턴에 못 움직이는가
