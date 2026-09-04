@@ -120,6 +120,11 @@ struct MoveDef: Codable, Hashable, Sendable, Identifiable {
         if BattleEngine.weightBasedPower(move: name, attackerWeight: 1, targetWeight: 1) != nil {
             return true
         }
+        // 위력이 상황에 따라 정해지는 기술 (은혜갚기·자이로볼 …).
+        // 여기서 빠지면 데미지 계산이 아예 돌지 않아 아무 일도 일어나지 않는다.
+        if BattleEngine.variablePowerMoves.contains(name) { return true }
+        // 일격필살 — 위력은 없지만 맞으면 쓰러뜨린다
+        if MoveFlags.isOHKO(name) { return true }
         return false
     }
 }

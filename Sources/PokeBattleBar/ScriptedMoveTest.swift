@@ -235,6 +235,78 @@ enum ScriptedMoveTest {
         ok = show(rechargeChecked >= 4, "반동 기술을 여러 개 확인했다",
                   "\(rechargeChecked)개") && ok
 
+        // MARK: 위력이 상황에 따라 정해지는 기술이 **실제로 데미지를 주는가**
+        //
+        // 이런 기술은 PokéAPI 가 power: null 로 준다. 그것 때문에 "데미지 없는
+        // 기술" 로 걸러져 계산이 아예 돌지 않았다 — 위력 공식을 고쳐도
+        // 소용이 없었다.
+        print("\n-- 위력이 상황에 따라 정해지는 기술 --")
+        for name in ["return", "frustration", "gyro-ball", "electro-ball",
+                     "flail", "reversal", "wring-out", "psywave",
+                     "super-fang", "endeavor"] {
+            guard let mv = try? await PokeAPI.shared.move(name) else { continue }
+            guard let r = await probe(move: name, user: 143, foe: 151, chart: chart,
+                                      setup: { b in b.currentHP = b.maxHP / 4 }) else {
+                ok = show(false, "\(mv.display) 실행") && ok; continue
+            }
+            ok = show(r.foe.currentHP < r.foe.maxHP,
+                      "\(mv.display) 이(가) 데미지를 준다",
+                      "\(r.foe.maxHP - r.foe.currentHP) 데미지") && ok
+        }
+
+        // MARK: 버티기 · 봉인 · 아쿠아링 · 웅크리기 · 위액 · 충전 · 파워트릭 · 헤롱헤롱 · 일격필살
+        print("\n-- 버티기 --")
+        if let r = await endureCheck(chart: chart) {
+            ok = show(r.survived, "치명적인 공격에도 HP 1 로 버틴다", r.detail) && ok
+        } else { ok = show(false, "버티기 검사") && ok }
+
+        print("\n-- 봉인 --")
+        if let r = await imprisonCheck(chart: chart) {
+            ok = show(r.blocked, "같은 기술을 가진 상대는 그 기술을 못 쓴다", r.detail) && ok
+        } else { ok = show(false, "봉인 검사") && ok }
+
+        print("\n-- 아쿠아링 --")
+        if let r = await twoTurn(first: "aqua-ring", then: "aqua-ring",
+                                user: 143, foe: 151, chart: chart,
+                                setup: { b in b.currentHP = b.maxHP / 2 }) {
+            ok = show(r.user.aquaRing, "물의 베일을 두른다") && ok
+            ok = show(r.user.currentHP > r.user.maxHP / 2, "매 턴 회복된다",
+                      "\(r.user.currentHP)/\(r.user.maxHP)") && ok
+        }
+
+        print("\n-- 웅크리기 --")
+        if let r = await probe(move: "minimize", user: 143, foe: 151, chart: chart) {
+            ok = show(r.user.evasionStage >= 2, "회피율이 크게 오른다",
+                      "\(r.user.evasionStage)") && ok
+        }
+
+        print("\n-- 위액 --")
+        if let r = await gastroAcidCheck(chart: chart) {
+            ok = show(r.suppressed, "상대 특성이 사라진다", r.detail) && ok
+        } else { ok = show(false, "위액 검사") && ok }
+
+        print("\n-- 충전 --")
+        if let r = await chargeCheck(chart: chart) {
+            ok = show(r.doubled, "다음 전기 기술의 위력이 2배가 된다", r.detail) && ok
+        } else { ok = show(false, "충전 검사") && ok }
+
+        print("\n-- 파워트릭 --")
+        if let r = await probe(move: "power-trick", user: 143, foe: 151, chart: chart) {
+            ok = show(r.user.powerTricked, "공격과 방어가 뒤바뀐다") && ok
+        }
+
+        print("\n-- 헤롱헤롱 --")
+        if let r = await probe(move: "attract", user: 94, foe: 143, chart: chart) {
+            ok = show(r.foe.infatuated, "상대가 헤롱헤롱해진다") && ok
+        }
+
+        print("\n-- 일격필살 --")
+        if let r = await ohkoCheck(chart: chart) {
+            ok = show(r.canKO, "맞으면 한 방에 쓰러진다", r.detail) && ok
+            ok = show(r.higherLevelImmune, "레벨이 높은 상대에게는 통하지 않는다",
+                      r.detail2) && ok
+        } else { ok = show(false, "일격필살 검사") && ok }
+
         // MARK: 난동부리기 · 도발 · 기충전 · 길동무 · 미래예지
         print("\n-- 난동부리기 (조작 불가) --")
         if let r = await probe(move: "outrage", user: 143, foe: 143, chart: chart) {
@@ -623,6 +695,111 @@ enum ScriptedMoveTest {
                                 user: Int, foe: Int, chart: TypeChart,
                                 setup: ((inout Battler) -> Void)? = nil) async -> Probe? {
         await battle(moves: [first, second], user: user, foe: foe, chart: chart, setup: setup)
+    }
+
+    /// 버티기로 살아남는지
+    private static func endureCheck(chart: TypeChart) async -> (survived: Bool, detail: String)? {
+        guard let endure = try? await PokeAPI.shared.move("endure"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+        guard let e = await runTurns(userMoves: [endure], foeMoves: [tackle],
+                                     picks: [0], userID: 143, foeID: 143,
+                                     chart: chart, userSpeed: 999, hp: 5) else { return nil }
+        let me = e.state.sides[0].team[0]
+        let sawLog = e.state.log.contains { $0.contains("견뎌냈다") }
+        return (me.currentHP == 1 && !me.isFainted,
+                "HP \(me.currentHP) · 로그=\(sawLog)")
+    }
+
+    /// 봉인이 상대 기술을 막는지
+    private static func imprisonCheck(chart: TypeChart) async -> (blocked: Bool, detail: String)? {
+        guard let imprison = try? await PokeAPI.shared.move("imprison"),
+              let tackle = try? await PokeAPI.shared.move("tackle") else { return nil }
+        // 양쪽 다 몸통박치기를 가지고 있다 → 봉인하면 상대가 못 쓴다
+        guard let e = await runTurns(userMoves: [imprison, tackle], foeMoves: [tackle],
+                                     picks: [0, 1], userID: 143, foeID: 143,
+                                     chart: chart) else { return nil }
+        let blocked = e.state.log.contains { $0.contains("봉인되어 있다") }
+        return (blocked, "차단 로그=\(blocked)")
+    }
+
+    /// 위액이 특성을 없애는지
+    private static func gastroAcidCheck(chart: TypeChart) async -> (
+        suppressed: Bool, detail: String
+    )? {
+        guard let acid = try? await PokeAPI.shared.move("gastro-acid"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+        guard let e = await runTurns(userMoves: [acid], foeMoves: [splash],
+                                     picks: [0], userID: 94, foeID: 143,
+                                     chart: chart) else { return nil }
+        let foe = e.state.sides[1].team[0]
+        return (foe.abilitySuppressed,
+                "특성무효=\(foe.abilitySuppressed) 반영되는 특성=\(foe.abilityKind)")
+    }
+
+    /// 충전이 전기 기술의 위력을 두 배로 하는지
+    private static func chargeCheck(chart: TypeChart) async -> (doubled: Bool, detail: String)? {
+        guard let charge = try? await PokeAPI.shared.move("charge"),
+              let bolt = try? await PokeAPI.shared.move("thunder-shock"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        func dmg(withCharge: Bool) async -> Int {
+            let picks = withCharge ? [0, 1] : [1, 1]
+            guard let e = await runTurns(userMoves: [charge, bolt], foeMoves: [splash],
+                                         picks: picks, userID: 143, foeID: 151,
+                                         chart: chart) else { return -1 }
+            // 마지막 턴에 들어간 데미지를 본다
+            return 9999 - e.state.sides[1].team[0].currentHP
+        }
+        let base = await dmg(withCharge: false)
+        let boosted = await dmg(withCharge: true)
+        // 충전 없이 두 번 쏘면 두 번 분량이므로, 한 번 분량과 비교한다
+        return (boosted > base / 2 * 3 / 2,
+                "충전 없이 2회 \(base) / 충전 후 1회 \(boosted)")
+    }
+
+    /// 일격필살이 통하는지 · 레벨이 높은 상대에게 실패하는지
+    private static func ohkoCheck(chart: TypeChart) async -> (
+        canKO: Bool, detail: String, higherLevelImmune: Bool, detail2: String
+    )? {
+        guard let sp = try? await PokeAPI.shared.species(143),
+              let drill = try? await PokeAPI.shared.move("horn-drill"),
+              let splash = try? await PokeAPI.shared.move("splash") else { return nil }
+
+        func run(foeLevel: Int) -> (fainted: Bool, log: [String]) {
+            func make(_ ms: [MoveDef], _ tag: String, level: Int, speed: Int) -> Battler {
+                let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                      rarity: "common", isShiny: false, origin: .dex,
+                                      fullyEvolved: true)
+                var b = Battler.make(slot: slot, species: sp, moves: ms, level: level)
+                for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+                b.stats[.speed] = speed
+                b.maxHP = 9999; b.currentHP = 9999
+                return b
+            }
+            var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                                 sides: [SideState(playerName: "나",
+                                                   team: [make([drill], "h", level: 50, speed: 999)],
+                                                   activeIndex: 0),
+                                         SideState(playerName: "상대",
+                                                   team: [make([splash], "g", level: foeLevel, speed: 1)],
+                                                   activeIndex: 0)])
+            st.phase = .chooseLead
+            // 30% 명중이라 여러 씨드를 돌려 한 번이라도 맞는지 본다
+            // 연속된 씨드는 첫 난수가 비슷하게 나올 수 있다 — 크게 흩뿌린다
+            for seed in 1...60 {
+                var e = BattleEngine(state: st, chart: chart,
+                                     seed: UInt64(seed) &* 0x9E3779B97F4A7C15)
+                e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+                e.beginBattle()
+                e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+                if e.state.sides[1].team[0].isFainted { return (true, e.state.log) }
+            }
+            return (false, [])
+        }
+        let same = run(foeLevel: 50)
+        let higher = run(foeLevel: 80)
+        return (same.fainted, "레벨 같을 때 60회 중 명중=\(same.fainted)",
+                !higher.fainted, "레벨 높은 상대 60회 모두 실패=\(!higher.fainted)")
     }
 
     /// 여러 턴 돌리는 공용 도구 — 내가 지정한 인덱스대로 기술을 쓴다

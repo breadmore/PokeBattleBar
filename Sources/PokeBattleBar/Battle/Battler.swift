@@ -69,6 +69,26 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
     /// 길동무 — 이번 턴에 쓰러지면 쓰러뜨린 쪽도 함께 쓰러진다
     var destinyBond: Bool = false
 
+    // MARK: 남은 지속 상태
+
+    /// 버티기 — 이번 턴에 쓰러지지 않고 HP 1 로 버틴다
+    var enduring: Bool = false
+    /// 봉인 — 상대가 가진 기술을 쓸 수 없다 (내가 가진 기술과 같은 것)
+    var sealedMoves: Set<String> = []
+    /// 아쿠아링 — 매 턴 최대 HP 의 1/16 회복
+    var aquaRing: Bool = false
+    /// 웅크리기 — 자신을 축소해 명중률이 떨어진다 (회피 랭크로 처리)
+    var minimized: Bool = false
+    /// 위액 — 특성이 사라진다
+    var abilitySuppressed: Bool = false
+    /// 충전 — 다음 전기 기술의 위력이 2배
+    var charged: Bool = false
+    /// 트집 — 이미 있는 tormented 를 쓴다
+    /// 파워트릭 — 공격과 방어가 뒤바뀐다
+    var powerTricked: Bool = false
+    /// 헤롱헤롱(매혹) — 확률로 움직이지 못한다
+    var infatuated: Bool = false
+
     var isRampaging: Bool { rampageTurns > 0 && rampageMoveIndex != nil }
 
     var isCharging: Bool { chargingMoveIndex != nil }
@@ -183,7 +203,13 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
         guard let heldItem, !itemConsumed else { return .none }
         return heldItem.kind
     }
-    var abilityKind: AbilityKind { ability?.kind ?? .none }
+    /// 배틀에 반영되는 특성.
+    ///
+    /// 위액을 맞으면 특성이 사라진다 — 여기서 한 번에 막아야 모든 계산이
+    /// 일관되게 특성 없음으로 돈다.
+    var abilityKind: AbilityKind {
+        abilitySuppressed ? .none : (ability?.kind ?? .none)
+    }
 
     /// 이 개체가 메가진화할 수 있는 폼 (도구가 허용하는 것만)
     var megaFormFromItem: String? {
