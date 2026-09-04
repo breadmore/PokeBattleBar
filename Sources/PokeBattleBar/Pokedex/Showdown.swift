@@ -322,3 +322,128 @@ struct ShowdownAbility: Sendable {
     var isUsable: Bool { nonstandard == nil }
     var hasBattleEffect: Bool { !hooks.isEmpty || suppressesWeather }
 }
+
+/// Showdown 의 종족·폼 표.
+///
+/// **특수 폼 목록의 원천이다.** 사람이 "특이한 포켓몬" 을 손으로 적어 관리하면
+/// 반드시 빠진다 — 새 세대가 나오면 기억해서 갱신해야 하기 때문이다.
+/// 이 표는 폼이 **언제 생기는지**를 스스로 말해준다.
+struct ShowdownSpecies: Sendable {
+    var num: Int = 0
+    /// 이 폼의 원종 ("Aegislash")
+    var baseSpecies: String?
+    /// 폼 이름 ("Blade")
+    var forme: String?
+    var otherFormes: [String] = []
+    /// 전투에만 존재하는 폼 — 값은 되돌아갈 종족 이름이다.
+    /// 킬가르도 블레이드·따라큐 들킨모습·메가진화가 모두 여기 잡힌다.
+    var battleOnly: String?
+    /// 무엇에서 바뀌는가 (지가르데 퍼펙트 등)
+    var changesFrom: String?
+    /// 이 폼을 만드는 도구 (실버디 메모리·아르세우스 플레이트·메가스톤)
+    var requiredItem: String?
+    var requiredItems: [String] = []
+    /// 이 폼에 필요한 기술 (메가레쿠쟈의 화룡점정, 케르디오의 신비의칼)
+    var requiredMove: String?
+    var requiredAbility: String?
+    var requiredTeraType: String?
+    /// 최대 HP 가 고정된 종족 (껍질몬 = 1)
+    var maxHP: Int?
+    var nonstandard: String?
+    var abilities: [String] = []
+    var gen: Int = 0
+
+    var isUsable: Bool { nonstandard == nil }
+    /// 전투 엔진이 따로 다뤄야 하는 폼인가
+    var needsBattleLogic: Bool {
+        battleOnly != nil || changesFrom != nil || requiredItem != nil
+            || !requiredItems.isEmpty || requiredMove != nil || maxHP != nil
+    }
+}
+
+extension Showdown {
+    /// 종족·폼 표 (Showdown id 기준)
+    static let dex: [String: ShowdownSpecies] = {
+        guard let data = ShowdownData.dexJSON.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        var out: [String: ShowdownSpecies] = [:]
+        for (id, v) in raw {
+            guard let d = v as? [String: Any] else { continue }
+            var s = ShowdownSpecies()
+            s.num = d["num"] as? Int ?? 0
+            s.baseSpecies = d["base"] as? String
+            s.forme = d["forme"] as? String
+            s.otherFormes = (d["other"] as? [String]) ?? []
+            s.battleOnly = {
+                if let one = d["battleOnly"] as? String { return one }
+                if let many = d["battleOnly"] as? [String] { return many.first }
+                return nil
+            }()
+            s.changesFrom = {
+                if let one = d["changesFrom"] as? String { return one }
+                if let many = d["changesFrom"] as? [String] { return many.first }
+                return nil
+            }()
+            s.requiredItem = d["reqItem"] as? String
+            s.requiredItems = (d["reqItems"] as? [String]) ?? []
+            s.requiredMove = d["reqMove"] as? String
+            s.requiredAbility = d["reqAbility"] as? String
+            s.requiredTeraType = d["reqTera"] as? String
+            s.maxHP = d["maxHP"] as? Int
+            s.nonstandard = d["ns"] as? String
+            s.abilities = (d["abilities"] as? [String]) ?? []
+            s.gen = d["gen"] as? Int ?? 0
+            out[id] = s
+        }
+        return out
+    }()
+
+    /// PokeAPI 가 아는 폼 이름 (팬메이드·CAP 폼을 걸러내는 데 쓴다)
+    static let pokeAPIFormNames: Set<String> = {
+        guard let d = ShowdownData.pokeAPIFormNamesJSON.data(using: .utf8),
+              let a = try? JSONSerialization.jsonObject(with: d) as? [String] else { return [] }
+        return Set(a)
+    }()
+
+    /// 전투 로직이 필요한 폼 전체 (감사가 훑는 목록).
+    ///
+    /// **PokeAPI 가 아는 폼만 남긴다.** Showdown 의 pokedex.ts 에는 팬메이드
+    /// 메가(Chesnaught-Mega)와 CAP 종족(Ramnarok)이 섞여 있는데, 우리 앱은
+    /// PokeTokenBar 도감 + PokeAPI 로만 폼을 만들 수 있어 애초에 나올 수 없다.
+    static var specialForms: [(id: String, species: ShowdownSpecies)] {
+        dex.filter { entry in
+            let sp = entry.value
+            guard sp.isUsable, sp.needsBattleLogic, sp.num > 0 else { return false }
+            return pokeAPIFormNames.contains(formSlug(sp) ?? "")
+        }
+        .sorted { $0.key < $1.key }
+        .map { (id: $0.key, species: $0.value) }
+    }
+
+    /// ShowdownSpecies → PokeAPI 폼 이름 ("Aegislash" + "Blade" → "aegislash-blade")
+    static func formSlug(_ sp: ShowdownSpecies) -> String? {
+        func slug(_ s: String) -> String {
+            s.lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+                .replacingOccurrences(of: "'", with: "")
+                .replacingOccurrences(of: ".", with: "")
+                .replacingOccurrences(of: ":", with: "")
+        }
+        guard let base = sp.baseSpecies else {
+            // 폼이 아니라 원종 그 자체 (껍질몬 등)
+            return sp.forme == nil ? slug(dexName(of: sp)) : nil
+        }
+        guard let forme = sp.forme else { return slug(base) }
+        return "\(slug(base))-\(slug(forme))"
+    }
+
+    /// 표에서 이 종족의 이름을 되찾는다 (원종은 base 가 비어 있다)
+    private static func dexName(of sp: ShowdownSpecies) -> String {
+        for (id, v) in dex where v.num == sp.num && v.baseSpecies == nil && v.forme == nil {
+            return id
+        }
+        return ""
+    }
+}

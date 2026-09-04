@@ -24,6 +24,13 @@ curl -sfL --max-time 60 "$BASE/data/moves.ts" -o "$TMP/moves.ts"
 # 무엇보다 **목록 자체**가 있어서 "우리가 뭘 빼먹었는지" 를 셀 수 있다.
 curl -sfL --max-time 60 "$BASE/data/items.ts" -o "$TMP/items.ts"
 curl -sfL --max-time 60 "$BASE/data/abilities.ts" -o "$TMP/abilities.ts"
+# 종족·폼 표. **특수 폼 목록의 원천이다.**
+#
+# 사람이 "특이한 포켓몬 목록" 을 손으로 관리하면 반드시 빠진다.
+# pokedex.ts 는 battleOnly·changesFrom·requiredItem·requiredMove·maxHP 같은
+# 필드로 "이 폼은 언제 생기는가" 를 스스로 말해준다. 그걸 뽑아서
+# 우리 구현과 대조하면 목록을 기억할 필요가 없다.
+curl -sfL --max-time 60 "$BASE/data/pokedex.ts" -o "$TMP/pokedex.ts"
 curl -sfL --max-time 60 "$BASE/data/random-battles/gen9/sets.json" -o "$TMP/sets.json"
 # PokeAPI 의 기술 이름 목록도 받는다.
 # Showdown id 는 하이픈이 없어(thunderwave) 그대로는 PokeAPI 로 조회할 수 없다.
@@ -36,6 +43,12 @@ curl -sfL --max-time 60 "https://pokeapi.co/api/v2/move?limit=2000" -o "$TMP/pok
 # 맞춰볼 수 있다. 이게 없으면 이미 구현한 특성도 "빠졌다" 고 나온다.
 curl -sfL --max-time 60 "https://pokeapi.co/api/v2/ability?limit=1000" -o "$TMP/pokeapi-abilities.json"
 curl -sfL --max-time 60 "https://pokeapi.co/api/v2/item?limit=3000" -o "$TMP/pokeapi-items.json"
+# 폼 이름 전체. **감사의 필터로 쓴다.**
+#
+# Showdown 의 pokedex.ts 에는 팬메이드 메가(Chesnaught-Mega)나 CAP 종족
+# (Ramnarok) 도 섞여 있다. 우리 앱은 PokeTokenBar 도감 + PokeAPI 로만
+# 폼을 만들 수 있으므로, PokeAPI 가 모르는 폼은 애초에 나올 수 없다.
+curl -sfL --max-time 90 "https://pokeapi.co/api/v2/pokemon?limit=100000" -o "$TMP/pokeapi-forms.json"
 
 echo "==> 추출 (node 네이티브 TS 파싱)"
 cat > "$TMP/extract.mjs" <<'JS'
@@ -139,6 +152,39 @@ console.log('    특성 ' + Object.keys(out).length + '개');
 JS
 node "$TMP/extract-abilities.mjs" "$TMP/abilities.ts" "$TMP/abilities.json"
 
+cat > "$TMP/extract-dex.mjs" <<'JS'
+import fs from 'node:fs';
+const { Pokedex } = await import(process.argv[2]);
+const out = {};
+for (const [id, sp] of Object.entries(Pokedex)) {
+  const o = {};
+  // 특수 폼 판정에 필요한 것만 담는다 (종족값·타입은 PokeAPI 에서 온다)
+  if (sp.num !== undefined) o.num = sp.num;
+  if (sp.baseSpecies) o.base = sp.baseSpecies;
+  if (sp.forme) o.forme = sp.forme;
+  if (sp.otherFormes) o.other = sp.otherFormes;
+  if (sp.cosmeticFormes) o.cosmetic = sp.cosmeticFormes;
+  // **여기가 핵심** — 폼이 어떻게 생기는지
+  if (sp.battleOnly) o.battleOnly = sp.battleOnly;      // 전투 중에만 존재
+  if (sp.changesFrom) o.changesFrom = sp.changesFrom;   // 무엇에서 바뀌는지
+  if (sp.requiredItem) o.reqItem = sp.requiredItem;
+  if (sp.requiredItems) o.reqItems = sp.requiredItems;
+  if (sp.requiredMove) o.reqMove = sp.requiredMove;
+  if (sp.requiredAbility) o.reqAbility = sp.requiredAbility;
+  if (sp.requiredTeraType) o.reqTera = sp.requiredTeraType;
+  if (sp.maxHP) o.maxHP = sp.maxHP;                     // 껍질몬
+  if (sp.isNonstandard) o.ns = sp.isNonstandard;
+  if (sp.abilities) o.abilities = Object.values(sp.abilities);
+  if (sp.gen) o.gen = sp.gen;
+  out[id] = o;
+}
+fs.writeFileSync(process.argv[3], JSON.stringify(out));
+const special = Object.values(out).filter(o =>
+  o.battleOnly || o.changesFrom || o.reqItem || o.reqItems || o.reqMove || o.maxHP).length;
+console.log('    종족·폼 ' + Object.keys(out).length + '개 (특수 폼 ' + special + '개)');
+JS
+node "$TMP/extract-dex.mjs" "$TMP/pokedex.ts" "$TMP/dex.json"
+
 python3 - "$TMP/sets.json" "$TMP/sets-slim.json" <<'PY'
 import json, sys
 sets = json.load(open(sys.argv[1]))
@@ -161,7 +207,7 @@ print(f"    추천 세팅 {len(slim)}종")
 PY
 
 echo "==> Swift 파일 생성"
-python3 - "$TMP/moves.json" "$TMP/sets-slim.json" "$TMP/pokeapi-moves.json" "$OUT/ShowdownData.swift" "$TMP/items.json" "$TMP/abilities.json" "$TMP/pokeapi-abilities.json" "$TMP/pokeapi-items.json" <<'PY'
+python3 - "$TMP/moves.json" "$TMP/sets-slim.json" "$TMP/pokeapi-moves.json" "$OUT/ShowdownData.swift" "$TMP/items.json" "$TMP/abilities.json" "$TMP/pokeapi-abilities.json" "$TMP/pokeapi-items.json" "$TMP/dex.json" "$TMP/pokeapi-forms.json" <<'PY'
 import json, sys
 moves = open(sys.argv[1], encoding='utf-8').read()
 sets  = open(sys.argv[2], encoding='utf-8').read()
@@ -175,6 +221,9 @@ names_json = json.dumps(api_names, separators=(',',':'))
 
 ab_names = sorted(a['name'] for a in json.load(open(sys.argv[7], encoding='utf-8'))['results'])
 it_names = sorted(i['name'] for i in json.load(open(sys.argv[8], encoding='utf-8'))['results'])
+dex = open(sys.argv[9], encoding='utf-8').read()
+form_names = sorted(f['name'] for f in json.load(open(sys.argv[10], encoding='utf-8'))['results'])
+form_names_json = json.dumps(form_names, separators=(',',':'))
 ab_names_json = json.dumps(ab_names, separators=(',',':'))
 it_names_json = json.dumps(it_names, separators=(',',':'))
 def lit(s):
@@ -212,6 +261,17 @@ enum ShowdownData {{
 
     /// PokeAPI 의 도구 이름 전체
     static let pokeAPIItemNamesJSON = {lit(it_names_json)}
+
+    /// 종족·폼 표. **특수 폼 목록의 원천이다.**
+    ///
+    /// battleOnly·changesFrom·requiredItem·requiredMove·maxHP 로
+    /// "이 폼은 언제 생기는가" 를 알 수 있다. 손으로 목록을 관리하면
+    /// 반드시 빠지므로 여기서 뽑아 우리 구현과 대조한다.
+    static let dexJSON = {lit(dex)}
+
+    /// PokeAPI 가 아는 폼 이름 전체 ("aegislash-blade", "venusaur-mega").
+    /// 감사가 팬메이드·CAP 폼을 걸러내는 데 쓴다.
+    static let pokeAPIFormNamesJSON = {lit(form_names_json)}
 }}
 '''
 open(sys.argv[4], 'w', encoding='utf-8').write(out)
