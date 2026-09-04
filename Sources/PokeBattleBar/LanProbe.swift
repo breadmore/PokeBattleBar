@@ -87,10 +87,87 @@ enum LanProbe {
             }
             return true
 
+        // 중계 서버를 거쳐 실제로 만나지는지 본다.
+        // 두 프로세스를 relayhost / relayguest 로 띄우고, 중계기는 따로 돌린다:
+        //   python3 scripts/relay.py
+        //   POKEBATTLE_RELAY=127.0.0.1 POKEBATTLE_ROOM=TEST1 ... --lanprobe relayhost
+        //   POKEBATTLE_RELAY=127.0.0.1 POKEBATTLE_ROOM=TEST1 ... --lanprobe relayguest
+        case "relayhost", "relayguest":
+            let env = ProcessInfo.processInfo.environment
+            let addr = env["POKEBATTLE_RELAY"] ?? "127.0.0.1"
+            let room = RelayConfig.normalize(room: env["POKEBATTLE_ROOM"] ?? "TEST1")
+            let secret = env["POKEBATTLE_RELAY_SECRET"]
+            guard let endpoint = DirectConnect.endpoint(from: addr,
+                                                        defaultPort: RelayConfig.defaultPort) else {
+                print("  ✗ 중계 주소를 알아볼 수 없습니다: \(addr)")
+                return false
+            }
+            let box = RelayProbeBox()
+
+            if role == "relayhost" {
+                let host = RoomHost()
+                host.onError = { print("  ✗ \($0)") }
+                host.onRelayRegistered = { print("[\(tag)] 방 등록됨 — 코드 \(room)") }
+                host.onGuestConnected = { link in
+                    print("[\(tag)] 짝 성사 — 상대가 붙었다")
+                    Task { await box.sawPeer() }
+                    link.send(.chat(from: "relayhost", text: "호스트가 보낸다"))
+                }
+                host.onGuestMessage = { msg in
+                    if case .chat(let from, let text) = msg {
+                        print("[\(tag)] 수신: \(from) — \(text)")
+                        Task { await box.sawMessage() }
+                    }
+                }
+                host.startRelay(server: endpoint, room: room, secret: secret,
+                                hostName: "relayhost", rules: .default, modeSummary: "진단")
+                print("[\(tag)] 중계 서버 \(addr) 에 방 \(room) 등록 시도 — \(seconds)초")
+                try? await Task.sleep(for: .seconds(seconds))
+                host.stop()
+            } else {
+                let link = PeerLink(to: endpoint)
+                link.startRelay(
+                    hello: RelayHello(role: .guest, room: room, name: "relayguest", secret: secret),
+                    onRegistered: {},
+                    onPaired: { peer in
+                        print("[\(tag)] 짝 성사 — 상대 \(peer ?? "?")")
+                        Task { await box.sawPeer() }
+                        link.send(.chat(from: "relayguest", text: "게스트가 보낸다"))
+                    },
+                    onRejected: { why in print("  ✗ 거절: \(why)") },
+                    onMessage: { msg in
+                        if case .chat(let from, let text) = msg {
+                            print("[\(tag)] 수신: \(from) — \(text)")
+                            Task { await box.sawMessage() }
+                        }
+                    },
+                    onState: { st in
+                        if case .failed(let e) = st { print("  ✗ 접속 실패: \(e)") }
+                    }
+                )
+                print("[\(tag)] 중계 서버 \(addr) 의 방 \(room) 에 참가 시도 — \(seconds)초")
+                try? await Task.sleep(for: .seconds(seconds))
+                link.cancel()
+            }
+
+            let paired = await box.paired, got = await box.gotMessage
+            print(paired ? "  ✓ 중계로 짝이 맞았다" : "  ✗ 짝이 맞지 않았다")
+            print(got ? "  ✓ 중계를 통해 Wire 메시지가 오갔다"
+                      : "  ✗ 메시지를 받지 못했다")
+            return paired && got
+
         default:
-            print("사용법: --lanprobe host|browse|lobby [--seconds N]")
+            print("사용법: --lanprobe host|browse|lobby|relayhost|relayguest [--seconds N]")
             return false
         }
+    }
+
+    /// 콜백이 여러 스레드에서 오므로 결과는 액터에 모은다
+    private actor RelayProbeBox {
+        var paired = false
+        var gotMessage = false
+        func sawPeer() { paired = true }
+        func sawMessage() { gotMessage = true }
     }
 
     private actor SeenPeers {

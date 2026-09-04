@@ -40,6 +40,104 @@ enum ItemKind: Codable, Hashable, Sendable {
     case berryPinchBoost(Stat)
     /// PP 가 떨어진 기술의 PP 를 회복 (과사열매)
     case berryRestorePP(Int)
+
+    // --- 확장 (2차) — Showdown 데이터 대조(--datagap)로 찾아낸 것들 ---
+
+    /// 고무장갑(딱딱헬멧) — 접촉해 온 상대가 최대HP 1/N 을 잃는다
+    case contactDamage(Int)
+    /// 검은진흙 — 독타입은 회복, 그 외는 피해
+    case blackSludge
+    /// 끈끈이바늘 — 턴마다 자기 HP 가 줄고 접촉하면 상대에게 옮겨간다
+    case stickyBarb(Int)
+    /// 공기풍선 — 땅 기술이 통하지 않다가, 맞으면 터진다
+    case airBalloon
+    /// 조개껍질방울 — 준 데미지의 1/N 을 회복한다
+    case shellBell(Int)
+    /// 기합의머리띠 — 확률로 일격을 버틴다
+    case focusBand(percent: Int)
+    /// 약점보험 — 효과가 굉장한 기술을 맞으면 공격·특공이 크게 오른다
+    case weaknessPolicy
+    /// 흡수구슬 계열 — 특정 타입에 맞으면 능력이 오른다
+    case boostWhenHitByType(PType, Stat, Int)
+    /// 목청스프레이 — 소리 기술을 쓰면 특공이 오른다
+    case throatSpray(Stat, Int)
+    /// 안전고글 — 가루 기술과 날씨 피해를 막는다
+    case safetyGoggles
+    /// 방호패드 — 접촉 판정을 없앤다 (거친피부·정전기를 막는다)
+    case protectivePads
+    /// 이상한부적(클리어참) — 능력치가 내려가지 않는다
+    case clearAmulet
+    /// 특성가드 — 특성이 바뀌지 않는다
+    case abilityShield
+    /// 침묵의방울(코버트클록) — 부가효과를 받지 않는다
+    case covertCloak
+    /// 이상한우산 — 쾌청·비의 효과를 무시한다
+    case utilityUmbrella
+    /// 두꺼운부츠 — 설치 기술 피해를 받지 않는다
+    case heavyDutyBoots
+    /// 명중률을 바꾸는 도구 (핀포인트렌즈·광각렌즈·핑크스카프)
+    case accuracyMultiplier(Double)
+    /// 나중에 움직일 때만 명중률이 오르는 도구 (졸보기)
+    case accuracyIfSlower(Double)
+    /// 급소율 단계를 올리는 도구 (초점렌즈·예리한손톱)
+    case critStage(Int)
+    /// 풀죽음 확률을 더하는 도구 (왕의징표석·예리한이빨)
+    case flinchChance(percent: Int)
+    /// 관통 펀치(펀치글러브) — 펀치 기술 1.1배, 접촉 판정 없음
+    case punchingGlove(Double)
+    /// 이상한주먹(로디드다이스) — 연속 기술이 최소 4번 맞는다
+    case loadedDice
+    /// 무게를 바꾸는 도구 (경석·구멍철구)
+    case weightMultiplier(Double)
+    /// 구멍철구 — 스피드 반감 + 강제 착지
+    case ironBall
+    /// 전기구슬 — 피카츄의 공격·특공 두 배
+    case lightBall(species: Int)
+    /// 특정 종의 특정 타입 기술을 강화 (신비의구슬·소울도우·오거폰 가면)
+    case signatureTypeBoost(species: [Int], types: [PType], Double)
+    /// 큰뿌리 — 흡수·회복량이 늘어난다
+    case bigRoot(Double)
+    /// 하얀허브 — 내려간 능력치를 한 번 되돌린다
+    case whiteHerb
+    /// 멘탈허브 — 헤롱헤롱·도발 등을 한 번 낫게 한다
+    case mentalHerb
+    /// 파워허브 — 모으는 기술을 한 턴에 쓴다 (엔진에 이미 있다)
+    case powerHerb
+    /// 필드 씨앗 — 해당 필드에서 능력이 오르고 사라진다
+    case terrainSeed(Terrain, Stat, Int)
+    /// 메트로놈(도구) — 같은 기술을 연달아 쓰면 위력이 오른다
+    case metronomeItem(step: Double, max: Double)
+    /// 부스트에너지 — 고대활성·쿼크차지를 조건 없이 발동시킨다
+    case boosterEnergy
+
+    // --- 확장 (3차) ---
+
+    /// 이앗열매 — HP 1/4 이하에서 그 턴에 선공한다
+    case berryPinchPriority
+    /// 룸열매 — HP 1/4 이하에서 급소율이 오른다
+    case berryPinchCrit
+    /// 미클열매 — HP 1/4 이하에서 다음 기술의 명중률이 오른다
+    case berryPinchAccuracy(Double)
+    /// 스타열매 — HP 1/4 이하에서 능력치 하나가 크게 오른다
+    case berryPinchRandomBoost(Int)
+    /// 자보열매·로플열매 — 그 분류로 맞으면 상대에게 1/N 을 되돌린다
+    case berryRetaliate(DamageClass, Int)
+    /// 규열매·마란가열매 — 그 분류로 맞으면 방어가 오른다
+    case berryBoostOnHit(DamageClass, Stat, Int)
+    /// 이상한열매 — 효과가 굉장한 기술을 맞으면 1/N 회복
+    case berryHealOnSuperEffective(Int)
+    /// 젬 — 그 타입 기술 한 번만 강화되고 사라진다
+    case typeGem(PType, Double)
+    /// 아드레날린오브 — 위협을 받으면 스피드가 오른다
+    case adrenalineOrb
+    /// 붉은실 — 헤롱헤롱을 상대에게도 걸어준다
+    case destinyKnot
+    /// 파워 계열 훈련 도구 — 배틀에서는 스피드가 반감된다
+    case speedMultiplier(Double)
+    /// **싱글에서는 효과가 없는 도구.**
+    /// 자발적 교체가 없거나(탈출버튼) 배틀 효과 자체가 없는(노력치 열매) 것들.
+    /// 미구현과 구분하기 위해 따로 표시한다.
+    case noEffectInSingles
 }
 
 /// 도구 정의. 이름·한글명·효과 텍스트는 PokeAPI 에서 실제로 받아온다.
@@ -141,6 +239,20 @@ actor ItemCatalog {
         "sharp-beak", "poison-barb", "soft-sand", "hard-stone", "silver-powder",
         "spell-tag", "twisted-spoon", "black-belt", "black-glasses",
         "dragon-fang", "metal-coat", "silk-scarf", "fairy-feather",
+        // 2차 대조로 추가
+        "absorb-bulb", "cell-battery", "snowball", "luminous-moss",
+        "weakness-policy", "focus-band", "sticky-barb", "float-stone",
+        "wide-lens", "zoom-lens", "bright-powder", "scope-lens", "razor-claw",
+        "kings-rock", "razor-fang", "light-ball", "iron-ball",
+        "big-root", "white-herb", "mental-herb", "power-herb",
+        "electric-seed", "grassy-seed", "misty-seed", "psychic-seed",
+        "metronome", "adamant-crystal", "lustrous-globe", "griseous-core",
+        "wellspring-mask", "hearthflame-mask", "cornerstone-mask",
+        // 3차 대조로 추가
+        "custap-berry", "lansat-berry", "micle-berry", "starf-berry",
+        "jaboca-berry", "rowap-berry", "kee-berry", "maranga-berry",
+        "enigma-berry", "normal-gem", "adrenaline-orb", "destiny-knot",
+        "rusted-sword", "rusted-shield",
 
         "leftovers", "life-orb", "focus-sash", "expert-belt",
         "muscle-band", "wise-glasses", "choice-band", "choice-specs", "choice-scarf",
@@ -364,6 +476,121 @@ actor ItemCatalog {
         case "assault-vest":  return .assaultVest
         case "flame-orb":     return .selfStatusOrb(.burn)
         case "toxic-orb":     return .selfStatusOrb(.toxic)
+
+        // ─────────────────────────────────────────────────────────────
+        // 2차 — Showdown 데이터 대조로 찾아낸 것들 (--datagap)
+        // ─────────────────────────────────────────────────────────────
+
+        // 맞으면 반응하는 도구
+        case "rocky-helmet":    return .contactDamage(6)
+        case "black-sludge":    return .blackSludge
+        case "sticky-barb":     return .stickyBarb(8)
+        case "air-balloon":     return .airBalloon
+        case "shell-bell":      return .shellBell(8)
+        case "focus-band":      return .focusBand(percent: 10)
+        case "weakness-policy": return .weaknessPolicy
+        case "absorb-bulb":     return .boostWhenHitByType(.water, .spAttack, 1)
+        case "cell-battery":    return .boostWhenHitByType(.electric, .attack, 1)
+        case "snowball":        return .boostWhenHitByType(.ice, .attack, 1)
+        case "luminous-moss":   return .boostWhenHitByType(.water, .spDefense, 1)
+        case "throat-spray":    return .throatSpray(.spAttack, 1)
+
+        // 막아주는 도구
+        case "safety-goggles":   return .safetyGoggles
+        case "protective-pads":  return .protectivePads
+        case "clear-amulet":     return .clearAmulet
+        case "ability-shield":   return .abilityShield
+        case "covert-cloak":     return .covertCloak
+        case "utility-umbrella": return .utilityUmbrella
+        case "heavy-duty-boots": return .heavyDutyBoots
+
+        // 명중률 · 급소 · 풀죽음
+        case "wide-lens":     return .accuracyMultiplier(1.1)
+        case "bright-powder": return .accuracyMultiplier(0.9)   // 상대 명중률을 깎는다
+        case "zoom-lens":     return .accuracyIfSlower(1.2)
+        case "scope-lens", "razor-claw": return .critStage(1)
+        case "kings-rock", "razor-fang":  return .flinchChance(percent: 10)
+
+        // 위력 · 연속
+        case "punching-glove": return .punchingGlove(1.1)
+        case "loaded-dice":    return .loadedDice
+
+        // 무게 · 스피드
+        case "float-stone": return .weightMultiplier(0.5)
+        case "iron-ball":   return .ironBall
+
+        // 전용 도구 — PokeTokenBar 도감에 그 종이 나오면 쓸 수 있다
+        case "light-ball":       return .lightBall(species: 25)
+        case "adamant-orb":      return .signatureTypeBoost(species: [483], types: [.steel, .dragon], 1.2)
+        case "lustrous-orb":     return .signatureTypeBoost(species: [484], types: [.water, .dragon], 1.2)
+        case "griseous-orb":     return .signatureTypeBoost(species: [487], types: [.ghost, .dragon], 1.2)
+        case "adamant-crystal":  return .signatureTypeBoost(species: [483], types: [.steel, .dragon], 1.2)
+        case "lustrous-globe":   return .signatureTypeBoost(species: [484], types: [.water, .dragon], 1.2)
+        case "griseous-core":    return .signatureTypeBoost(species: [487], types: [.ghost, .dragon], 1.2)
+        case "soul-dew":         return .signatureTypeBoost(species: [380, 381], types: [.psychic, .dragon], 1.2)
+        // 오거폰의 가면 — 그 타입 기술이 1.2배가 된다
+        case "wellspring-mask":  return .signatureTypeBoost(species: [1017], types: [.water, .grass], 1.2)
+        case "hearthflame-mask": return .signatureTypeBoost(species: [1017], types: [.fire, .grass], 1.2)
+        case "cornerstone-mask": return .signatureTypeBoost(species: [1017], types: [.rock, .grass], 1.2)
+
+        // 회복 · 한 번만 쓰는 도구
+        case "big-root":     return .bigRoot(1.3)
+        case "white-herb":   return .whiteHerb
+        case "mental-herb":  return .mentalHerb
+        case "power-herb":   return .powerHerb
+
+        // 필드 씨앗
+        case "electric-seed": return .terrainSeed(.electric, .defense, 1)
+        case "grassy-seed":   return .terrainSeed(.grassy, .defense, 1)
+        case "misty-seed":    return .terrainSeed(.misty, .spDefense, 1)
+        case "psychic-seed":  return .terrainSeed(.psychic, .spDefense, 1)
+
+        case "metronome":       return .metronomeItem(step: 0.2, max: 2.0)
+        case "booster-energy":  return .boosterEnergy
+
+        // ── 3차 ──
+
+        // 궁지 열매 — HP 1/4 이하에서 발동한다
+        case "custap-berry":  return .berryPinchPriority
+        case "lansat-berry":  return .berryPinchCrit
+        case "micle-berry":   return .berryPinchAccuracy(1.2)
+        case "starf-berry":   return .berryPinchRandomBoost(2)
+
+        // 맞으면 반격하는 열매
+        case "jaboca-berry":  return .berryRetaliate(.physical, 8)
+        case "rowap-berry":   return .berryRetaliate(.special, 8)
+        case "kee-berry":     return .berryBoostOnHit(.physical, .defense, 1)
+        case "maranga-berry": return .berryBoostOnHit(.special, .spDefense, 1)
+        case "enigma-berry":  return .berryHealOnSuperEffective(4)
+
+        // 노말젬 — 노말 기술 한 번만 1.3배
+        case "normal-gem":    return .typeGem(.normal, 1.3)
+
+        // 위협을 받으면 스피드가 오른다
+        case "adrenaline-orb": return .adrenalineOrb
+
+        // 붉은실 — 헤롱헤롱을 되돌려준다
+        case "destiny-knot":  return .destinyKnot
+
+        // 자칭왕의검·방패 — 자오·자마젠타 전용 (도구를 뗄 수 없다)
+        case "rusted-sword":  return .signatureTypeBoost(species: [888], types: [.steel, .fairy], 1.0)
+        case "rusted-shield": return .signatureTypeBoost(species: [889], types: [.steel, .fighting], 1.0)
+
+        // 파워 계열 훈련 도구 — 배틀에서는 **스피드가 반감된다**
+        case "power-anklet", "power-band", "power-belt",
+             "power-bracer", "power-lens", "power-weight":
+            return .speedMultiplier(0.5)
+
+        // 교체가 있어야만 의미가 있는 도구 (우리 1대1 에는 자발적 교체가 없다).
+        // 미구현이 아니라 **해당 없음**이므로 목록에 남기지 않는다.
+        case "eject-button", "eject-pack", "red-card", "shed-shell",
+             "room-service", "mirror-herb":
+            return .noEffectInSingles
+
+        // 노력치를 깎는 열매 — 배틀 효과가 없다 (내던지기·자연의은혜만 가능)
+        case "grepa-berry", "hondew-berry", "kelpsy-berry",
+             "pomeg-berry", "qualot-berry", "tamato-berry":
+            return .noEffectInSingles
         case "quick-claw":    return .quickClaw(numerator: 3, denominator: 16)
         default:              return .none
         }

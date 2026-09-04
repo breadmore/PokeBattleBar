@@ -126,6 +126,31 @@ enum Showdown {
         }
     }
 
+    /// PokeAPI 의 특성 이름 전체
+    static let pokeAPIAbilityNames: [String] = {
+        guard let d = ShowdownData.pokeAPIAbilityNamesJSON.data(using: .utf8),
+              let a = try? JSONSerialization.jsonObject(with: d) as? [String] else { return [] }
+        return a
+    }()
+
+    /// PokeAPI 의 도구 이름 전체
+    static let pokeAPIItemNames: [String] = {
+        guard let d = ShowdownData.pokeAPIItemNamesJSON.data(using: .utf8),
+              let a = try? JSONSerialization.jsonObject(with: d) as? [String] else { return [] }
+        return a
+    }()
+
+    /// Showdown id → PokeAPI 이름. **역변환은 표로만 가능하다.**
+    /// 하이픈 위치를 추측하면 "serenegrace" 를 되살릴 수 없다.
+    static let abilityNameByID: [String: String] = {
+        Dictionary(pokeAPIAbilityNames.map { (id(fromPokeAPI: $0), $0) },
+                   uniquingKeysWith: { a, _ in a })
+    }()
+    static let itemNameByID: [String: String] = {
+        Dictionary(pokeAPIItemNames.map { (id(fromPokeAPI: $0), $0) },
+                   uniquingKeysWith: { a, _ in a })
+    }()
+
     // MARK: 도구 · 특성
 
     /// 도구 데이터 (Showdown id 기준)

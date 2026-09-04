@@ -88,7 +88,133 @@ enum AbilityCoverageTest {
             }
         }
 
+        // **배선까지 확인한다.**
+        //
+        // 표에 넣는 것과 엔진이 실제로 그걸 보는 것은 다른 일이다.
+        // 실제로 용의턱은 표에 있었지만 이름이 틀려 한 번도 실행되지 않았다.
+        ok = await liveEffectCheck() && ok
+
         print(ok ? "\n✓ 통과" : "\n✗ 실패 항목 있음")
+        return ok
+    }
+
+    /// 새로 넣은 특성 몇 개를 **실제 배틀에서** 돌려본다.
+    private static func liveEffectCheck() async -> Bool {
+        print("\n  -- 엔진 배선 확인 --")
+        guard let chart = try? await PokeAPI.shared.typeChart(),
+              let tackle = try? await PokeAPI.shared.move("tackle"),
+              let splash = try? await PokeAPI.shared.move("splash"),
+              let ember = try? await PokeAPI.shared.move("ember"),
+              let growl = try? await PokeAPI.shared.move("growl") else {
+            return show(false, "배선 확인 준비")
+        }
+        var ok = true
+
+        /// 특성을 붙여 한 턴 돌리고 로그와 최종 상태를 돌려준다.
+        func run(ability: String, kind: AbilityKind, myMove: MoveDef, foeMove: MoveDef,
+                 foeAbility: String? = nil) async -> (log: [String], me: Battler, foe: Battler)? {
+            guard let uSp = try? await PokeAPI.shared.species(143),
+                  let fSp = try? await PokeAPI.shared.species(151) else { return nil }
+            func make(_ sp: SpeciesDef, _ ms: [MoveDef], _ tag: String,
+                      _ ab: AbilityDef?, speed: Int) -> Battler {
+                let slot = RosterSlot(id: tag, speciesID: sp.id, nature: "serious",
+                                      rarity: "common", isShiny: false, origin: .dex,
+                                      fullyEvolved: true)
+                var b = Battler.make(slot: slot, species: sp, moves: ms, level: 50,
+                                     ability: ab)
+                for i in b.moves.indices { b.moves[i].ppLeft = 99 }
+                b.stats[.speed] = speed
+                b.maxHP = 400; b.currentHP = 400
+                return b
+            }
+            let mine = AbilityDef(name: ability, koName: ability,
+                                  shortEffect: "", kind: kind)
+            let theirs = foeAbility.map {
+                AbilityDef(name: $0, koName: $0, shortEffect: "",
+                           kind: AbilityCatalog.kind(for: $0))
+            }
+            var st = BattleState(rules: BattleRules(maxTeamSize: 1, level: 50),
+                                 sides: [SideState(playerName: "나",
+                                                   team: [make(uSp, [myMove], "h", mine, speed: 999)],
+                                                   activeIndex: 0),
+                                         SideState(playerName: "상대",
+                                                   team: [make(fSp, [foeMove], "g", theirs, speed: 1)],
+                                                   activeIndex: 0)])
+            st.phase = .chooseLead
+            var e = BattleEngine(state: st, chart: chart, seed: 909)
+            e.setLead(.host, index: 0); e.setLead(.guest, index: 0)
+            e.beginBattle()
+            guard case .awaitingMoves = e.state.phase else { return nil }
+            e.resolveTurn(hostAction: .useMove(index: 0), guestAction: .useMove(index: 0))
+            return (e.state.log, e.state.sides[0].team[0], e.state.sides[1].team[0])
+        }
+
+        // 에어레이트 — 몸통박치기(노말)가 비행 타입이 된다
+        if let r = await run(ability: "aerilate",
+                             kind: .moveTypeConversion(from: .normal, to: .flying, multiplier: 1.2),
+                             myMove: tackle, foeMove: splash) {
+            ok = show(r.log.contains { $0.contains("비행 타입이 되었다") },
+                      "에어레이트가 기술 타입을 바꾼다") && ok
+        } else { ok = show(false, "에어레이트") && ok }
+
+        // 변환자재 — 쓴 기술의 타입으로 자신이 변한다
+        if let r = await run(ability: "protean", kind: .userTypeMatchesMove,
+                             myMove: ember, foeMove: splash) {
+            ok = show(r.me.types == [.fire], "변환자재로 자기 타입이 바뀐다",
+                      "\(r.me.types.map(\.ko))") && ok
+        } else { ok = show(false, "변환자재") && ok }
+
+        // 일렉트릭메이커 — 등장 시 필드가 깔린다
+        if let r = await run(ability: "electric-surge", kind: .terrainOnEntry(.electric),
+                             myMove: splash, foeMove: splash) {
+            ok = show(r.log.contains { $0.contains("일렉트릭") },
+                      "일렉트릭메이커가 필드를 만든다") && ok
+        } else { ok = show(false, "일렉트릭메이커") && ok }
+
+        // 불요의검 — 등장 시 공격이 오른다
+        if let r = await run(ability: "intrepid-sword", kind: .boostOnEntry(.attack, 1),
+                             myMove: splash, foeMove: splash) {
+            ok = show((r.me.stages[.attack] ?? 0) >= 1, "불요의검이 등장 시 공격을 올린다",
+                      "\(r.me.stages[.attack] ?? 0)단계") && ok
+        } else { ok = show(false, "불요의검") && ok }
+
+        // 여왕의위엄 — 선공 기술(전광석화)이 막힌다
+        if let quick = try? await PokeAPI.shared.move("quick-attack"),
+           let r = await run(ability: "no-guard", kind: .noGuard,
+                             myMove: quick, foeMove: splash,
+                             foeAbility: "queenly-majesty") {
+            ok = show(r.log.contains { $0.contains("선공 기술은 통하지 않는다") },
+                      "여왕의위엄이 선공 기술을 막는다") && ok
+        } else { ok = show(false, "여왕의위엄") && ok }
+
+        // 매지컬아머 — 능력 하락이 상대에게 되돌아간다
+        if let r = await run(ability: "no-guard", kind: .noGuard,
+                             myMove: growl, foeMove: splash,
+                             foeAbility: "mirror-armor") {
+            ok = show((r.me.stages[.attack] ?? 0) < 0,
+                      "매지컬아머가 능력 하락을 되돌린다",
+                      "내 공격 \(r.me.stages[.attack] ?? 0)단계") && ok
+        } else { ok = show(false, "매지컬아머") && ok }
+
+        // 재앙 4종 — 상대 방어가 0.75배가 되어 데미지가 늘어난다
+        if let plain = await run(ability: "no-guard", kind: .noGuard,
+                                 myMove: tackle, foeMove: splash),
+           let ruined = await run(ability: "sword-of-ruin", kind: .ruin(.defense, 0.75),
+                                  myMove: tackle, foeMove: splash) {
+            let a = 400 - plain.foe.currentHP
+            let b = 400 - ruined.foe.currentHP
+            ok = show(b > a, "재의검이 상대 방어를 깎는다", "\(a) → \(b)") && ok
+        } else { ok = show(false, "재의검") && ok }
+
+        // 옷무늬 — 첫 공격이 막힌다
+        if let r = await run(ability: "no-guard", kind: .noGuard,
+                             myMove: tackle, foeMove: splash,
+                             foeAbility: "disguise") {
+            ok = show(r.foe.currentHP == r.foe.maxHP && r.foe.shieldUsed,
+                      "옷무늬가 첫 공격을 막는다",
+                      "\(r.foe.currentHP)/\(r.foe.maxHP)") && ok
+        } else { ok = show(false, "옷무늬") && ok }
+
         return ok
     }
 

@@ -9,12 +9,16 @@ import Network
 enum DirectConnect {
 
     /// "100.64.1.2:51234" / "example.com:51234" / "100.64.1.2" (포트 생략 시 기본값)
-    static func endpoint(from text: String) -> NWEndpoint? {
+    ///
+    /// - Parameter defaultPort: 포트를 안 적었을 때 쓸 번호.
+    ///   방은 51234, 중계 서버는 51235 로 서로 다르다.
+    static func endpoint(from text: String,
+                         defaultPort: UInt16 = RoomHost.preferredPort) -> NWEndpoint? {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return nil }
 
         var hostPart = t
-        var portPart = UInt16(RoomHost.preferredPort)
+        var portPart = defaultPort
 
         // IPv6 은 대괄호로 감싼다: [fd00::1]:51234
         if t.hasPrefix("[") {

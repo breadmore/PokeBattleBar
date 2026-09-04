@@ -77,11 +77,15 @@ enum Terrain: String, Codable, Sendable {
 enum Hazard: String, Codable, Sendable, CaseIterable {
     case stealthRock      // 다이맥스스톤즈 — 바위 상성 기반 피해
     case steelSurge       // 다이맥스스틸 — 강철 상성 기반 피해
+    /// 독압정 — **피해가 아니라 독을 건다.** 땅에 닿은 쪽만 걸리고
+    /// 독·강철 타입에게는 통하지 않는다.
+    case toxicSpikes
 
     var ko: String {
         switch self {
         case .stealthRock: "스텔스록"
         case .steelSurge:  "스틸록"
+        case .toxicSpikes: "독압정"
         }
     }
     /// 상성 계산에 쓰는 타입
@@ -89,7 +93,12 @@ enum Hazard: String, Codable, Sendable, CaseIterable {
         switch self {
         case .stealthRock: .rock
         case .steelSurge:  .steel
+        case .toxicSpikes: .poison
         }
+    }
+    /// 데미지 대신 상태이상을 거는 장애물인가
+    var inflictsStatus: Ailment? {
+        self == .toxicSpikes ? .poison : nil
     }
     /// 등장 시 피해 = 최대HP × 상성배율 / 8
     func damage(maxHP: Int, multiplier: Double) -> Int {
@@ -176,6 +185,18 @@ enum MoveFlags {
     static func locksUser(_ name: String) -> Bool { Showdown.move(name)?.locksUser ?? false }
     /// 일격필살인가 (땅가르기·뿔드릴·절대영도·가위자르기)
     static func isOHKO(_ name: String) -> Bool { Showdown.move(name)?.ohko ?? false }
+    /// 탄환 계열인가 (방탄으로 막힌다)
+    static func isBullet(_ name: String) -> Bool {
+        Showdown.move(name)?.flags.contains("bullet") ?? false
+    }
+    /// 참격 계열인가 (칼날몸으로 강화된다)
+    static func isSlicing(_ name: String) -> Bool {
+        Showdown.move(name)?.flags.contains("slicing") ?? false
+    }
+    /// 바람 계열인가 (윈드라이더·윈드파워가 반응한다)
+    static func isWind(_ name: String) -> Bool {
+        Showdown.move(name)?.flags.contains("wind") ?? false
+    }
     /// 모으는 동안 몸을 숨기는가 (땅속·공중·물속)
     static func chargeHides(_ name: String) -> Bool { Showdown.move(name)?.hidesUser ?? false }
     /// 파괴광선처럼 쓴 다음 턴에 못 움직이는가

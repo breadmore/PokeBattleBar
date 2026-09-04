@@ -9,6 +9,29 @@ final class PeerLink: @unchecked Sendable {
 
     private var messageHandler: (@Sendable (Wire) -> Void)?
     private var stateHandler: (@Sendable (NWConnection.State) -> Void)?
+    /// 수신 루프가 이미 돌고 있는가.
+    ///
+    /// `.ready` 는 **다시 올 수 있다** — 경로가 바뀌거나 잠시 끊겼다 복구되면
+    /// `.ready → .waiting → .ready` 로 돌아온다. 그때마다 루프를 새로 걸면
+    /// 같은 버퍼를 두 루프가 나눠 먹어서 메시지가 중복 전달되거나 순서가 뒤바뀐다.
+    /// (연결 큐가 직렬이므로 이 플래그도 그 큐에서만 만진다.)
+    private var receiving = false
+
+    // MARK: 중계 핸드셰이크
+    //
+    // 중계 서버를 거칠 때는 게임 스트림 **앞에** 핸드셰이크가 붙는다.
+    // 이 단계를 PeerLink 안에서 처리하는 이유는 버퍼가 하나이기 때문이다 —
+    // 밖에서 소켓을 먼저 읽고 나중에 PeerLink 에 넘기면, 핸드셰이크 응답과
+    // 같은 패킷에 실려 온 게임 바이트가 그대로 사라진다.
+
+    /// 아직 핸드셰이크 응답을 기다리는 중인가 (nil 이면 평범한 직접 연결)
+    private var pendingHello: RelayHello?
+    /// 방이 등록됐을 때 (호스트만). 짝이 맞기 전이다.
+    private var onRelayRegistered: (@Sendable () -> Void)?
+    /// 짝이 맞았다 — 이 뒤로는 평범한 게임 연결이다. (상대 이름)
+    private var onRelayPaired: (@Sendable (String?) -> Void)?
+    /// 중계기가 거절했다
+    private var onRelayRejected: (@Sendable (String) -> Void)?
     /// 프레임 해석 실패 (특히 프로토콜 버전 불일치) 를 위로 올린다.
     /// 이걸 안 하면 그냥 연결이 끊겨서 사용자는 이유를 알 수 없다.
     var onProtocolError: (@Sendable (String) -> Void)?
@@ -49,7 +72,7 @@ final class PeerLink: @unchecked Sendable {
         stateHandler = onState
         connection.stateUpdateHandler = { [weak self] st in
             self?.stateHandler?(st)
-            if st == .ready { self?.receiveLoop() }
+            if st == .ready { self?.startReceivingIfNeeded() }
         }
         connection.start(queue: queue)
     }
@@ -69,8 +92,76 @@ final class PeerLink: @unchecked Sendable {
         }
     }
 
+    /// 중계 서버를 거쳐 시작한다.
+    ///
+    /// 연결되면 먼저 `hello` 를 보내고, 중계기가 짝을 맞춰줄 때까지 기다린다.
+    /// 짝이 맞은 뒤로는 직접 연결과 **완전히 같다** — 그래서 그 시점에
+    /// `onPaired` 를 받은 쪽이 평소 경로(joinAccepted·battleBegan …)를 그대로 탄다.
+    func startRelay(hello: RelayHello,
+                    onRegistered: @escaping @Sendable () -> Void,
+                    onPaired: @escaping @Sendable (String?) -> Void,
+                    onRejected: @escaping @Sendable (String) -> Void,
+                    onMessage: @escaping @Sendable (Wire) -> Void,
+                    onState: @escaping @Sendable (NWConnection.State) -> Void) {
+        pendingHello = hello
+        onRelayRegistered = onRegistered
+        onRelayPaired = onPaired
+        onRelayRejected = onRejected
+        messageHandler = onMessage
+        stateHandler = onState
+        connection.stateUpdateHandler = { [weak self] st in
+            self?.stateHandler?(st)
+            guard st == .ready, let self else { return }
+            self.sendHelloIfNeeded()
+            self.startReceivingIfNeeded()
+        }
+        connection.start(queue: queue)
+    }
+
+    private func sendHelloIfNeeded() {
+        guard let hello = pendingHello else { return }
+        do {
+            let data = try RelayCodec.encode(hello)
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error { NSLog("PokeBattleBar: 중계 인사 전송 실패 \(error)") }
+            })
+        } catch {
+            NSLog("PokeBattleBar: 중계 인사 인코딩 실패 \(error)")
+        }
+    }
+
+    /// 버퍼 앞쪽의 핸드셰이크 프레임을 소화한다.
+    /// 핸드셰이크가 끝나면 true 를 돌려주고, 남은 바이트는 게임 스트림으로 넘어간다.
+    /// - Returns: 계속 진행해도 되는가 (false 면 연결이 끊겼다)
+    private func consumeHandshake() throws -> Bool {
+        while pendingHello != nil {
+            guard let reply = try RelayCodec.decode(RelayReply.self, from: &buffer) else {
+                return true             // 아직 다 안 왔다 — 더 기다린다
+            }
+            guard reply.ok else {
+                let why = reply.reason ?? "알 수 없는 이유"
+                pendingHello = nil
+                onRelayRejected?(why)
+                return false
+            }
+            if reply.isPaired {
+                pendingHello = nil      // 이 뒤로는 평범한 게임 연결이다
+                onRelayPaired?(reply.peer)
+            } else if reply.isRegistered {
+                onRelayRegistered?()    // 아직 기다린다 (호스트)
+            }
+        }
+        return true
+    }
+
     func cancel() {
         connection.cancel()
+    }
+
+    private func startReceivingIfNeeded() {
+        guard !receiving else { return }
+        receiving = true
+        receiveLoop()
     }
 
     private func receiveLoop() {
@@ -79,19 +170,31 @@ final class PeerLink: @unchecked Sendable {
             if let data, !data.isEmpty {
                 self.buffer.append(data)
                 do {
-                    for msg in try WireCodec.drain(&self.buffer) {
-                        self.messageHandler?(msg)
+                    // 중계 핸드셰이크가 남아 있으면 **그것부터** 소화한다.
+                    // 같은 버퍼를 쓰므로, 응답과 한 패킷에 실려 온 게임 바이트도
+                    // 그대로 이어서 처리된다.
+                    guard try self.consumeHandshake() else {
+                        self.receiving = false
+                        self.connection.cancel()
+                        return
+                    }
+                    if self.pendingHello == nil {
+                        for msg in try WireCodec.drain(&self.buffer) {
+                            self.messageHandler?(msg)
+                        }
                     }
                 } catch {
                     let msg = (error as? WireError)?.errorDescription
                         ?? "통신 형식을 해석할 수 없습니다: \(error.localizedDescription)"
                     NSLog("PokeBattleBar: 프레임 해석 실패 — \(msg)")
+                    self.receiving = false
                     self.onProtocolError?(msg)
                     self.connection.cancel()
                     return
                 }
             }
             if isComplete || error != nil {
+                self.receiving = false
                 self.connection.cancel()
                 return
             }

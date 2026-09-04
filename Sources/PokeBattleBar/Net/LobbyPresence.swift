@@ -313,12 +313,20 @@ final class LobbyPresence: @unchecked Sendable {
         }
     }
 
-    /// 수락했으면 초대 연결은 더 필요 없다 — 이제 방으로 붙는다
+    /// 수락했으면 초대 연결은 더 필요 없다 — 이제 방으로 붙는다.
+    ///
+    /// **반드시 끊어야 한다.** NWConnection 은 참조가 사라져도 스스로 취소되지
+    /// 않고, 뒤늦게 도는 120초 안전망은 `release` 가 false 를 주면 그냥 지나간다
+    /// (이미 목록에서 빠졌으므로). 예전에는 목록에서 빼기만 해서 초대를 수락할
+    /// 때마다 소켓이 하나씩 남았다.
     func closeInvite(from: String) {
         lock.lock()
         let key = pendingReplies.removeValue(forKey: from)
+        let link = key.flatMap { openLinks[$0] }
         lock.unlock()
-        if let key, release(key) { /* 링크는 release 안에서 목록에서만 빠진다 */ }
+        guard let key else { return }
+        release(key)
+        link?.cancel()
     }
 
     private func retain(_ link: PeerLink, key: String) {

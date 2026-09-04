@@ -80,6 +80,28 @@ final class AppModel {
     var updateDownloading = false
     var updateStatus: String?
 
+    // MARK: 중계 서버 (다른 네트워크의 사람과 만나기)
+    //
+    // 주소와 암호는 한 번 적으면 계속 쓰므로 기억해 둔다.
+    // 방 코드는 판마다 달라지므로 저장하지 않는다.
+
+    private static var relayServerKey: String { "relayServer" + (TestProfile.tag.map { "-\($0)" } ?? "") }
+    private static var relaySecretKey: String { "relaySecret" + (TestProfile.tag.map { "-\($0)" } ?? "") }
+
+    var relayServer: String = UserDefaults.standard.string(forKey: AppModel.relayServerKey) ?? "" {
+        didSet { UserDefaults.standard.set(relayServer, forKey: AppModel.relayServerKey) }
+    }
+    var relaySecret: String = UserDefaults.standard.string(forKey: AppModel.relaySecretKey) ?? "" {
+        didSet { UserDefaults.standard.set(relaySecret, forKey: AppModel.relaySecretKey) }
+    }
+    /// 방 코드 — 방을 연 사람이 상대에게 알려준다
+    var relayRoom: String = ""
+
+    /// 중계 서버를 쓸 준비가 됐는가 (주소를 적었는가)
+    var canUseRelay: Bool {
+        !relayServer.trimmingCharacters(in: .whitespaces).isEmpty && !roster.isEmpty
+    }
+
     // 로비 (누가 있는지 / 초대 / 새 방 알림)
     var lobbyPeers: [LobbyPeer] = []
     struct Invite: Equatable, Sendable {
@@ -1035,11 +1057,15 @@ final class AppModel {
 
     // MARK: 방 만들기 (호스트)
 
-    func startHosting() async {
+    /// 방을 열기 전에 팀과 캐시를 준비한다. LAN·중계 둘 다 같은 준비가 필요하다.
+    private func prepareToHost() async -> Bool {
         role = .host
         mySide = .host
         myTeam = await buildTeam()
-        guard !myTeam.isEmpty else { errorMessage = "팀을 만들 수 없습니다."; return }
+        guard !myTeam.isEmpty else {
+            errorMessage = "팀을 만들 수 없습니다."
+            return false
+        }
         status = "특수 변신 데이터를 준비하는 중…"
         await preloadForms(for: myTeam)
         await preloadTransformMoves()
@@ -1048,7 +1074,53 @@ final class AppModel {
             await preloadMetronomePool()
             metronomeTeamSnapshot = await buildMetronomeTeam()
         }
+        return true
+    }
 
+    func startHosting() async {
+        guard await prepareToHost() else { return }
+        wireHostCallbacks()
+        host.start(roomName: roomName.isEmpty ? "\(playerName)의 방" : roomName,
+                   hostName: playerName, rules: rules, modeSummary: modeSummary)
+        status = "상대를 기다리는 중…"
+        screen = .hostingRoom
+    }
+
+    // MARK: 중계 서버로 방 열기 (다른 네트워크)
+
+    /// 중계 서버에 방을 등록한다.
+    ///
+    /// LAN 과 달리 **내 쪽에 포트를 열 필요가 없다** — 나도 중계기로 나가는
+    /// 연결을 걸기 때문이다. 상대에게는 중계 주소와 방 코드만 알려주면 된다.
+    func startHostingViaRelay() async {
+        guard let endpoint = DirectConnect.endpoint(from: relayServer,
+                                                    defaultPort: RelayConfig.defaultPort) else {
+            errorMessage = "중계 서버 주소를 알아볼 수 없습니다. "
+                + "example.com:\(RelayConfig.defaultPort) 처럼 적어주세요."
+            return
+        }
+        guard !roster.isEmpty else { errorMessage = "포켓몬이 없습니다."; return }
+        guard await prepareToHost() else { return }
+
+        // 방 코드를 비워두면 만들어 준다 — 사람이 받아 적을 수 있는 형태다
+        let code = RelayConfig.normalize(room: relayRoom)
+        relayRoom = code.isEmpty ? RelayConfig.makeRoomCode() : code
+
+        wireHostCallbacks()
+        host.onRelayRegistered = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.status = "중계 서버에 방을 등록했습니다 — 방 코드 \(self.relayRoom) 를 상대에게 알려주세요"
+            }
+        }
+        host.startRelay(server: endpoint, room: relayRoom,
+                        secret: relaySecret.isEmpty ? nil : relaySecret,
+                        hostName: playerName, rules: rules, modeSummary: modeSummary)
+        status = "중계 서버에 접속하는 중…"
+        screen = .hostingRoom
+    }
+
+    private func wireHostCallbacks() {
         host.onGuestMessage = { [weak self] msg in
             Task { @MainActor in self?.hostHandle(msg) }
         }
@@ -1084,11 +1156,128 @@ final class AppModel {
         host.onError = { [weak self] e in
             Task { @MainActor in self?.errorMessage = e }
         }
+        // 방을 못 열었으면 화면을 되돌린다.
+        //
+        // 예전에는 실패해도 그대로 "상대를 기다리는 중…" 으로 넘어갔다 —
+        // 열리지도 않은 방에서 기다리고, 그 상태로 초대까지 보낼 수 있었다
+        // (받은 사람은 있지도 않은 방을 찾다가 실패한다).
+        host.onListenFailed = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.errorMessage == nil {
+                    self.errorMessage = "방을 열지 못했습니다. 다른 앱이 포트를 쓰고 있거나 "
+                        + "로컬 네트워크 권한이 없을 수 있습니다."
+                }
+                self.resetToLobby()
+            }
+        }
+    }
 
-        host.start(roomName: roomName.isEmpty ? "\(playerName)의 방" : roomName,
-                   hostName: playerName, rules: rules, modeSummary: modeSummary)
-        status = "상대를 기다리는 중…"
-        screen = .hostingRoom
+    /// 게스트가 보낸 팀을 **호스트 데이터로 다시 만든다.**
+    ///
+    /// 엔진은 호스트에서만 도는데 팀만은 게스트가 계산해 보낸 것을 그대로 썼다.
+    /// 즉 레벨·스탯·HP·PP·기술 위력이 전부 상대 기기의 값이었다. 정상 클라이언트는
+    /// 방 규칙대로 만들어 보내므로 결과가 같지만, 프레임을 직접 만들면 Lv.100 스탯이나
+    /// 위력 999 짜리 기술이 그대로 배틀에 들어온다.
+    ///
+    /// 막는 방식은 **거절이 아니라 재계산**이다. PokeAPI 캐시 시점이 달라 값이 조금
+    /// 어긋났을 뿐인 정상 상대를 못 들어오게 막는 쪽이 더 나쁜 실패다.
+    /// 고르는 것(종·성격·폼·도구·특성·기술 **이름**)은 게스트를 따르고,
+    /// 그 결과로 정해지는 것(스탯·HP·PP·위력·무게·변신 자격)은 전부 여기서 다시 만든다.
+    private func sanitizeGuestTeam(_ team: [Battler]) async -> [Battler] {
+        var out: [Battler] = []
+        for b in team.prefix(6) {
+            guard let sp = try? await PokeAPI.shared.species(b.speciesID) else { continue }
+
+            // 기술은 **이름만** 받는다. 위력·명중·PP 는 호스트가 받아온 정의를 쓴다.
+            var moves: [MoveDef] = []
+            for slot in b.moves.prefix(4) {
+                if let m = try? await PokeAPI.shared.move(slot.def.name) {
+                    moves.append(m)
+                } else {
+                    moves.append(slot.def)      // 못 받아오면 그대로 (오프라인 대비)
+                }
+            }
+            guard !moves.isEmpty else { continue }
+
+            // 고른 폼이 있으면 그 폼의 종족값·타입으로 (로토무 히트 등)
+            var formStats: FormStats?
+            if let f = b.chosenForm {
+                if formCache[f] == nil { formCache[f] = try? await PokeAPI.shared.form(named: f) }
+                formStats = formCache[f]
+            }
+
+            // 도구·특성도 이름으로 다시 찾는다 (효과가 조작된 정의를 쓰지 않는다)
+            var item: ItemDef?
+            if let name = b.heldItem?.name { item = await ItemCatalog.shared.item(name) }
+            var ability: AbilityDef?
+            if let name = b.ability?.name { ability = await AbilityCatalog.shared.ability(name) }
+
+            // 성격은 Battler 에 한글명으로만 남아 있어 역매핑한다
+            let natureKey = Nature.koNames.first { $0.value == b.natureName }?.key ?? "serious"
+
+            let slot = RosterSlot(id: b.id, speciesID: b.speciesID, nature: natureKey,
+                                  rarity: "common", isShiny: b.isShiny,
+                                  origin: .dex, fullyEvolved: b.fullyEvolved)
+            // 레벨은 **방 규칙**을 따른다 — 상대가 보낸 레벨을 믿지 않는다
+            out.append(Battler.make(slot: slot, species: sp, moves: moves,
+                                    level: rules.level, heldItem: item, ability: ability,
+                                    form: formStats, formName: b.chosenForm))
+        }
+        return out
+    }
+
+    /// 게스트가 들어왔다 — 팀을 확인하고 배틀을 준비한다.
+    private func beginBattleWithGuest(name: String, team: [Battler]) async {
+        var guestTeam = Array(team.prefix(rules.maxTeamSize))
+        var hostTeam = Array(myTeam.prefix(rules.maxTeamSize))
+
+        // 토게피 모드는 **양쪽 모두** 고정 팀이다.
+        // 게스트는 규칙을 알기 전에 팀을 보내므로 호스트가 여기서 덮어쓴다.
+        // (고정 팀을 못 만들었으면 덮어쓸 것이 없으므로 평소 경로로 확인한다 —
+        //  그러지 않으면 검증하지 않은 팀이 그대로 들어온다)
+        if rules.metronomeMode, !metronomeTeamSnapshot.isEmpty {
+            hostTeam = metronomeTeamSnapshot
+            guestTeam = metronomeTeamSnapshot
+        } else {
+            status = "상대 팀을 확인하는 중…"
+            guestTeam = await sanitizeGuestTeam(guestTeam)
+            guard !guestTeam.isEmpty else {
+                host.send(.joinRejected(reason: "상대 팀을 확인할 수 없습니다 (종 데이터를 받지 못했습니다)"))
+                status = "상대를 기다리는 중…"
+                return
+            }
+        }
+
+        // 상대 팀의 메가·거다이맥스·원시회귀 폼을 **엔진을 만들기 전에** 받아둔다.
+        // 예전에는 엔진을 먼저 만들고 나중에 캐시를 다시 심어서,
+        // 그 사이에 선언된 변신이 조용히 무시될 수 있었다.
+        await preloadForms(for: guestTeam)
+
+        guard let chart = typeChart else {
+            host.send(.joinRejected(reason: "호스트가 상성표를 아직 불러오지 못했습니다"))
+            status = "상대를 기다리는 중…"
+            return
+        }
+
+        let st = BattleState(
+            rules: rules,
+            sides: [
+                SideState(playerName: playerName, team: hostTeam, activeIndex: 0),
+                SideState(playerName: name, team: guestTeam, activeIndex: 0)
+            ]
+        )
+        var e = BattleEngine(state: st, chart: chart, seed: UInt64.random(in: 1...UInt64.max))
+        installCaches(into: &e)
+        engine = e
+        present(e.state)
+
+        host.send(.joinAccepted(rules: rules, hostName: playerName, yourSide: BattleSide.guest.rawValue))
+        hostLead = nil; guestLead = nil
+        chosenLead = nil
+        screen = .chooseLead
+        status = "선봉을 고르세요"
+        autoPickLeadIfNeeded()
     }
 
     private func hostHandle(_ msg: Wire) {
@@ -1101,48 +1290,15 @@ final class AppModel {
                 return
             }
             opponentName = name
-            var guestTeam = Array(team.prefix(rules.maxTeamSize))
-            var hostTeam = Array(myTeam.prefix(rules.maxTeamSize))
-
-            // 토게피 모드는 **양쪽 모두** 고정 팀이다.
-            // 게스트는 규칙을 알기 전에 팀을 보내므로 호스트가 여기서 덮어쓴다.
-            if rules.metronomeMode {
-                let fixed = metronomeTeamSnapshot
-                if !fixed.isEmpty {
-                    hostTeam = fixed
-                    guestTeam = fixed
-                }
-            }
-
-            let st = BattleState(
-                rules: rules,
-                sides: [
-                    SideState(playerName: playerName, team: hostTeam, activeIndex: 0),
-                    SideState(playerName: name, team: guestTeam, activeIndex: 0)
-                ]
-            )
-            guard let chart = typeChart else {
-                host.send(.joinRejected(reason: "호스트가 상성표를 아직 불러오지 못했습니다"))
-                return
-            }
-            var e = BattleEngine(state: st, chart: chart, seed: UInt64.random(in: 1...UInt64.max))
-            installCaches(into: &e)
-            engine = e
-            present(e.state)
-            // 상대 팀의 메가/거다이맥스 폼도 필요하다 — 받아서 엔진에 다시 심는다
+            // 내가 부른 사람이 실제로 들어왔다 — 초대는 성사됐다.
+            //
+            // 이걸 지우지 않으면 LobbyPresence 의 20초 회신 타이머가 그대로 터져서
+            // **배틀에 들어간 뒤에** "초대를 보낼 수 없었습니다" 가 뜬다.
+            // 수락 경로에는 회신 메시지가 없으므로 여기가 성사를 아는 시점이다.
+            invitesSent.remove(name)
             Task { @MainActor in
-                await self.preloadForms(for: guestTeam)
-                if var e2 = self.engine {
-                    self.installCaches(into: &e2)
-                    self.engine = e2
-                }
+                await self.beginBattleWithGuest(name: name, team: team)
             }
-            host.send(.joinAccepted(rules: rules, hostName: playerName, yourSide: BattleSide.guest.rawValue))
-            hostLead = nil; guestLead = nil
-            chosenLead = nil
-            screen = .chooseLead
-            status = "선봉을 고르세요"
-            autoPickLeadIfNeeded()
 
         case .chooseLead(let index):
             guestLead = index
@@ -1590,6 +1746,84 @@ final class AppModel {
         )
     }
 
+    // MARK: 중계 서버로 참가
+
+    /// 중계 서버에 방 코드로 들어간다.
+    ///
+    /// 짝이 맞은 뒤로는 직접 접속과 **완전히 같다** — 방 규칙(마리 수·레벨)은
+    /// 호스트가 보내는 `roomInfo` 로 받아서 그때 팀을 만든다.
+    func joinViaRelay() async {
+        guard let endpoint = DirectConnect.endpoint(from: relayServer,
+                                                    defaultPort: RelayConfig.defaultPort) else {
+            errorMessage = "중계 서버 주소를 알아볼 수 없습니다. "
+                + "example.com:\(RelayConfig.defaultPort) 처럼 적어주세요."
+            return
+        }
+        let code = RelayConfig.normalize(room: relayRoom)
+        guard !code.isEmpty else {
+            errorMessage = "방 코드를 적어주세요. 방을 연 사람이 알려줍니다."
+            return
+        }
+        relayRoom = code
+        guard !roster.isEmpty else { errorMessage = "포켓몬이 없습니다."; return }
+
+        role = .guest
+        mySide = .guest
+        screen = .joiningRoom
+        status = "중계 서버에 접속하는 중…"
+        awaitingRoomInfo = true
+
+        let link = PeerLink(to: endpoint)
+        link.onProtocolError = { [weak self] msg in
+            Task { @MainActor in
+                self?.errorMessage = msg
+                self?.resetToLobby()
+            }
+        }
+        guestLink = link
+        link.startRelay(
+            hello: RelayHello(role: .guest, room: code, name: playerName,
+                              secret: relaySecret.isEmpty ? nil : relaySecret),
+            onRegistered: {},
+            onPaired: { [weak self] peer in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.opponentName = peer ?? ""
+                    self.status = "\(peer ?? "상대") 님과 연결됐습니다 — 방 정보를 기다리는 중…"
+                }
+            },
+            onRejected: { [weak self] why in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.awaitingRoomInfo = false
+                    self.errorMessage = "중계 서버가 거절했습니다: \(why)"
+                    self.resetToLobby()
+                }
+            },
+            onMessage: { [weak self] msg in
+                Task { @MainActor in self?.guestHandle(msg) }
+            },
+            onState: { [weak self] st in
+                Task { @MainActor in
+                    guard let self else { return }
+                    switch st {
+                    case .failed(let e):
+                        self.awaitingRoomInfo = false
+                        self.errorMessage = "중계 서버에 접속하지 못했습니다: \(e.localizedDescription)"
+                        self.resetToLobby()
+                    case .cancelled:
+                        self.awaitingRoomInfo = false
+                        if self.screen == .battle || self.screen == .chooseLead {
+                            self.errorMessage = "상대와 연결이 끊어졌습니다."
+                        }
+                        self.resetToLobby()
+                    default: break
+                    }
+                }
+            }
+        )
+    }
+
     /// 방 정보를 받은 뒤에야 팀을 만들어 보낸다 (직접 접속 경로).
     private func sendTeamAfterRoomInfo() async {
         trimSelectionToCap()
@@ -1618,23 +1852,32 @@ final class AppModel {
         case .joinAccepted(let r, let hostName, let side):
             // 팀은 이미 보냈다. 상한이 더 작아졌으면 호스트가 앞에서 자르므로 우리도 맞춘다.
             rules = r
-            // 토게피 모드는 팀이 고정이므로 호스트 규칙을 받은 뒤 다시 만든다
-            if r.metronomeMode {
-                Task { @MainActor in
-                    self.status = "토게피 모드 준비 중…"
-                    await self.preloadMetronomePool()
-                    self.myTeam = await self.buildMetronomeTeam()
-                    self.autoPickLeadIfNeeded()
-                }
-            } else if myTeam.count > r.maxTeamSize {
-                myTeam = Array(myTeam.prefix(r.maxTeamSize))
-            }
             opponentName = hostName
             mySide = BattleSide(rawValue: side) ?? .guest
             chosenLead = nil
             screen = .chooseLead
             status = "선봉을 고르세요"
-            autoPickLeadIfNeeded()
+
+            // 자동 선봉은 **팀이 확정된 뒤에** 뽑아야 한다.
+            //
+            // 토게피 모드는 팀이 고정(1마리)이라 호스트 규칙을 받고 다시 만드는데,
+            // 예전에는 그 Task 를 예약해두고 여기서 바로 뽑았다. 그 시점의
+            // myTeam 은 아직 join 때 보낸 원래 팀(최대 6마리)이라 범위를 벗어난
+            // 인덱스가 나갔고, 호스트는 그걸 0 으로 보정하며 경고를 남겼다.
+            if r.metronomeMode {
+                Task { @MainActor in
+                    self.status = "토게피 모드 준비 중…"
+                    await self.preloadMetronomePool()
+                    self.myTeam = await self.buildMetronomeTeam()
+                    self.status = "선봉을 고르세요"
+                    self.autoPickLeadIfNeeded()
+                }
+            } else {
+                if myTeam.count > r.maxTeamSize {
+                    myTeam = Array(myTeam.prefix(r.maxTeamSize))
+                }
+                autoPickLeadIfNeeded()
+            }
 
         case .roomInfo(let r, let hostName, let roomName):
             // 직접 접속으로 들어온 경우에만 의미가 있다 — 팀을 이 규칙으로 다시 만든다.

@@ -350,9 +350,20 @@ struct BattleEngine {
         guard state.side(side).team.indices.contains(idx) else { return }
         var b = state.sides[side.rawValue].team[idx]
         guard !b.isFainted else { return }
-        if state.rules.abilities, isMagicGuard(b) { return }
+        // 매직가드는 **피해**만 막는다 — 독압정의 상태이상은 막지 못한다
+        let blocksDamage = state.rules.abilities && isMagicGuard(b)
 
         for h in Hazard.allCases where hazards.contains(h) {
+            if blocksDamage, h.inflictsStatus == nil { continue }
+            // 독압정 — 피해가 아니라 독을 건다.
+            // 떠 있는 쪽(비행·부유)과 독·강철 타입에게는 통하지 않는다.
+            if let ail = h.inflictsStatus {
+                guard b.isGrounded, b.status == .none,
+                      !b.types.contains(.poison), !b.types.contains(.steel) else { continue }
+                b.status = ail
+                say("\(KO.t(b.name)) 독압정 때문에 독 상태가 되었다!")
+                continue
+            }
             let mult = chart.multiplier(attack: h.type, defenders: b.types)
             guard mult > 0 else { continue }
             let dmg = h.damage(maxHP: b.maxHP, multiplier: mult)
@@ -432,6 +443,128 @@ struct BattleEngine {
             state.field.setWeather(w, turns: 5)
             say("\(b.name)의 \(b.ability?.display ?? "특성")! \(w.ko) 상태가 되었다!")
         }
+        // 끝의대지·시작의바다 — 날씨를 **고정**한다 (턴이 줄지 않는다)
+        if state.rules.weather, case .weatherLock(let w) = b.abilityKind {
+            state.field.setWeather(w, turns: 9_999)
+            say("\(b.name)의 \(b.ability?.display ?? "특성")! \(w.ko)가 계속된다!")
+        }
+        // 필드를 만드는 특성 (일렉트릭메이커 등)
+        if state.rules.weather, case .terrainOnEntry(let t) = b.abilityKind {
+            state.field.setTerrain(t, turns: 5)
+            say("\(b.name)의 \(b.ability?.display ?? "특성")! 발밑이 \(t.ko) 상태가 되었다!")
+        }
+        // 하드론엔진·오리하르콘펄스 — 필드/날씨를 만들고 자기 능력도 올린다.
+        // 능력 상승은 랭크가 아니라 상시 배율이라 computeDamage 에서 본다.
+        if state.rules.weather, case .surgeAndBoost(let t, let w, _, _) = b.abilityKind {
+            if let t { state.field.setTerrain(t, turns: 5) }
+            if let w { state.field.setWeather(w, turns: 5) }
+            say("\(b.name)의 \(b.ability?.display ?? "특성")! 기세가 올랐다!")
+        }
+        // 불요의검·부동의방패 — 등장 시 능력이 오른다
+        if case .boostOnEntry(let stat, let n) = b.abilityKind {
+            var me = state.sides[side.rawValue].team[idx]
+            let cur = me.stages[stat] ?? 0
+            if cur < 6 {
+                me.stages[stat] = min(6, cur + n)
+                state.sides[side.rawValue].team[idx] = me
+                say("\(me.name)의 \(me.ability?.display ?? "특성")! \(KO.s(stat.ko)) 올라갔다!")
+            }
+        }
+        // 예지몽·위험예지·전율 — 정보를 알려준다 (원작도 효과는 표시뿐이다)
+        if case .revealOnEntry = b.abilityKind {
+            let fIdx = state.side(side.other).activeIndex
+            if state.side(side.other).team.indices.contains(fIdx) {
+                let f = state.side(side.other).team[fIdx]
+                let strongest = f.moves.max { ($0.def.power ?? 0) < ($1.def.power ?? 0) }
+                let note = strongest.map { "\($0.def.display)" } ?? "알 수 없는 기술"
+                say("\(b.name)의 \(b.ability?.display ?? "특성")! "
+                    + "\(f.name)의 \(note)을(를) 감지했다!")
+            }
+        }
+        // 절대잠듦 — 항상 잠든 것으로 취급된다 (행동은 할 수 있다)
+        if case .comatose = b.abilityKind {
+            say("\(b.name)는 잠든 채로 싸운다!")
+        }
+        // 스크린클리너 — 양쪽 화면을 없앤다
+        if case .screenCleaner = b.abilityKind {
+            for sd in [BattleSide.host, .guest] {
+                state.sides[sd.rawValue].reflectTurns = 0
+                state.sides[sd.rawValue].lightScreenTurns = 0
+                state.sides[sd.rawValue].auroraVeilTurns = 0
+            }
+            say("\(b.name)의 스크린클리너! 양쪽 화면이 사라졌다!")
+        }
+        // 오거폰 — 쓰고 있는 가면이 어느 능력치를 올리는지 정한다
+        if case .embodyAspect = b.abilityKind {
+            let form = b.chosenForm ?? b.visualForm ?? ""
+            let stat: Stat = form.contains("wellspring") ? .spDefense
+                           : form.contains("hearthflame") ? .attack
+                           : form.contains("cornerstone") ? .defense
+                           : .speed                     // 벽록의가면(기본)
+            var me = state.sides[side.rawValue].team[idx]
+            if (me.stages[stat] ?? 0) < 6 {
+                me.stages[stat] = min(6, (me.stages[stat] ?? 0) + 1)
+                state.sides[side.rawValue].team[idx] = me
+                say("\(me.name)의 벽록의가면! \(KO.s(stat.ko)) 올라갔다!")
+            }
+        }
+        // 아주달콤한꿀 — 상대 회피율이 내려간다
+        if case .lowerFoeEvasionOnEntry = b.abilityKind {
+            let foe = side.other
+            let fi = state.side(foe).activeIndex
+            if state.side(foe).team.indices.contains(fi) {
+                var f = state.sides[foe.rawValue].team[fi]
+                if f.evasionStage > -6 {
+                    f.evasionStage -= 1
+                    state.sides[foe.rawValue].team[fi] = f
+                    say("\(b.name)의 아주달콤한꿀! \(f.name)의 회피율이 내려갔다!")
+                }
+            }
+        }
+        // 미미크리 — 필드에 따라 자기 타입이 바뀐다
+        if case .mimicry = b.abilityKind, state.field.hasTerrain {
+            let t: PType? = {
+                switch state.field.terrain {
+                case .electric: return .electric
+                case .grassy:   return .grass
+                case .misty:    return .fairy
+                case .psychic:  return .psychic
+                case .none:     return nil
+                }
+            }()
+            if let t {
+                var me = state.sides[side.rawValue].team[idx]
+                me.types = [t]
+                state.sides[side.rawValue].team[idx] = me
+                say("\(me.name)는 미미크리로 \(t.ko) 타입이 되었다!")
+            }
+        }
+        // 뉴트럴가스 — 양쪽 특성이 사라진다
+        if case .neutralizingGas = b.abilityKind {
+            let foe = side.other
+            let fi = state.side(foe).activeIndex
+            if state.side(foe).team.indices.contains(fi) {
+                var f = state.sides[foe.rawValue].team[fi]
+                f.abilitySuppressed = true
+                state.sides[foe.rawValue].team[fi] = f
+                say("\(b.name)의 뉴트럴가스! 주위의 특성이 사라졌다!")
+            }
+        }
+        // 상대를 묶는 특성 (개미지옥·그림자밟기·자기력)
+        if case .trapFoe(let onlyType) = b.abilityKind {
+            let foe = side.other
+            let fi = state.side(foe).activeIndex
+            if state.side(foe).team.indices.contains(fi) {
+                var f = state.sides[foe.rawValue].team[fi]
+                let applies = onlyType == nil || f.types.contains(onlyType!)
+                if applies, f.trappedTurns == 0 {
+                    f.trappedTurns = 99
+                    state.sides[foe.rawValue].team[fi] = f
+                    say("\(f.name)는 \(b.ability?.display ?? "특성") 때문에 도망칠 수 없다!")
+                }
+            }
+        }
+        applyEntryItems(side)
 
         guard case .intimidate = b.abilityKind else { return }
         let foe = side.other
@@ -442,6 +575,13 @@ struct BattleEngine {
         if case .clearBody = f.abilityKind {
             say("\(f.name)는 \(f.ability?.display ?? "특성") 때문에 능력치가 떨어지지 않는다!")
             return
+        }
+        // 아드레날린오브 — 위협을 받으면 오히려 스피드가 오른다
+        if state.rules.itemEffects, case .adrenalineOrb = f.itemKind, !f.itemConsumed {
+            f.itemConsumed = true
+            f.stages[.speed] = min(6, (f.stages[.speed] ?? 0) + 1)
+            state.sides[foe.rawValue].team[fIdx] = f
+            say("\(f.name)는 아드레날린오브로 스피드가 올랐다!")
         }
         let cur = f.stages[.attack] ?? 0
         guard cur > -6 else { return }
@@ -715,7 +855,7 @@ struct BattleEngine {
                                                  form: b.chosenForm ?? b.visualForm)
             else { continue }
 
-            let weather = state.rules.weather && state.field.hasWeather ? state.field.weather : Weather.none
+            let weather = state.rules.weather && weatherIsActive ? state.field.weather : Weather.none
             let ratio = Double(b.currentHP) / Double(max(1, b.maxHP))
             var want: String?
 
@@ -804,6 +944,22 @@ struct BattleEngine {
         }
         var hp = priority(hostAction, .host), gp = priority(guestAction, .guest)
 
+        // 이앗열매 — HP 1/4 이하면 그 턴에 선공한다 (한 번만)
+        if state.rules.itemEffects {
+            func custap(_ side: BattleSide) -> Bool {
+                let b = state.side(side).active
+                guard !b.itemConsumed, b.currentHP * 4 <= b.maxHP,
+                      case .berryPinchPriority = b.itemKind else { return false }
+                var me = state.sides[side.rawValue].team[state.side(side).activeIndex]
+                me.itemConsumed = true
+                state.sides[side.rawValue].team[state.side(side).activeIndex] = me
+                say("\(me.name)는 이앗열매로 순서를 앞당겼다!")
+                return true
+            }
+            if custap(.host)  { hp += 1 }
+            if custap(.guest) { gp += 1 }
+        }
+
         // 특성 우선도 (짓궂은마음·질풍날개·굼뜸)
         if state.rules.abilities {
             func abilityPriority(_ side: BattleSide, _ a: BattleAction) -> Int {
@@ -852,7 +1008,7 @@ struct BattleEngine {
             var v = Double(b.effective(.speed))
             if state.rules.itemEffects, case .choice(.speed) = b.itemKind { v *= 1.5 }
             // 엽록소·쓱쓱·모래헤치기·눈치우기
-            if state.rules.weather, state.field.hasWeather,
+            if state.rules.weather, weatherIsActive,
                case .weatherSpeedBoost(let w, let m) = b.abilityKind,
                w == state.field.weather { v *= m }
             if state.rules.abilities {
@@ -1132,7 +1288,28 @@ struct BattleEngine {
         }
 
         // Z기술 / 맥스기술 변환. 위력은 PokeAPI 가 주지 않으므로 원작 변환표를 쓴다.
-        let move = transformed(baseMove, attacker: attacker)
+        var move = transformed(baseMove, attacker: attacker)
+
+        // 에어레이트·페어리스킨·노말스킨 — 기술의 **타입 자체가** 바뀐다.
+        // 데미지 계산 전에 바꿔야 상성표가 새 타입으로 돌아간다.
+        if state.rules.abilities, move.damageClass != .status,
+           case .moveTypeConversion(let from, let to, let mult) = atk.abilityKind,
+           move.type != to, from == nil || move.type == from! {
+            move.type = to
+            if mult > 1 { move.power = move.power.map { Int(Double($0) * mult) } }
+            say("\(atkName)의 \(atk.ability?.display ?? "특성")으로 "
+                + "\(move.display)이(가) \(to.ko) 타입이 되었다!")
+        }
+
+        // 변환자재·리베로 — 쓴 기술의 타입으로 **자신이** 변한다 (자기타입일치가 붙는다)
+        if state.rules.abilities, case .userTypeMatchesMove = atk.abilityKind,
+           atk.types != [move.type] {
+            var a2 = state.side(attacker).active
+            a2.types = [move.type]
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+            atk.types = [move.type]
+            say("\(atkName)는 \(move.type.ko) 타입이 되었다!")
+        }
         if move.name != baseMove.name {
             say("\(atkName)의 \(baseMove.display) → \(move.display)!")
         } else if calledByMetronome != nil {
@@ -1292,10 +1469,79 @@ struct BattleEngine {
             return
         }
 
+        // 여왕의위엄·갑옷꼬리·눈부심 — 선공 기술이 통하지 않는다
+        if state.rules.abilities, effectivePriority(move, attacker: atk) > 0,
+           case .priorityBlock = state.side(defender).active.abilityKind,
+           !move.targetsSelf {
+            let d = state.side(defender).active
+            say("\(d.name)의 \(d.ability?.display ?? "특성")! 선공 기술은 통하지 않는다!")
+            return
+        }
+        // 옷무늬·아이스페이스 — 첫 공격을 한 번 무효로 한다
+        if state.rules.abilities, move.damageClass != .status {
+            var d = state.side(defender).active
+            if case .oneHitShield(let formAfter) = d.abilityKind, !d.shieldUsed {
+                d.shieldUsed = true
+                if let formAfter, let stats = formCache[formAfter] {
+                    d.applyAutoForm(formAfter, stats: stats, nature: Nature.named(natureOf(d)))
+                }
+                state.sides[defender.rawValue].team[state.side(defender).activeIndex] = d
+                say("\(d.name)의 \(d.ability?.display ?? "특성")! 공격을 막아냈다!")
+                return
+            }
+        }
+        // 원더스킨 — 상대 변화기가 절반만 맞는다
+        if state.rules.abilities, move.damageClass == .status, !move.targetsSelf,
+           case .statusMoveEvasion(let m) = state.side(defender).active.abilityKind,
+           !rng.chance(Int(m * 100)) {
+            say("\(state.side(defender).active.name)는 원더스킨으로 변화기를 흘려냈다!")
+            return
+        }
         // 방음 — 소리 기술 무효
         if state.rules.abilities, MoveFlags.isSound(move.name),
            case .soundImmunity = state.side(defender).active.abilityKind {
             say("\(state.side(defender).active.name)는 방음으로 소리 기술을 막았다!")
+            return
+        }
+        // 방탄 — 탄환 계열 기술 무효
+        if state.rules.abilities,
+           case .flagImmunity(let flag) = state.side(defender).active.abilityKind {
+            let blocked: Bool
+            switch flag {
+            case .bullet:  blocked = MoveFlags.isBullet(move.name)
+            case .punch:   blocked = MoveFlags.isPunch(move.name)
+            case .bite:    blocked = MoveFlags.isBite(move.name)
+            case .sound:   blocked = MoveFlags.isSound(move.name)
+            case .powder:  blocked = MoveFlags.isPowder(move.name)
+            case .contact: blocked = MoveFlags.isContact(move.name)
+            case .slicing: blocked = MoveFlags.isSlicing(move.name)
+            case .wind:    blocked = MoveFlags.isWind(move.name)
+            }
+            if blocked {
+                let d = state.side(defender).active
+                say("\(d.name)는 \(d.ability?.display ?? "특성")으로 기술을 막았다!")
+                return
+            }
+        }
+        // 황금몸(굿애즈골드) — 변화기가 통하지 않는다
+        if state.rules.abilities, move.damageClass == .status,
+           case .statusMoveImmunity = state.side(defender).active.abilityKind,
+           move.target != "self" {
+            let d = state.side(defender).active
+            say("\(d.name)는 \(d.ability?.display ?? "특성")으로 변화기를 막았다!")
+            return
+        }
+        // 정화의소금 — 상태이상 자체가 걸리지 않는다 (변화기는 여기서 막는다)
+        if state.rules.abilities, move.damageClass == .status, move.ailment != .none,
+           case .purifyingSalt = state.side(defender).active.abilityKind {
+            let d = state.side(defender).active
+            say("\(d.name)는 정화의소금으로 상태이상을 막았다!")
+            return
+        }
+        // 안전고글 — 가루 기술을 막는다
+        if state.rules.itemEffects, MoveFlags.isPowder(move.name),
+           case .safetyGoggles = state.side(defender).active.itemKind {
+            say("\(state.side(defender).active.name)는 안전고글로 가루를 막았다!")
             return
         }
         // 가루 기술은 풀타입에게 통하지 않는다 (원작 규칙)
@@ -1345,7 +1591,10 @@ struct BattleEngine {
         if move.selfKO, move.selfKOBeforeMove { applySelfKO(attacker) }
 
         // 공격기 — 다단히트 지원
-        let hits = hitCount(move)
+        let hits = hitCount(move, attacker: attacker)
+        // 노기의비늘·벌서크는 "절반을 **넘어갔다가** 아래로 떨어진 순간" 만
+        // 발동하므로 때리기 전 HP 를 기억해야 한다.
+        let defenderHPBefore = state.side(defender).active.currentHP
         var totalDealt = 0
         var lastMult = 1.0
         var didCrit = false
@@ -1492,9 +1741,71 @@ struct BattleEngine {
             applyContactAbility(attacker: attacker, defender: defender)
         }
 
-        // 접촉 기술에 대한 반격 특성 (정전기·불꽃몸·거친피부 등)
-        if state.rules.abilities, totalDealt > 0, MoveFlags.isContact(move.name) {
+        // 독쇠사슬 — 접촉 공격 시 확률로 상대를 맹독으로 만든다
+        if state.rules.abilities, totalDealt > 0,
+           case .toxicChain(let percent) = state.side(attacker).active.abilityKind,
+           rng.chance(percent) {
+            inflictDirect(.toxic, on: defender, source: "독쇠사슬")
+        }
+        // 배드컴패니(스텐치) — 확률로 상대를 풀죽게 한다
+        if state.rules.abilities, totalDealt > 0,
+           case .addFlinch(let percent) = state.side(attacker).active.abilityKind,
+           rng.chance(percent) {
+            var d = state.side(defender).active
+            if !d.isFainted {
+                d.mustFlinch = true
+                state.sides[defender.rawValue].team[state.side(defender).activeIndex] = d
+            }
+        }
+        // 접촉 기술에 대한 반격 특성 (정전기·불꽃몸·거친피부 등).
+        // 원격·방호패드를 가진 상대에게는 접촉으로 취급하지 않는다.
+        if state.rules.abilities, totalDealt > 0, MoveFlags.isContact(move.name),
+           !isNonContact(state.side(attacker).active) {
             applyContactAbility(attacker: attacker, defender: defender)
+        }
+
+        // 맞은 쪽 자신에게 일어나는 특성 (노기어깨·벌서크·변색 …)
+        if totalDealt > 0 {
+            applyHitReaction(defender: defender, attacker: attacker, move: move,
+                             wasCritical: didCrit, hpBefore: defenderHPBefore)
+        }
+        // 맞았을 때 반응하는 **도구** (고무장갑·약점보험·흡수구슬 …)
+        if totalDealt > 0 {
+            applyHitItems(defender: defender, attacker: attacker, move: move,
+                          typeMultiplier: lastMult)
+        }
+        // 젬을 썼으면 사라진다
+        if state.rules.itemEffects, totalDealt > 0 || lastMult == 0,
+           case .typeGem(let t, _) = state.side(attacker).active.itemKind,
+           move.type == t {
+            var a2 = state.side(attacker).active
+            if !a2.itemConsumed {
+                a2.itemConsumed = true
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                say("\(a2.name)의 \(a2.heldItem?.koName ?? "젬")을(를) 다 썼다!")
+            }
+        }
+        // 조개껍질방울 — 준 데미지의 일부를 회복한다
+        if totalDealt > 0, state.rules.itemEffects,
+           case .shellBell(let denom) = state.side(attacker).active.itemKind {
+            var a2 = state.side(attacker).active
+            let heal = max(1, totalDealt / denom)
+            if a2.currentHP < a2.maxHP, !a2.isFainted {
+                a2.currentHP = min(a2.maxHP, a2.currentHP + heal)
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                say("\(a2.name)는 조개껍질방울로 체력을 회복했다!")
+            }
+        }
+        // 목청스프레이 — 소리 기술을 쓰면 특공이 오른다 (1회)
+        if state.rules.itemEffects, MoveFlags.isSound(move.name),
+           case .throatSpray(let stat, let n) = state.side(attacker).active.itemKind {
+            var a2 = state.side(attacker).active
+            if !a2.itemConsumed, (a2.stages[stat] ?? 0) < 6 {
+                a2.stages[stat] = min(6, (a2.stages[stat] ?? 0) + n)
+                a2.itemConsumed = true
+                state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+                say("\(a2.name)는 목청스프레이로 \(KO.s(stat.ko)) 올랐다!")
+            }
         }
 
         // 거다이맥스 전용기 추가 효과
@@ -1597,9 +1908,221 @@ struct BattleEngine {
             say("\(KO.t(a.name)) \(d.ability?.display ?? "특성") 때문에 피해를 입었다!")
             checkFaint(attacker)
 
+        // 미라·잔향 — 접촉해 온 상대의 특성을 덮어쓴다.
+        // 원작에서 가장 강력한 방어 특성 중 하나다 (상대 특성이 사라진다).
+        case .abilityInfect(let newName):
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted, a.ability?.name != newName else { return }
+            if case .stickyHold = a.abilityKind { return }
+            let old = a.ability?.display ?? "특성"
+            a.ability = AbilityDef(name: newName, koName: "미라",
+                                   shortEffect: "", kind: .abilityInfect(newName))
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            say("\(a.name)의 \(old)이(가) 미라가 되었다!")
+
+        // 저주받은육체(퍼리시바디) — 접촉해 오면 양쪽에 멸망의노래가 걸린다
+        case .perishBody:
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            var me = state.sides[defender.rawValue].team[state.side(defender).activeIndex]
+            guard !a.isFainted, a.perishTurns == 0 else { return }
+            a.perishTurns = 4
+            me.perishTurns = 4
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            state.sides[defender.rawValue].team[state.side(defender).activeIndex] = me
+            say("\(me.name)의 저주받은육체! 양쪽 모두 3턴 후에 쓰러진다!")
+
         default:
             break
         }
+    }
+
+    /// 등장할 때 발동하는 도구 (필드 씨앗).
+    ///
+    /// 필드가 **이미 깔려 있을 때** 등장해야 발동한다. 필드가 나중에 깔리면
+    /// 그 시점에도 발동해야 하지만, 싱글에서 그런 순서는 드물어 등장 시점만 본다.
+    private mutating func applyEntryItems(_ side: BattleSide) {
+        guard state.rules.itemEffects else { return }
+        let idx = state.side(side).activeIndex
+        guard state.side(side).team.indices.contains(idx) else { return }
+        var b = state.sides[side.rawValue].team[idx]
+        guard !b.isFainted, !b.itemConsumed else { return }
+
+        if case .terrainSeed(let terrain, let stat, let n) = b.itemKind,
+           state.field.terrain == terrain, (b.stages[stat] ?? 0) < 6 {
+            b.stages[stat] = min(6, (b.stages[stat] ?? 0) + n)
+            b.itemConsumed = true
+            state.sides[side.rawValue].team[idx] = b
+            say("\(b.name)는 \(b.heldItem?.koName ?? "씨앗")으로 \(KO.s(stat.ko)) 올랐다!")
+        }
+    }
+
+    /// 맞았을 때 반응하는 도구.
+    ///
+    /// 특성(applyHitReaction) 과 나눠 둔 이유는 규칙 스위치가 다르기 때문이다 —
+    /// 도구 효과는 `rules.itemEffects`, 특성은 `rules.abilities` 로 끈다.
+    private mutating func applyHitItems(defender: BattleSide, attacker: BattleSide,
+                                        move: MoveDef, typeMultiplier: Double) {
+        guard state.rules.itemEffects else { return }
+        let idx = state.side(defender).activeIndex
+        guard state.side(defender).team.indices.contains(idx) else { return }
+        var d = state.sides[defender.rawValue].team[idx]
+        guard !d.isFainted else { return }
+
+        switch d.itemKind {
+        // 고무장갑 — 접촉해 온 상대가 피해를 입는다
+        case .contactDamage(let denom):
+            guard MoveFlags.isContact(move.name),
+                  !isNonContact(state.side(attacker).active) else { return }
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted, !(state.rules.abilities && isMagicGuard(a)) else { return }
+            a.currentHP = max(0, a.currentHP - max(1, a.maxHP / denom))
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            say("\(KO.t(a.name)) \(d.heldItem?.koName ?? "도구") 때문에 피해를 입었다!")
+            checkFaint(attacker)
+
+        // 공기풍선 — 맞으면 터진다 (그 전까지 땅 기술이 통하지 않았다)
+        case .airBalloon:
+            d.itemConsumed = true
+            state.sides[defender.rawValue].team[idx] = d
+            say("\(d.name)의 공기풍선이 터졌다!")
+
+        // 약점보험 — 효과가 굉장한 기술을 맞으면 공격·특공이 크게 오른다
+        case .weaknessPolicy:
+            guard typeMultiplier >= 2, move.damageClass != .status, !d.itemConsumed else { return }
+            d.stages[.attack] = min(6, (d.stages[.attack] ?? 0) + 2)
+            d.stages[.spAttack] = min(6, (d.stages[.spAttack] ?? 0) + 2)
+            d.itemConsumed = true
+            state.sides[defender.rawValue].team[idx] = d
+            say("\(d.name)는 약점보험으로 공격과 특공이 크게 올랐다!")
+
+        // 흡수구슬 계열 — 특정 타입에 맞으면 능력이 오른다 (1회)
+        case .boostWhenHitByType(let type, let stat, let n):
+            guard move.type == type, !d.itemConsumed, (d.stages[stat] ?? 0) < 6 else { return }
+            d.stages[stat] = min(6, (d.stages[stat] ?? 0) + n)
+            d.itemConsumed = true
+            state.sides[defender.rawValue].team[idx] = d
+            say("\(d.name)는 \(d.heldItem?.koName ?? "도구")으로 \(KO.s(stat.ko)) 올랐다!")
+
+        // 자보열매·로플열매 — 그 분류로 맞으면 상대에게 되돌린다
+        case .berryRetaliate(let cls, let denom):
+            guard move.damageClass == cls, !d.itemConsumed else { return }
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted, !(state.rules.abilities && isMagicGuard(a)) else { return }
+            a.currentHP = max(0, a.currentHP - max(1, a.maxHP / denom))
+            d.itemConsumed = true
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            state.sides[defender.rawValue].team[idx] = d
+            say("\(KO.t(a.name)) \(d.heldItem?.koName ?? "열매") 때문에 피해를 입었다!")
+            checkFaint(attacker)
+
+        // 규열매·마란가열매 — 그 분류로 맞으면 방어가 오른다
+        case .berryBoostOnHit(let cls, let stat, let n):
+            guard move.damageClass == cls, !d.itemConsumed,
+                  (d.stages[stat] ?? 0) < 6 else { return }
+            d.stages[stat] = min(6, (d.stages[stat] ?? 0) + n)
+            d.itemConsumed = true
+            state.sides[defender.rawValue].team[idx] = d
+            say("\(d.name)는 \(d.heldItem?.koName ?? "열매")으로 \(KO.s(stat.ko)) 올랐다!")
+
+        // 이상한열매 — 효과가 굉장한 기술을 맞으면 회복한다
+        case .berryHealOnSuperEffective(let denom):
+            guard typeMultiplier >= 2, !d.itemConsumed, d.currentHP < d.maxHP else { return }
+            d.currentHP = min(d.maxHP, d.currentHP + max(1, d.maxHP / denom))
+            d.itemConsumed = true
+            state.sides[defender.rawValue].team[idx] = d
+            say("\(d.name)는 이상한열매로 체력을 회복했다!")
+
+        // 끈끈이바늘 — 접촉해 온 상대에게 옮겨간다
+        case .stickyBarb:
+            guard MoveFlags.isContact(move.name) else { return }
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted, a.heldItem == nil || a.itemConsumed else { return }
+            a.heldItem = d.heldItem
+            a.itemConsumed = false
+            d.heldItem = nil
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            state.sides[defender.rawValue].team[idx] = d
+            say("끈끈이바늘이 \(a.name)에게 옮겨붙었다!")
+
+        default:
+            break
+        }
+    }
+
+    /// 맞았을 때 **방어측 자신에게** 일어나는 특성 효과.
+    ///
+    /// applyContactAbility 는 공격측에게 되돌리는 것만 다룬다. 이쪽은
+    /// 노기어깨·벌서크처럼 맞은 쪽이 강해지는 것들이다.
+    private mutating func applyHitReaction(defender: BattleSide, attacker: BattleSide,
+                                           move: MoveDef, wasCritical: Bool,
+                                           hpBefore: Int) {
+        guard state.rules.abilities else { return }
+        let idx = state.side(defender).activeIndex
+        guard state.side(defender).team.indices.contains(idx) else { return }
+        var d = state.sides[defender.rawValue].team[idx]
+        guard !d.isFainted else { return }
+        let name = d.ability?.display ?? "특성"
+
+        switch d.abilityKind {
+        // 노기어깨 — 급소를 맞으면 공격이 최대(+6)가 된다
+        case .angerPoint:
+            guard wasCritical, (d.stages[.attack] ?? 0) < 6 else { return }
+            d.stages[.attack] = 6
+            say("\(d.name)의 \(name)! 공격이 최대까지 올라갔다!")
+
+        // 노기의비늘 — HP 가 절반을 **넘어갔다가 아래로** 떨어진 순간에만 발동
+        case .angerShell:
+            guard hpBefore * 2 > d.maxHP, d.currentHP * 2 <= d.maxHP else { return }
+            for st in [Stat.attack, .spAttack, .speed] {
+                d.stages[st] = min(6, (d.stages[st] ?? 0) + 1)
+            }
+            for st in [Stat.defense, .spDefense] {
+                d.stages[st] = max(-6, (d.stages[st] ?? 0) - 1)
+            }
+            say("\(d.name)의 \(name)! 공격·특공·스피드가 올라가고 방어가 내려갔다!")
+
+        // 벌서크 — HP 가 절반 아래로 떨어진 순간 특공 상승
+        case .berserk(let stat, let n):
+            guard hpBefore * 2 > d.maxHP, d.currentHP * 2 <= d.maxHP else { return }
+            let cur = d.stages[stat] ?? 0
+            guard cur < 6 else { return }
+            d.stages[stat] = min(6, cur + n)
+            say("\(d.name)의 \(name)! \(KO.s(stat.ko)) 올라갔다!")
+
+        // 목화솜 — 맞으면 상대 스피드가 내려간다
+        case .cottonDown(let stat, let n):
+            var a = state.sides[attacker.rawValue].team[state.side(attacker).activeIndex]
+            guard !a.isFainted else { return }
+            if case .clearBody = a.abilityKind { return }
+            let cur = a.stages[stat] ?? 0
+            guard cur > -6 else { return }
+            a.stages[stat] = max(-6, cur - n)
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a
+            say("\(d.name)의 \(name)! \(a.name)의 \(KO.s(stat.ko)) 내려갔다!")
+
+        // 변색 — 맞은 기술의 타입으로 변한다
+        case .colorChange:
+            guard move.damageClass != .status, d.types != [move.type] else { return }
+            d.types = [move.type]
+            say("\(d.name)는 \(move.type.ko) 타입이 되었다!")
+
+        // 독가스가루 — 물리 공격을 맞으면 상대 진영에 장애물을 깐다
+        case .hazardWhenHit(let hazard, let cls):
+            guard move.damageClass == cls,
+                  !state.side(attacker).hazards.contains(hazard) else { return }
+            state.sides[attacker.rawValue].hazards.insert(hazard)
+            say("\(d.name)의 \(name)! 상대 발밑에 \(hazard.ko)가 흩어졌다!")
+
+        // 일렉트릭변환·윈드파워 — 맞으면 다음 전기 기술이 두 배가 된다
+        case .chargeWhenHit:
+            guard !d.chargedByAbility else { return }
+            d.chargedByAbility = true
+            say("\(d.name)의 \(name)! 전기를 모았다!")
+
+        default:
+            return
+        }
+        state.sides[defender.rawValue].team[idx] = d
     }
 
     /// 거다이맥스 전용기의 추가 효과를 적용한다.
@@ -1974,6 +2497,10 @@ struct BattleEngine {
         // 단 떨어뜨리기로 땅에 끌어내려졌으면 소용없다.
         if !defender.grounded, defender.magnetRiseTurns > 0, move.type == .ground,
            move.damageClass != .status { return false }
+        // 공기풍선 — 터지기 전까지 땅 기술이 통하지 않는다
+        if state.rules.itemEffects, !defender.grounded, move.type == .ground,
+           move.damageClass != .status,
+           case .airBalloon = defender.itemKind { return false }
         // 노가드 — 양쪽 중 하나라도 있으면 반드시 명중
         if state.rules.abilities {
             if case .noGuard = attacker.abilityKind { return true }
@@ -1987,22 +2514,39 @@ struct BattleEngine {
             if case .accuracyMultiplier(let m) = attacker.abilityKind { accMult *= m }
             if case .hustle = attacker.abilityKind, move.damageClass == .physical { accMult *= 0.8 }
         }
+        if state.rules.itemEffects {
+            // 핀포인트렌즈 — 내 명중률이 오른다
+            if case .accuracyMultiplier(let m) = attacker.itemKind { accMult *= m }
+            // 오파상 — **상대**의 도구가 내 명중률을 깎는다
+            if case .accuracyMultiplier(let m) = defender.itemKind, m < 1 { accMult *= m }
+            // 졸보기 — 내가 나중에 움직일 때만 명중률이 오른다
+            if case .accuracyIfSlower(let m) = attacker.itemKind,
+               attacker.effective(.speed) < defender.effective(.speed) { accMult *= m }
+        }
         var final = Int((Double(acc) * mod * accMult).rounded())
         // 중력 — 명중률 5/3 배
         if state.rules.weather, state.field.hasGravity {
             final = Int(Double(final) * 5.0 / 3.0)
         }
         // 모래숨기·눈숨기 — 해당 날씨에서 회피율 상승
-        if state.rules.weather, state.field.hasWeather,
+        if state.rules.weather, weatherIsActive,
            case .weatherEvasion(let w) = defender.abilityKind, w == state.field.weather {
             final = Int(Double(final) * 0.8)
         }
         return rng.chance(max(1, min(100, final)))
     }
 
-    private mutating func hitCount(_ move: MoveDef) -> Int {
+    private mutating func hitCount(_ move: MoveDef, attacker: BattleSide) -> Int {
         guard let lo = move.minHits, let hi = move.maxHits, hi > 1 else { return 1 }
         if lo == hi { return lo }
+        // 스킬링크 — 반드시 최대 횟수
+        if state.rules.abilities,
+           case .skillLink = state.side(attacker).active.abilityKind { return hi }
+        // 로디드다이스 — 최소 4회는 맞는다
+        if state.rules.itemEffects,
+           case .loadedDice = state.side(attacker).active.itemKind {
+            return Int.random(in: min(4, hi)...hi, using: &rng)
+        }
         // 원작 분포 근사: 2·3회가 흔하고 4·5회는 드물다
         let roll = Int.random(in: 1...8, using: &rng)
         switch roll {
@@ -2123,7 +2667,21 @@ struct BattleEngine {
         // 급소율: 기본 1/24(≈4%), 기술 보너스나 다이맥스태클로 올라간다
         var critPercent = 4
         if move.critRateBonus > 0 { critPercent = 12 }
-        switch a.critStage {
+        // 대운·저격수형 특성 — 급소율 단계를 올린다
+        var critStage = a.critStage
+        if state.rules.abilities, case .critStageBoost(let n) = a.abilityKind {
+            critStage += n
+        }
+        // 무자비 — 특정 상태이상인 상대에게는 반드시 급소에 맞는다
+        if state.rules.abilities, case .critVsStatus(let ail) = a.abilityKind,
+           d.status == ail || (ail == .poison && d.status == .toxic) {
+            critStage = 3
+        }
+        if state.rules.itemEffects,
+           ["scope-lens", "razor-claw"].contains(a.heldItem?.name ?? ""), !a.itemConsumed {
+            critStage += 1
+        }
+        switch critStage {
         case 1: critPercent = max(critPercent, 12)
         case 2: critPercent = max(critPercent, 50)
         case 3...: critPercent = 100
@@ -2145,7 +2703,7 @@ struct BattleEngine {
             } else {
                 v = Double(a.effective(s))
             }
-            v *= offenseMultiplier(a, stat: s)
+            v *= offenseMultiplier(a, stat: s, foe: d)
             return max(1, Int(v))
         }
         func defStat() -> Int {
@@ -2158,7 +2716,7 @@ struct BattleEngine {
             } else {
                 v = Double(d.effective(s))
             }
-            v *= defenseMultiplier(d, stat: s)
+            v *= defenseMultiplier(d, stat: s, foe: a)
             return max(1, Int(v))
         }
 
@@ -2257,17 +2815,57 @@ struct BattleEngine {
                 case .sound:   matches = MoveFlags.isSound(move.name)
                 case .powder:  matches = MoveFlags.isPowder(move.name)
                 case .contact: matches = MoveFlags.isContact(move.name)
+                case .bullet:  matches = MoveFlags.isBullet(move.name)
+                case .slicing: matches = MoveFlags.isSlicing(move.name)
+                case .wind:    matches = MoveFlags.isWind(move.name)
                 }
                 if matches { extra *= m }
             }
             // 날씨에서 공격력 상승 (태양의힘·모래의힘)
-            if state.rules.weather, state.field.hasWeather,
+            if state.rules.weather, weatherIsActive,
                case .weatherStatBoost(let w, let st, let m) = a.abilityKind,
                w == state.field.weather,
                (st == .attack && physical) || (st == .spAttack && !physical) { extra *= m }
 
+            // 총대장 — 쓰러진 아군 한 마리마다 위력이 오른다
+            if case .supremeOverlord(let per) = a.abilityKind {
+                let fallen = state.side(attacker).team.filter(\.isFainted).count
+                extra *= 1.0 + per * Double(fallen)
+            }
+            // 슬로스타트 — 5턴 동안 공격이 반감된다
+            if case .slowStart(let turns) = a.abilityKind, a.turnsOnField < turns,
+               physical { extra *= 0.5 }
+            // 브레인포스 — 효과가 굉장할 때 추가 배율
+            if case .superEffectiveBoost(let m) = a.abilityKind, typeMult >= 2 { extra *= m }
+
+            // 다크오라·페어리오라 — 그 타입 기술이 **양쪽 모두** 강해진다.
+            // 오라브레이크가 어느 한쪽에 있으면 반대로 약해진다.
+            for holder in [a, d] {
+                guard case .aura(let t, let m) = holder.abilityKind, move.type == t else { continue }
+                let broken = { () -> Bool in
+                    if case .auraBreak = a.abilityKind { return true }
+                    if case .auraBreak = d.abilityKind { return true }
+                    return false
+                }()
+                extra *= broken ? (1.0 / m) : m
+                break
+            }
+
             // 방어측 특성
             if case .damageTaken(let types, let m) = foeAbility, types.contains(move.type) { extra *= m }
+            // 아이스스케일·펑크록 — 기술 분류로 피해를 줄인다
+            if case .damageTakenByClass(let cls, let m) = foeAbility, move.damageClass == cls {
+                extra *= m
+            }
+            // 후카후카 — 접촉 기술 절반, 불꽃 기술 두 배
+            if case .fluffy = foeAbility {
+                if MoveFlags.isContact(move.name), !isNonContact(a) { extra *= 0.5 }
+                if move.type == .fire { extra *= 2.0 }
+            }
+            // 정화의소금 — 고스트 기술을 반감한다
+            if case .purifyingSalt = foeAbility, move.type == .ghost { extra *= 0.5 }
+            // 일렉트릭변환 — 맞아서 충전됐으면 다음 전기 기술이 두 배
+            if a.chargedByAbility, move.type == .electric { extra *= 2.0 }
             if case .superEffectiveResist(let m) = foeAbility, typeMult >= 2 { extra *= m }
             // 멀티스케일 — 풀피에서 받는 피해 감소
             if case .multiscale(let m) = foeAbility, d.currentHP == d.maxHP { extra *= m }
@@ -2286,7 +2884,7 @@ struct BattleEngine {
             field: state.field)
 
         // 날씨 — 불꽃/물 기술 배율
-        if state.rules.weather, state.field.hasWeather {
+        if state.rules.weather, weatherIsActive {
             extra *= state.field.weather.damageMultiplier(for: move.type)
         }
         // 필드 — 해당 타입 강화
@@ -2295,6 +2893,20 @@ struct BattleEngine {
         }
 
         if state.rules.itemEffects {
+            // 전용 도구 — **그 종만** 쓸 수 있다 (신비의구슬·소울도우·오거폰 가면)
+            if case .signatureTypeBoost(let ids, let types, let m) = a.itemKind,
+               ids.contains(a.speciesID), types.contains(move.type) { extra *= m }
+            // 펀치글러브 — 펀치 기술 강화 (접촉 판정은 isNonContact 가 본다)
+            if case .punchingGlove(let m) = a.itemKind,
+               MoveFlags.isPunch(move.name) { extra *= m }
+            // 젬 — 그 타입 기술 한 번만 강화된다 (소비는 아래에서 표시한다)
+            if case .typeGem(let t, let m) = a.itemKind, move.type == t { extra *= m }
+            // 메트로놈(도구) — 같은 기술을 연달아 쓰면 위력이 오른다
+            if case .metronomeItem(let step, let cap) = a.itemKind,
+               a.consecutiveMoveIndex != nil {
+                extra *= min(cap, 1.0 + step * Double(max(0, a.consecutiveCount - 1)))
+            }
+
             // 공격측 도구
             switch a.itemKind {
             case .lifeOrb:                        extra *= 1.3
@@ -2326,9 +2938,25 @@ struct BattleEngine {
     }
 
     /// 공격 스탯에 붙는 도구·특성 배율
-    private func offenseMultiplier(_ b: Battler, stat: Stat) -> Double {
+    private func offenseMultiplier(_ b: Battler, stat: Stat, foe: Battler) -> Double {
         var m = 1.0
         if state.rules.abilities {
+            // 재앙 4종 — **상대**의 특성이 내 능력치를 0.75배로 만든다
+            if case .ruin(let s, let x) = foe.abilityKind, s == stat { m *= x }
+            // 하드론엔진·오리하르콘펄스 — 조건이 맞으면 공격·특공이 오른다
+            if case .surgeAndBoost(let t, let w, let s, let x) = b.abilityKind, s == stat {
+                let active = (t != nil && state.field.terrain == t!)
+                    || (w != nil && state.field.weather == w!)
+                if active { m *= x }
+            }
+            // 고대활성·쿼크차지 — 조건이 맞으면 가장 높은 능력치가 1.3배.
+            // 부스트에너지를 들고 있으면 조건 없이 발동한다.
+            if case .paradoxBoost(let w, let t) = b.abilityKind {
+                let byField = (w != nil && state.field.weather == w!)
+                    || (t != nil && state.field.terrain == t!)
+                let byItem = b.heldItem?.name == "booster-energy" && !b.itemConsumed
+                if (byField || byItem), Self.highestStat(of: b) == stat { m *= 1.3 }
+            }
             if case .attackMultiplier(let x) = b.abilityKind, stat == .attack { m *= x }
             if case .statusAtkBoost(let s, let x) = b.abilityKind,
                s == stat, b.status != .none, b.status != .sleep, b.status != .freeze { m *= x }
@@ -2341,15 +2969,32 @@ struct BattleEngine {
         }
         if state.rules.itemEffects {
             if case .choice(let s) = b.itemKind, s == stat, s != .speed { m *= 1.5 }
+            // 전기구슬 — 피카츄의 공격·특공이 두 배
+            if case .lightBall(let sid) = b.itemKind, b.speciesID == sid,
+               stat == .attack || stat == .spAttack { m *= 2.0 }
         }
         return m
     }
 
     /// 방어 스탯에 붙는 도구·특성 배율
-    private func defenseMultiplier(_ b: Battler, stat: Stat) -> Double {
+    private func defenseMultiplier(_ b: Battler, stat: Stat, foe: Battler) -> Double {
         var m = 1.0
         if state.rules.abilities {
             if case .statusDefBoost(let s, let x) = b.abilityKind, s == stat, b.status != .none { m *= x }
+            // 재앙 4종 — 상대 특성이 내 방어를 깎는다
+            if case .ruin(let s, let x) = foe.abilityKind, s == stat { m *= x }
+            // 퍼코트 — 방어 두 배
+            if case .defenseMultiplier(let s, let x) = b.abilityKind, s == stat { m *= x }
+            // 초식피부 — 그래스필드에서 방어 상승
+            if case .terrainStatBoost(let t, let s, let x) = b.abilityKind,
+               s == stat, state.field.terrain == t { m *= x }
+            // 고대활성·쿼크차지는 방어에도 붙을 수 있다
+            if case .paradoxBoost(let w, let t) = b.abilityKind {
+                let byField = (w != nil && state.field.weather == w!)
+                    || (t != nil && state.field.terrain == t!)
+                let byItem = b.heldItem?.name == "booster-energy" && !b.itemConsumed
+                if (byField || byItem), Self.highestStat(of: b) == stat { m *= 1.3 }
+            }
         }
         if state.rules.itemEffects {
             if case .eviolite = b.itemKind, !b.fullyEvolved,
@@ -2357,6 +3002,137 @@ struct BattleEngine {
             if case .assaultVest = b.itemKind, stat == .spDefense { m *= 1.5 }
         }
         return m
+    }
+
+    /// 멸망의노래 — 카운터가 0 이 되면 쓰러진다.
+    private mutating func tickPerishSong() {
+        // **양쪽을 먼저 다 쓰러뜨린 뒤에** 승패를 본다.
+        //
+        // 한 쪽씩 checkFaint 를 부르면 "상대 승리!" 를 말한 다음
+        // "[정정] 무승부" 가 나온다 — 멸망의노래는 원래 동시에 터진다.
+        var died: [BattleSide] = []
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            var b = state.sides[side.rawValue].team[i]
+            guard !b.isFainted, b.perishTurns > 0 else { continue }
+            b.perishTurns -= 1
+            if b.perishTurns == 0 {
+                b.currentHP = 0
+                state.sides[side.rawValue].team[i] = b
+                say("\(KO.t(b.name)) 멸망의노래로 쓰러졌다!")
+                died.append(side)
+            } else {
+                state.sides[side.rawValue].team[i] = b
+                say("\(b.name)의 멸망의노래 카운트 \(b.perishTurns)!")
+            }
+        }
+        for side in died { checkFaint(side) }
+        checkBattleOver()
+    }
+
+    /// 턴이 끝날 때 도는 특성 (나이트메어·변덕쟁이·수확 …)
+    private mutating func applyResidualAbilities() {
+        guard state.rules.abilities else { return }
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            var b = state.sides[side.rawValue].team[i]
+            guard !b.isFainted else { continue }
+            let name = b.ability?.display ?? "특성"
+
+            switch b.abilityKind {
+            // 나이트메어 — 잠든 **상대**가 깎인다
+            case .badDreams(let frac):
+                let foe = side.other
+                let fi = state.side(foe).activeIndex
+                guard state.side(foe).team.indices.contains(fi) else { continue }
+                var f = state.sides[foe.rawValue].team[fi]
+                guard !f.isFainted, f.status == .sleep, !isMagicGuard(f) else { continue }
+                f.currentHP = max(0, f.currentHP - max(1, f.maxHP / frac))
+                state.sides[foe.rawValue].team[fi] = f
+                say("\(KO.t(f.name)) \(name) 때문에 악몽에 시달렸다!")
+                checkFaint(foe)
+
+            // 변덕쟁이 — 하나는 +2, 다른 하나는 -1
+            case .moody:
+                let all: [Stat] = [.attack, .defense, .spAttack, .spDefense, .speed]
+                let up = all.filter { (b.stages[$0] ?? 0) < 6 }.randomElement(using: &rng)
+                let down = all.filter { $0 != up && (b.stages[$0] ?? 0) > -6 }
+                    .randomElement(using: &rng)
+                if let up {
+                    b.stages[up] = min(6, (b.stages[up] ?? 0) + 2)
+                    say("\(b.name)의 \(name)! \(KO.s(up.ko)) 크게 올라갔다!")
+                }
+                if let down {
+                    b.stages[down] = max(-6, (b.stages[down] ?? 0) - 1)
+                    say("\(b.name)의 \(KO.s(down.ko)) 내려갔다!")
+                }
+                state.sides[side.rawValue].team[i] = b
+
+            // 수확 — 먹은 열매를 확률로 되돌린다 (쾌청이면 반드시)
+            case .harvest(let percent):
+                guard b.itemConsumed, b.heldItem != nil else { continue }
+                let sunny = state.rules.weather && state.field.weather == .sun
+                guard sunny || rng.chance(percent) else { continue }
+                b.itemConsumed = false
+                state.sides[side.rawValue].team[i] = b
+                say("\(b.name)의 \(name)! \(b.heldItem?.koName ?? "열매")을(를) 되돌렸다!")
+
+            default:
+                break
+            }
+        }
+        checkBattleOver()
+    }
+
+    /// 날씨가 실제로 작동하는가.
+    ///
+    /// 에어록·노말스킨은 날씨를 **없애지 않고 효과만 막는다**. 그래서
+    /// `field.hasWeather` 를 그대로 보면 안 된다 — 엔진 안에서는 이걸 쓴다.
+    private var weatherIsActive: Bool {
+        guard state.field.hasWeather else { return false }
+        guard state.rules.abilities else { return true }
+        for side in [BattleSide.host, .guest] {
+            let i = state.side(side).activeIndex
+            guard state.side(side).team.indices.contains(i) else { continue }
+            let b = state.side(side).team[i]
+            guard !b.isFainted else { continue }
+            if case .weatherSuppress = b.abilityKind { return false }
+        }
+        return true
+    }
+
+    /// 이 기술이 실제로 갖는 우선도. 여왕의위엄이 이걸 본다.
+    /// 짓궂은마음·질풍날개로 올라간 우선도도 선공으로 취급된다.
+    private func effectivePriority(_ move: MoveDef, attacker: Battler) -> Int {
+        var p = MoveFlags.isProtect(move.name) ? 4 : move.priority
+        guard state.rules.abilities else { return p }
+        if case .priorityBoost(let cls, let n) = attacker.abilityKind {
+            if let cls {
+                if move.damageClass == cls { p += n }
+            } else if move.damageClass == .status {
+                p += n
+            }
+        }
+        return p
+    }
+
+    /// 원격(롱리치) — 접촉 판정이 붙지 않는다.
+    /// 접촉을 보는 모든 곳(거친피부·정전기·후카후카)이 이걸 통과해야 한다.
+    private func isNonContact(_ b: Battler) -> Bool {
+        guard state.rules.abilities else { return false }
+        if case .longReach = b.abilityKind { return true }
+        if state.rules.itemEffects, b.heldItem?.name == "protective-pads",
+           !b.itemConsumed { return true }
+        return false
+    }
+
+    /// 가장 높은 능력치 (고대활성·쿼크차지가 올려주는 것).
+    /// HP 는 제외한다 — 원작도 그렇다.
+    static func highestStat(of b: Battler) -> Stat {
+        let cands: [Stat] = [.attack, .defense, .spAttack, .spDefense, .speed]
+        return cands.max { b.effective($0) < b.effective($1) } ?? .attack
     }
 
     /// 부가효과(상태이상·랭크변화·풀죽음) 가 붙은 기술인가 — 우격다짐 판정에 쓴다
@@ -2437,6 +3213,12 @@ struct BattleEngine {
                 say("\(b.name)는 기합의띠로 버텼다!")
             }
             if survived { amount = b.currentHP - 1 }
+        }
+        // 기합의머리띠 — **풀피가 아니어도** 확률로 버틴다 (기합의띠와 다르다)
+        if state.rules.itemEffects, amount >= b.currentHP, b.currentHP > 1,
+           case .focusBand(let percent) = b.itemKind, rng.chance(percent) {
+            amount = b.currentHP - 1
+            say("\(b.name)는 기합의머리띠로 버텼다!")
         }
 
         let dealt = min(b.currentHP, amount)
@@ -2528,7 +3310,7 @@ struct BattleEngine {
         } else {
             guard t.status == .none else { return false }
             // 리프가드 — 특정 날씨에서는 상태이상에 걸리지 않는다
-            if state.rules.abilities, state.rules.weather, state.field.hasWeather,
+            if state.rules.abilities, state.rules.weather, weatherIsActive,
                case .noStatusInWeather(let w) = t.abilityKind, w == state.field.weather {
                 say("\(t.name)는 \(t.ability?.display ?? "특성") 때문에 상태이상이 되지 않는다!")
                 return false
@@ -2581,11 +3363,43 @@ struct BattleEngine {
         var t = state.side(target).active
         var changed = false
 
+        let lowering = move.statChanges.contains { $0.change < 0 }
+
         // 클리어바디 계열 — 상대가 걸어오는 능력치 하락을 막는다
         if state.rules.abilities, target != attacker,
-           case .clearBody = t.abilityKind, move.statChanges.contains(where: { $0.change < 0 }) {
+           case .clearBody = t.abilityKind, lowering {
             say("\(t.name)는 \(t.ability?.display ?? "특성") 때문에 능력치가 떨어지지 않는다!")
             return false
+        }
+        // 특정 능력치만 지키는 특성 (괴력집게·큰부리)
+        if state.rules.abilities, target != attacker, lowering,
+           case .statDropImmunity(let stats) = t.abilityKind,
+           move.statChanges.allSatisfy({ $0.change >= 0 || stats.contains($0.stat) }) {
+            say("\(t.name)는 \(t.ability?.display ?? "특성") 때문에 능력치가 떨어지지 않는다!")
+            return false
+        }
+        // 이상한부적(클리어참) — 상대가 걸어오는 하락을 막는다
+        if state.rules.itemEffects, target != attacker, lowering,
+           case .clearAmulet = t.itemKind {
+            say("\(t.name)는 이상한부적 때문에 능력치가 떨어지지 않는다!")
+            return false
+        }
+        // 침묵의방울 — 부가효과를 받지 않는다
+        if state.rules.itemEffects, target != attacker, !guaranteed,
+           case .covertCloak = t.itemKind { return false }
+
+        // 매지컬아머 — 하락을 **그대로 상대에게 되돌린다**
+        if state.rules.abilities, target != attacker, lowering,
+           case .mirrorArmor = t.abilityKind {
+            say("\(t.name)의 매지컬아머! 능력 하락이 되돌아갔다!")
+            var a2 = state.side(attacker).active
+            for c in move.statChanges where c.change < 0 {
+                let cur = a2.stages[c.stat] ?? 0
+                a2.stages[c.stat] = max(-6, cur + c.change)
+                say("\(a2.name)의 \(KO.s(c.stat.ko)) 떨어졌다!")
+            }
+            state.sides[attacker.rawValue].team[state.side(attacker).activeIndex] = a2
+            return true
         }
         // 색가루 — 부가효과를 받지 않는다
         if state.rules.abilities, target != attacker, !guaranteed,
@@ -2612,6 +3426,12 @@ struct BattleEngine {
     // MARK: 턴 종료
 
     private mutating func endOfTurn() {
+        // 멸망의노래와 특성 잔여효과는 상태이상 규칙과 무관하게 돈다
+        tickPerishSong()
+        if case .finished = state.phase { return }
+        applyResidualAbilities()
+        if case .finished = state.phase { return }
+
         guard state.rules.statusEffects else { tickDynamax(); checkBattleOver(); return }
 
         for s in [BattleSide.host, .guest] {
@@ -2619,7 +3439,7 @@ struct BattleEngine {
             guard !b.isFainted else { continue }
 
             // 아이스바디·우비 — 해당 날씨에서 회복
-            if state.rules.weather, state.rules.abilities, state.field.hasWeather,
+            if state.rules.weather, state.rules.abilities, weatherIsActive,
                case .weatherHeal(let w, let denom) = b.abilityKind,
                w == state.field.weather, b.currentHP < b.maxHP {
                 b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / denom))
@@ -2627,6 +3447,47 @@ struct BattleEngine {
             }
 
             // 먹다남은음식 — 최대 HP 1/16 회복
+            // 궁지 열매 — HP 1/4 이하에서 발동한다 (룸·미클·스타)
+            if state.rules.itemEffects, !b.itemConsumed, b.currentHP * 4 <= b.maxHP {
+                switch b.itemKind {
+                case .berryPinchCrit:
+                    b.critStage = min(4, b.critStage + 2)
+                    b.itemConsumed = true
+                    say("\(b.name)는 룸열매로 급소에 맞기 쉬워졌다!")
+                case .berryPinchRandomBoost(let n):
+                    let all: [Stat] = [.attack, .defense, .spAttack, .spDefense, .speed]
+                    if let pick = all.filter({ (b.stages[$0] ?? 0) < 6 })
+                        .randomElement(using: &rng) {
+                        b.stages[pick] = min(6, (b.stages[pick] ?? 0) + n)
+                        b.itemConsumed = true
+                        say("\(b.name)는 스타열매로 \(KO.s(pick.ko)) 크게 올랐다!")
+                    }
+                case .berryPinchAccuracy:
+                    b.accuracyStage = min(6, b.accuracyStage + 1)
+                    b.itemConsumed = true
+                    say("\(b.name)는 미클열매로 명중률이 올랐다!")
+                default:
+                    break
+                }
+            }
+            // 검은진흙 — 독타입은 회복, 그 외는 피해
+            if state.rules.itemEffects, case .blackSludge = b.itemKind {
+                if b.types.contains(.poison) {
+                    if b.currentHP < b.maxHP {
+                        b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / 16))
+                        say("\(b.name)는 검은진흙으로 체력을 회복했다!")
+                    }
+                } else if !isMagicGuard(b) {
+                    b.currentHP = max(0, b.currentHP - max(1, b.maxHP / 8))
+                    say("\(KO.t(b.name)) 검은진흙 때문에 피해를 입었다!")
+                }
+            }
+            // 끈끈이바늘 — 턴마다 자기 HP 가 줄어든다
+            if state.rules.itemEffects, case .stickyBarb(let denom) = b.itemKind,
+               !isMagicGuard(b) {
+                b.currentHP = max(0, b.currentHP - max(1, b.maxHP / denom))
+                say("\(KO.t(b.name)) 끈끈이바늘 때문에 피해를 입었다!")
+            }
             if state.rules.itemEffects, case .leftovers = b.itemKind, b.currentHP < b.maxHP {
                 b.currentHP = min(b.maxHP, b.currentHP + max(1, b.maxHP / 16))
                 say("\(KO.t(b.name)) 먹다남은음식으로 체력을 회복했다!")
@@ -2653,7 +3514,7 @@ struct BattleEngine {
                     b.status = .none; b.sleepTurns = 0; b.toxicCounter = 0
                 }
                 // 촉촉바디 — 특정 날씨에서 상태이상 회복
-                if state.rules.weather, state.field.hasWeather,
+                if state.rules.weather, weatherIsActive,
                    case .healInWeather(let w) = b.abilityKind, w == state.field.weather,
                    b.status != .none {
                     say("\(KO.t(b.name)) \(b.ability?.display ?? "특성")(으)로 상태이상이 나았다!")
@@ -2837,7 +3698,7 @@ struct BattleEngine {
     private mutating func tickWeatherAndField() {
         guard state.rules.weather else { return }
 
-        if state.field.hasWeather, state.field.weather == .sandstorm {
+        if weatherIsActive, state.field.weather == .sandstorm {
             for side in [BattleSide.host, .guest] {
                 var b = state.side(side).active
                 guard !b.isFainted else { continue }
@@ -3374,6 +4235,12 @@ extension BattleEngine {
             d.infatuated = true
             commit(d, defender)
             say("\(d.name)는 헤롱헤롱해졌다!")
+            // 붉은실 — 걸어온 쪽도 함께 헤롱헤롱해진다
+            if state.rules.itemEffects, case .destinyKnot = d.itemKind, !a.infatuated {
+                a.infatuated = true
+                commit(a, attacker)
+                say("\(d.name)의 붉은실! \(a.name)도 헤롱헤롱해졌다!")
+            }
             return true
 
         // 뽐내기 · 이상한빛 — 혼란은 PokeAPI 가 주지만 랭크 변화가 함께 온다.
@@ -3505,6 +4372,25 @@ extension BattleEngine {
             return true
 
         // 검은눈빛 / 블랙아이즈 — 도망갈 수 없게 만든다
+        // 멸망의노래 — 3턴 후에 **양쪽 모두** 쓰러진다.
+        // 지금까지 아무 효과가 없었다 (PokeAPI 에 지속 턴수가 없다).
+        case "perish-song":
+            var hit = false
+            for side in [attacker, defender] {
+                let i = state.side(side).activeIndex
+                guard state.side(side).team.indices.contains(i) else { continue }
+                var b = state.sides[side.rawValue].team[i]
+                guard !b.isFainted, b.perishTurns == 0 else { continue }
+                // 방음은 소리 기술을 막는다
+                if state.rules.abilities, case .soundImmunity = b.abilityKind { continue }
+                b.perishTurns = 4
+                state.sides[side.rawValue].team[i] = b
+                hit = true
+            }
+            say(hit ? "멸망의노래가 울려퍼졌다! 3턴 후에 쓰러진다!"
+                    : "\(aName)의 멸망의노래! …하지만 실패했다!")
+            return true
+
         case "mean-look", "block", "spider-web":
             guard !d.cannotFlee else {
                 say("\(aName)의 \(move.display)! …하지만 실패했다!")

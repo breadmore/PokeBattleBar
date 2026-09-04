@@ -29,6 +29,13 @@ curl -sfL --max-time 60 "$BASE/data/random-battles/gen9/sets.json" -o "$TMP/sets
 # Showdown id 는 하이픈이 없어(thunderwave) 그대로는 PokeAPI 로 조회할 수 없다.
 # PokeAPI 이름 목록을 들고 있어야 "Showdown 이 허용하는 기술" 을 실제로 받아올 수 있다.
 curl -sfL --max-time 60 "https://pokeapi.co/api/v2/move?limit=2000" -o "$TMP/pokeapi-moves.json"
+# 도구·특성도 같은 이유로 이름 목록이 필요하다.
+#
+# Showdown id 는 하이픈이 없다("serenegrace"). PokeAPI 는 있다("serene-grace").
+# 역변환이 불가능하므로 PokeAPI 쪽 이름 목록을 들고 있어야 두 데이터를
+# 맞춰볼 수 있다. 이게 없으면 이미 구현한 특성도 "빠졌다" 고 나온다.
+curl -sfL --max-time 60 "https://pokeapi.co/api/v2/ability?limit=1000" -o "$TMP/pokeapi-abilities.json"
+curl -sfL --max-time 60 "https://pokeapi.co/api/v2/item?limit=3000" -o "$TMP/pokeapi-items.json"
 
 echo "==> 추출 (node 네이티브 TS 파싱)"
 cat > "$TMP/extract.mjs" <<'JS'
@@ -154,7 +161,7 @@ print(f"    추천 세팅 {len(slim)}종")
 PY
 
 echo "==> Swift 파일 생성"
-python3 - "$TMP/moves.json" "$TMP/sets-slim.json" "$TMP/pokeapi-moves.json" "$OUT/ShowdownData.swift" "$TMP/items.json" "$TMP/abilities.json" <<'PY'
+python3 - "$TMP/moves.json" "$TMP/sets-slim.json" "$TMP/pokeapi-moves.json" "$OUT/ShowdownData.swift" "$TMP/items.json" "$TMP/abilities.json" "$TMP/pokeapi-abilities.json" "$TMP/pokeapi-items.json" <<'PY'
 import json, sys
 moves = open(sys.argv[1], encoding='utf-8').read()
 sets  = open(sys.argv[2], encoding='utf-8').read()
@@ -165,6 +172,11 @@ abils = open(sys.argv[6], encoding='utf-8').read()
 api = json.load(open(sys.argv[3], encoding='utf-8'))
 api_names = sorted(m['name'] for m in api['results'])
 names_json = json.dumps(api_names, separators=(',',':'))
+
+ab_names = sorted(a['name'] for a in json.load(open(sys.argv[7], encoding='utf-8'))['results'])
+it_names = sorted(i['name'] for i in json.load(open(sys.argv[8], encoding='utf-8'))['results'])
+ab_names_json = json.dumps(ab_names, separators=(',',':'))
+it_names_json = json.dumps(it_names, separators=(',',':'))
 def lit(s):
     # 스위프트 원시 문자열로 감싼다 (JSON 안의 따옴표를 그대로 둘 수 있다)
     return '#"""\n' + s + '\n"""#'
@@ -194,6 +206,12 @@ enum ShowdownData {{
 
     /// 특성 데이터 (Showdown id -> 축약 필드)
     static let abilitiesJSON = {lit(abils)}
+
+    /// PokeAPI 의 특성 이름 전체. Showdown id 와 맞춰보는 데 쓴다.
+    static let pokeAPIAbilityNamesJSON = {lit(ab_names_json)}
+
+    /// PokeAPI 의 도구 이름 전체
+    static let pokeAPIItemNamesJSON = {lit(it_names_json)}
 }}
 '''
 open(sys.argv[4], 'w', encoding='utf-8').write(out)

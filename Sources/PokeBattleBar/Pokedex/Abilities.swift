@@ -108,13 +108,168 @@ enum AbilityKind: Codable, Hashable, Sendable, Equatable {
     /// "표시만" 으로 잘못 표기된다.
     case autoFormChange
 
+    // --- 확장 (4차) — Showdown 데이터 대조(--datagap)로 찾아낸 것들 ---
+    //
+    // 이름을 아는 것만 고치던 방식을 버리고, 목록을 데이터에서 받아
+    // 위에서부터 메웠다. 싱글에서 의미가 있는 것만 넣는다.
+
+    /// 에어레이트·페어리스킨 등 — 노말 기술이 다른 타입이 되고 위력도 오른다.
+    /// 노말스킨은 `from` 이 nil 이다 (**모든** 기술이 노말이 된다).
+    case moveTypeConversion(from: PType?, to: PType, multiplier: Double)
+    /// 변환자재·리베로 — 쓴 기술의 타입으로 자신이 변한다
+    case userTypeMatchesMove
+    /// 일렉트릭메이커 등 — 등장 시 필드를 만든다
+    case terrainOnEntry(Terrain)
+    /// 끝의대지·시작의바다·델타스트림 — 다른 날씨로 덮어쓸 수 없다
+    case weatherLock(Weather)
+    /// 에어록·노말스킨(구름) — 날씨 효과 자체를 없앤다
+    case weatherSuppress
+    /// 퍼코트 — 방어가 두 배 (물리 피해만 줄어든다)
+    case defenseMultiplier(Stat, Double)
+    /// 아이스스케일 — 특수 기술 피해 절반
+    case damageTakenByClass(DamageClass, Double)
+    /// 후카후카 — 접촉 기술 절반, 불꽃 두 배
+    case fluffy
+    /// 초식피부 — 특정 필드에서 방어 상승
+    case terrainStatBoost(Terrain, Stat, Double)
+    /// 브레인포스 — 효과가 굉장할 때 추가 배율
+    case superEffectiveBoost(Double)
+    /// 무자비 — 특정 상태이상인 상대에게 반드시 급소
+    case critVsStatus(Ailment)
+    /// 방탄 — 특정 플래그가 붙은 기술이 통하지 않는다
+    case flagImmunity(MoveFlagKind)
+    /// 황금몸(굿애즈골드) — 변화기가 통하지 않는다
+    case statusMoveImmunity
+    /// 불요의검·부동의방패 — 등장 시 능력 상승
+    case boostOnEntry(Stat, Int)
+    /// 매지컬아머(미러아머) — 능력 하락을 되돌려준다
+    case mirrorArmor
+    /// 날카로운눈 — 명중률 하락을 막는다 (명중률은 Stat 이 아니다)
+    case accuracyDropImmunity
+    /// 노기어깨(앵거포인트) — 급소를 맞으면 공격이 최대가 된다
+    case angerPoint
+    /// 노기의비늘(앵거셸) — HP 절반 이하가 되면 공방이 바뀐다
+    case angerShell
+    /// 벌서크 — HP 절반 이하가 되면 특공 상승
+    case berserk(Stat, Int)
+    /// 목화솜(코튼다운) — 맞으면 상대 스피드가 내려간다
+    case cottonDown(Stat, Int)
+    /// 미라·잔향 — 접촉해 온 상대의 특성을 바꿔버린다
+    case abilityInfect(String)
+    /// 심안(이너즈아웃) — 쓰러질 때 남은 HP 만큼 되돌려준다
+    case innardsOut
+    /// 변색 — 맞은 기술의 타입으로 변한다
+    case colorChange
+    /// 일렉트릭변환(일렉트로모포시스) — 맞으면 다음 전기 기술이 강해진다
+    case chargeWhenHit
+    /// 저주받은육체(퍼리시바디) — 접촉해 오면 양쪽에 멸망의노래
+    case perishBody
+    /// 크리티컬 확률 단계를 올리는 특성 (대운·저격수는 별도)
+    case critStageBoost(Int)
+    /// 심록(스나이프샷) 등 — 상대 진영 특성을 무시하고 관통한다.
+    /// 인필트레이터 — 리플렉터·빛의장막·대타출동을 무시한다.
+    case infiltrator
+    /// 원격(롱리치) — 접촉 판정이 붙지 않는다
+    case longReach
+    /// 서투름(클럿지) — 자기 도구가 작동하지 않는다
+    case klutz
+    /// 매지션 — 때리면 상대 도구를 빼앗는다
+    case magician
+    /// 변덕쟁이(무디) — 턴마다 하나는 +2, 하나는 -1
+    case moody
+    /// 수확(하베스트) — 먹은 열매를 확률로 되돌린다
+    case harvest(percent: Int)
+    /// 볼주머니 — 열매를 먹으면 HP 도 회복한다
+    case cheekPouch(fraction: Int)
+    /// 되새김(커드추드) — 먹은 열매를 다음 턴에 한 번 더 먹는다
+    case cudChew
+    /// 숙성(라이픈) — 열매 효과가 두 배가 된다
+    case ripen
+    /// 정화의소금 — 상태이상에 걸리지 않고 고스트 기술을 반감한다
+    case purifyingSalt
+    /// 절대잠듦(코머토스) — 항상 잠든 상태로 취급되지만 행동할 수 있다
+    case comatose
+    /// 균사의힘(미셀리움마이트) — 변화기를 나중에 쓰지만 상대 특성을 무시한다
+    case myceliumMight
+    /// 파문의힘 — 상대 방어를 무시한다 (스톨워트·프로펠러테일: 노려대상 고정)
+    case ignoreRedirection
+    /// 불굴의주먹(언신피스트) — 방어를 무시하고 때린다
+    case unseenFist
+    /// 재의검(소드오브루인) 4종 — 상대의 특정 능력치를 0.75배로 만든다
+    case ruin(Stat, Double)
+    /// 다크오라·페어리오라 — 그 타입 기술이 **양쪽 모두** 강해진다
+    case aura(PType, Double)
+    /// 오라브레이크 — 오라를 반대로 뒤집는다
+    case auraBreak
+    /// 나이트메어(배드드림) — 잠든 상대가 턴마다 깎인다
+    case badDreams(fraction: Int)
+    /// 예지몽·위험예지·전율 — 등장 시 정보를 알려준다 (효과는 표시뿐)
+    case revealOnEntry
+    /// 하드론엔진·오리하르콘펄스 — 등장 시 필드/날씨를 만들고 자기 능력을 올린다
+    case surgeAndBoost(Terrain?, Weather?, Stat, Double)
+    /// 고대활성·쿼크차지 — 날씨/필드나 부스트에너지로 가장 높은 능력치가 오른다
+    case paradoxBoost(Weather?, Terrain?)
+
+    // --- 확장 (5차) ---
+
+    /// 여왕의위엄·갑옷꼬리·눈부심 — 선공 기술을 막는다
+    case priorityBlock
+    /// 옷무늬(디스가이즈)·아이스페이스 — 첫 공격을 한 번 무효로 한다
+    case oneHitShield(formAfter: String?)
+    /// 스킬링크 — 연속 기술이 반드시 최대 횟수 맞는다
+    case skillLink
+    /// 슬로스타트 — 5턴 동안 공격과 스피드가 반감된다
+    case slowStart(turns: Int)
+    /// 배드컴패니(스텐치) — 확률로 상대를 풀죽게 한다
+    case addFlinch(percent: Int)
+    /// 원더스킨 — 상대의 변화기 명중률이 절반이 된다
+    case statusMoveEvasion(Double)
+    /// 갈팡질팡(탱글드피트) — 혼란 중에 회피율이 오른다
+    case evasionWhenConfused(Double)
+    /// 서프라이더 — 특정 필드에서 스피드가 두 배
+    case terrainSpeedBoost(Terrain, Double)
+    /// 총대장(슈프림오버로드) — 쓰러진 아군 수만큼 위력이 오른다
+    case supremeOverlord(perFaint: Double)
+    /// 독쇠사슬 — 접촉 공격 시 확률로 맹독
+    case toxicChain(percent: Int)
+    /// 파스텔베일 — 독 상태이상에 걸리지 않는다
+    case poisonImmunityPlus
+    /// 스크린클리너 — 등장 시 양쪽 화면을 없앤다
+    case screenCleaner
+    /// 트랜지스터형 트랩 — 상대를 도망칠 수 없게 만든다 (개미지옥·그림자밟기)
+    case trapFoe(PType?)
+    /// 흡착(석션컵) — 강제 교체당하지 않는다
+    case suctionCups
+    /// 노말스킨류 특성 무력화 (뉴트럴가스) — 양쪽 특성이 사라진다
+    case neutralizingGas
+    /// 미믹(미미크리) — 필드에 따라 자기 타입이 바뀐다
+    case mimicry
+    /// 변신(임포스터) — 등장 시 상대로 변신한다
+    case imposter
+    /// 부모의사랑 — 한 번 더, 약하게 때린다
+    case parentalBond(Double)
+    /// 도둑질(픽포켓)·방랑령 — 접촉해 온 상대의 도구/특성을 가져온다
+    case stealOnContact(item: Bool)
+    /// 기회주의자(오포튜니스트) — 상대가 능력을 올리면 같이 오른다
+    case opportunist
+    /// 독가스가루(톡식데브리) — 물리 공격을 맞으면 상대 진영에 독압정을 깐다
+    case hazardWhenHit(Hazard, DamageClass)
+    /// 오거폰 — 쓰고 있는 가면에 따라 오르는 능력치가 다르다
+    case embodyAspect
+    /// 아주달콤한꿀 — 등장 시 상대 회피율이 내려간다
+    /// (회피율은 Stat 이 아니라 별도 필드라서 전용 케이스가 필요하다)
+    case lowerFoeEvasionOnEntry
+    /// 배고픔스위치·실드다운·배틀스위치 — 턴마다/조건에 따라 폼이 바뀐다.
+    /// FormChange 가 규칙을 갖고 있지 않아 표시만 한다.
+    case formSwitchDisplay
+
     /// 더블배틀 전용 — 1대1 에서는 발동할 수 없다 (미구현이 아니라 해당 없음)
     case doublesOnly
 }
 
 /// 기술 플래그 종류 (철주먹·옹골찬턱용)
 enum MoveFlagKind: String, Codable, Hashable, Sendable {
-    case punch, bite, sound, powder, contact
+    case punch, bite, sound, powder, contact, bullet, slicing, wind
 }
 
 struct AbilityDef: Codable, Hashable, Sendable, Identifiable {
@@ -239,7 +394,6 @@ actor AbilityCatalog {
         case "leaf-guard":      return .noStatusInWeather(.sun)
         case "early-bird":      return .earlyBird(2.0)
         case "hyper-cutter":    return .statDropImmunity([.attack])
-        case "keen-eye", "illuminate", "mind-s-eye": return .statDropImmunity([])
         case "big-pecks":       return .statDropImmunity([.defense])
         case "inner-focus":     return .flinchImmunity
         case "wonder-guard":    return .wonderGuard
@@ -253,7 +407,6 @@ actor AbilityCatalog {
         case "gooey", "tangling-hair": return .contactStatDrop(.speed, 1)
         case "poison-touch":    return .poisonTouch(percent: 30)
         case "synchronize":     return .synchronize
-        case "sap-sipper2":     return .absorbAndBoost(.grass, .attack, 1)
         case "motor-drive":     return .absorbAndBoost(.electric, .speed, 1)
         case "lightning-rod":   return .absorbAndBoost(.electric, .spAttack, 1)
         case "storm-drain":     return .absorbAndBoost(.water, .spAttack, 1)
@@ -274,13 +427,11 @@ actor AbilityCatalog {
         case "flare-boost":     return .statusAtkBoost(.spAttack, 1.5)
         case "toxic-boost":     return .statusAtkBoost(.attack, 1.5)
         case "overcoat":        return .powderImmunity
-        case "sand-veil2":      return .weatherEvasion(.sandstorm)
         case "stall":           return .priorityBoost(nil, -1)
-        case "vital-spirit2":   return .flinchImmunity
         case "pure-power":      return .attackMultiplier(2.0)
         case "gorilla-tactics": return .statMultiplier(.attack, 1.5)
         case "transistor":      return .pinchBoost(.electric, 1.3)
-        case "dragon-s-maw":    return .pinchBoost(.dragon, 1.5)
+        case "dragons-maw":     return .pinchBoost(.dragon, 1.5)
         case "rocky-payload":   return .pinchBoost(.rock, 1.5)
         case "steelworker", "steely-spirit": return .pinchBoost(.steel, 1.5)
 
@@ -354,12 +505,210 @@ actor AbilityCatalog {
         case "multiscale", "shadow-shield":            return .multiscale(0.5)
 
         // 타입 흡수
-        case "water-absorb", "dry-skin-water": return .levitateLike(.water, 0.25)
+        case "water-absorb":                   return .levitateLike(.water, 0.25)
         case "volt-absorb":                    return .levitateLike(.electric, 0.25)
         case "flash-fire":                     return .levitateLike(.fire, 0.0)
         case "sap-sipper":                     return .levitateLike(.grass, 0.0)
         case "motor-drive", "lightning-rod":   return .levitateLike(.electric, 0.0)
-        case "storm-drain", "water-compaction-no": return .levitateLike(.water, 0.0)
+        case "storm-drain":                    return .levitateLike(.water, 0.0)
+        // 물먹기 — 물 기술을 맞으면 방어가 크게 오른다 (무효가 아니다)
+        case "water-compaction":               return .boostWhenHit(.water, .defense, 2)
+        case "steam-engine":                   return .boostWhenHit(nil, .speed, 6)
+
+        // ─────────────────────────────────────────────────────────────
+        // 4차 — Showdown 데이터 대조로 찾아낸 것들 (--datagap)
+        // ─────────────────────────────────────────────────────────────
+
+        // 타입 변환 스킨. 노말 기술이 다른 타입이 되고 위력도 1.2배가 된다.
+        case "aerilate":    return .moveTypeConversion(from: .normal, to: .flying, multiplier: 1.2)
+        case "pixilate":    return .moveTypeConversion(from: .normal, to: .fairy, multiplier: 1.2)
+        case "galvanize":   return .moveTypeConversion(from: .normal, to: .electric, multiplier: 1.2)
+        case "refrigerate": return .moveTypeConversion(from: .normal, to: .ice, multiplier: 1.2)
+        // 노말스킨은 **모든** 기술을 노말로 바꾼다
+        case "normalize":   return .moveTypeConversion(from: nil, to: .normal, multiplier: 1.2)
+        case "liquid-voice": return .moveTypeConversion(from: nil, to: .water, multiplier: 1.0)
+        case "protean", "libero": return .userTypeMatchesMove
+
+        // 필드를 만드는 특성
+        case "electric-surge": return .terrainOnEntry(.electric)
+        case "grassy-surge":   return .terrainOnEntry(.grassy)
+        case "misty-surge":    return .terrainOnEntry(.misty)
+        case "psychic-surge":  return .terrainOnEntry(.psychic)
+
+        // 날씨를 고정하는 특성 (다른 날씨로 덮어쓸 수 없다)
+        case "desolate-land":  return .weatherLock(.sun)
+        case "primordial-sea": return .weatherLock(.rain)
+        // 델타스트림은 "강한 바람" 이라 우리 Weather 에 대응이 없다 —
+        // 비행 타입의 약점을 지우는 효과라 날씨 억제로 근사한다.
+        case "delta-stream":   return .weatherSuppress
+        case "air-lock", "cloud-nine": return .weatherSuppress
+
+        // 방어 배율
+        case "fur-coat":    return .defenseMultiplier(.defense, 2.0)
+        case "ice-scales":  return .damageTakenByClass(.special, 0.5)
+        case "fluffy":      return .fluffy
+        case "grass-pelt":  return .terrainStatBoost(.grassy, .defense, 1.5)
+        case "punk-rock":   return .damageTakenByClass(.special, 0.5)
+
+        // 공격 배율 / 급소
+        case "neuroforce":  return .superEffectiveBoost(1.25)
+        case "merciless":   return .critVsStatus(.poison)
+        case "super-luck":   return .critStageBoost(1)
+
+        // 무효 / 흡수
+        case "bulletproof":      return .flagImmunity(.bullet)
+        case "earth-eater":      return .levitateLike(.ground, 0.25)
+        case "well-baked-body":  return .absorbAndBoost(.fire, .defense, 2)
+        case "wind-rider":       return .absorbAndBoost(.flying, .attack, 1)
+        case "thermal-exchange": return .absorbAndBoost(.fire, .attack, 1)
+        case "good-as-gold":     return .statusMoveImmunity
+
+        // 능력 하락 무효 — 기존 케이스로 충분한 것들
+        case "full-metal-body", "white-smoke": return .clearBody
+        case "hyper-cutter":  return .statDropImmunity([.attack])
+        case "big-pecks":     return .statDropImmunity([.defense])
+        // 날카로운눈은 **명중률** 하락을 막는다. 명중률·회피율은 Stat 이
+        // 아니라 별도 필드(accuracyStage)라서 statDropImmunity 로 표현할 수
+        // 없다 — 전용 케이스를 쓴다.
+        case "keen-eye", "minds-eye", "illuminate": return .accuracyDropImmunity
+        case "guard-dog":     return .clearBody
+        case "mirror-armor":  return .mirrorArmor
+        case "inner-focus":   return .flinchImmunity
+
+        // 능력이 내려가면 되돌아 오르는 특성
+        case "competitive":   return .boostWhenHit(nil, .spAttack, 2)
+        case "defiant":       return .boostWhenHit(nil, .attack, 2)
+
+        // 등장 시 능력 상승
+        case "intrepid-sword":   return .boostOnEntry(.attack, 1)
+        case "dauntless-shield": return .boostOnEntry(.defense, 1)
+
+        // 등장 시 정보 (효과는 표시뿐 — 원작도 그렇다)
+        case "anticipation", "forewarn", "frisk": return .revealOnEntry
+
+        // 맞았을 때 반응
+        case "anger-point":       return .angerPoint
+        case "anger-shell":       return .angerShell
+        case "berserk":           return .berserk(.spAttack, 1)
+        case "cotton-down":       return .cottonDown(.speed, 1)
+        case "mummy", "lingering-aroma": return .abilityInfect("mummy")
+        case "innards-out":       return .innardsOut
+        case "color-change":      return .colorChange
+        case "electromorphosis", "wind-power": return .chargeWhenHit
+        case "perish-body":       return .perishBody
+        case "stamina":           return .boostWhenHit(nil, .defense, 1)
+        case "seed-sower":        return .terrainOnEntry(.grassy)
+
+        // 관통 / 접촉
+        case "infiltrator":  return .infiltrator
+        case "long-reach":   return .longReach
+        case "unseen-fist":  return .unseenFist
+        case "propeller-tail", "stalwart": return .ignoreRedirection
+        case "mycelium-might": return .myceliumMight
+
+        // 도구 관련
+        case "klutz":        return .klutz
+        case "magician":     return .magician
+        case "harvest":      return .harvest(percent: 50)
+        case "cheek-pouch":  return .cheekPouch(fraction: 3)
+        case "cud-chew":     return .cudChew
+        case "ripen":        return .ripen
+
+        // 상태 / 잠듦
+        case "purifying-salt": return .purifyingSalt
+        case "comatose":       return .comatose
+        case "bad-dreams":     return .badDreams(fraction: 8)
+
+        // 재앙 4종 — 상대의 능력치를 0.75배로 만든다
+        case "sword-of-ruin":    return .ruin(.defense, 0.75)
+        case "beads-of-ruin":    return .ruin(.spDefense, 0.75)
+        case "tablets-of-ruin":  return .ruin(.attack, 0.75)
+        case "vessel-of-ruin":   return .ruin(.spAttack, 0.75)
+
+        // 오라
+        case "dark-aura":   return .aura(.dark, 1.33)
+        case "fairy-aura":  return .aura(.fairy, 1.33)
+        case "aura-break":  return .auraBreak
+
+        // 등장 시 필드·날씨를 만들고 자기 능력도 올린다
+        case "hadron-engine":    return .surgeAndBoost(.electric, nil, .spAttack, 1.33)
+        case "orichalcum-pulse": return .surgeAndBoost(nil, .sun, .attack, 1.33)
+
+        // 고대활성·쿼크차지 — 조건이 맞으면 가장 높은 능력치가 1.3배
+        case "protosynthesis": return .paradoxBoost(.sun, nil)
+        case "quark-drive":    return .paradoxBoost(nil, .electric)
+
+        // 변덕쟁이
+        case "moody":        return .moody
+
+        // ── 5차 ──
+
+        // 선공 기술을 막는다
+        case "queenly-majesty", "armor-tail", "dazzling": return .priorityBlock
+
+        // 첫 공격을 한 번 무효로 한다
+        case "disguise":  return .oneHitShield(formAfter: "mimikyu-busted")
+        case "ice-face":  return .oneHitShield(formAfter: "eiscue-noice")
+
+        case "skill-link":  return .skillLink
+        case "slow-start":  return .slowStart(turns: 5)
+        case "stench":      return .addFlinch(percent: 10)
+        case "wonder-skin": return .statusMoveEvasion(0.5)
+        case "tangled-feet": return .evasionWhenConfused(0.5)
+        case "surge-surfer": return .terrainSpeedBoost(.electric, 2.0)
+        case "supreme-overlord": return .supremeOverlord(perFaint: 0.1)
+        case "toxic-chain":  return .toxicChain(percent: 30)
+        case "toxic-debris": return .hazardWhenHit(.toxicSpikes, DamageClass.physical)
+        case "pastel-veil":  return .poisonImmunityPlus
+        case "screen-cleaner": return .screenCleaner
+        case "suction-cups": return .suctionCups
+        case "neutralizing-gas": return .neutralizingGas
+        case "mimicry":      return .mimicry
+        case "imposter":     return .imposter
+        case "parental-bond": return .parentalBond(0.25)
+        case "pickpocket":   return .stealOnContact(item: true)
+        case "wandering-spirit": return .stealOnContact(item: false)
+        case "opportunist":  return .opportunist
+
+        // 상대를 묶는 특성 — 교체룰이 켜져 있을 때만 의미가 있다
+        case "shadow-tag":   return .trapFoe(nil)
+        case "arena-trap":   return .trapFoe(nil)
+        case "magnet-pull":  return .trapFoe(.steel)
+
+        // 오거폰의 가면 특성.
+        //
+        // Showdown 은 가면마다 별개 특성(embodyaspectteal …)으로 나눠 두지만
+        // **PokeAPI 에는 embody-aspect 하나뿐**이다. 어느 능력치가 오르는지는
+        // 특성 이름이 아니라 폼(가면)이 결정하므로 엔진에서 폼을 보고 정한다.
+        case "embody-aspect":  return .embodyAspect
+        case "supersweet-syrup":        return .lowerFoeEvasionOnEntry
+
+        // 폼이 바뀌는데 FormChange 에 규칙이 없는 것들 — 표시만 한다.
+        // 규칙을 넣기 전에 표시라도 맞춰두면 "구현했다" 는 오해가 없다.
+        case "hunger-switch", "shields-down", "stance-change",
+             "power-construct", "gulp-missile", "illusion",
+             "zero-to-hero", "tera-shift", "teraform-zero":
+            return .formSwitchDisplay
+
+        // 교체가 있어야만 의미가 있는 특성 (우리 1대1 에는 자발적 교체가 없다)
+        case "emergency-exit", "wimp-out", "stakeout":
+            return .doublesOnly
+
+        // 성별을 다루지 않아 판정할 수 없는 특성
+        case "rivalry", "cute-charm":
+            return .doublesOnly
+
+        // ── 더블배틀 전용 — 1대1 에서는 발동할 수 없다 ──
+        //
+        // 미구현이 아니라 **해당 없음**이다. 이렇게 표시해두지 않으면
+        // 감사 목록에 영원히 남아 실제로 빠진 것을 가린다.
+        case "costar", "curious-medicine", "hospitality",
+             "power-of-alchemy", "receiver", "friend-guard", "power-spot",
+             "flower-veil", "sweet-veil", "aroma-veil", "healer", "battery",
+             "symbiosis", "commander", "victory-star", "plus", "minus",
+             "telepathy", "battle-bond", "as-one-glastrier", "as-one-spectrier",
+             "chilling-neigh", "grim-neigh", "soul-heart", "poison-puppeteer":
+            return .doublesOnly
 
         default:           return .none
         }

@@ -106,6 +106,8 @@ struct LobbyView: View {
 
                 GBPanel("로비") { LobbyPeopleSection(model: model) }
 
+                GBPanel("중계 서버로 만나기 (다른 네트워크)") { RelaySection(model: model) }
+
                 HStack(alignment: .top, spacing: 14) {
                     GBPanel("방 만들기") { HostSection(model: model) }
                     GBPanel("방 찾기") { JoinSection(model: model) }
@@ -694,6 +696,89 @@ struct ChatPanel: View {
 func abilitySummary(_ a: AbilityDef) -> String {
     switch a.kind {
     case .none:                        "배틀에 반영되지 않음"
+
+    // 4차 — 데이터 대조로 채운 것들
+    case .moveTypeConversion(let from, let to, let m):
+        (from == nil ? "모든 기술이 " : "\(from!.ko) 기술이 ")
+            + "\(to.ko)이 된다" + (m > 1 ? " (위력 \(Int(m * 100 - 100))% 상승)" : "")
+    case .userTypeMatchesMove:         "쓴 기술의 타입으로 자신이 변한다"
+    case .terrainOnEntry(let t):       "등장 시 \(t.ko) 필드를 만든다"
+    case .weatherLock(let w):          "\(w.ko) 날씨를 고정한다"
+    case .weatherSuppress:             "날씨 효과를 없앤다"
+    case .defenseMultiplier(let s, let m): "\(s.ko) \(m)배"
+    case .damageTakenByClass(let c, let m):
+        "\(c == .physical ? "물리" : "특수") 피해 \(m)배"
+    case .fluffy:                      "접촉 기술 절반, 불꽃 기술 두 배"
+    case .terrainStatBoost(let t, let s, let m): "\(t.ko) 필드에서 \(s.ko) \(m)배"
+    case .superEffectiveBoost(let m):  "효과가 굉장할 때 위력 \(m)배"
+    case .critVsStatus(let a):         "\(a.ko) 상태인 상대에게 반드시 급소"
+    case .flagImmunity(let f):         "\(f.rawValue) 계열 기술 무효"
+    case .statusMoveImmunity:          "변화기가 통하지 않는다"
+    case .boostOnEntry(let s, let n):  "등장 시 \(s.ko) \(n > 0 ? "+" : "")\(n)"
+    case .mirrorArmor:                 "능력 하락을 상대에게 되돌린다"
+    case .accuracyDropImmunity:        "명중률이 내려가지 않는다"
+    case .angerPoint:                  "급소를 맞으면 공격이 최대가 된다"
+    case .angerShell:                  "HP 절반 이하에서 공격·특공·스피드 상승"
+    case .berserk(let s, let n):       "HP 절반 이하에서 \(s.ko) +\(n)"
+    case .cottonDown(let s, let n):    "맞으면 상대 \(s.ko) -\(n)"
+    case .abilityInfect:               "접촉해 온 상대의 특성을 미라로 바꾼다"
+    case .innardsOut:                  "쓰러질 때 남은 HP 만큼 되돌려준다"
+    case .colorChange:                 "맞은 기술의 타입으로 변한다"
+    case .chargeWhenHit:               "맞으면 다음 전기 기술이 두 배가 된다"
+    case .perishBody:                  "접촉해 오면 양쪽에 멸망의노래"
+    case .critStageBoost(let n):       "급소율 +\(n)단계"
+    case .infiltrator:                 "리플렉터·대타출동을 무시한다"
+    case .longReach:                   "접촉 판정이 붙지 않는다"
+    case .klutz:                       "자기 도구가 작동하지 않는다"
+    case .magician:                    "때리면 상대 도구를 빼앗는다"
+    case .moody:                       "턴마다 능력 하나가 크게 오르고 하나가 내려간다"
+    case .harvest(let p):              "먹은 열매를 \(p)% 확률로 되돌린다"
+    case .cheekPouch(let f):           "열매를 먹으면 HP 1/\(f) 회복"
+    case .cudChew:                     "먹은 열매를 다음 턴에 한 번 더 먹는다"
+    case .ripen:                       "열매 효과가 두 배가 된다"
+    case .purifyingSalt:               "상태이상에 걸리지 않고 고스트 기술을 반감한다"
+    case .comatose:                    "항상 잠든 상태지만 행동할 수 있다"
+    case .myceliumMight:               "변화기가 상대 특성을 무시한다 (대신 후공)"
+    case .ignoreRedirection:           "기술이 빗나가게 유도되지 않는다"
+    case .unseenFist:                  "접촉 기술이 방어를 뚫는다"
+    case .ruin(let s, let m):          "상대의 \(s.ko)를 \(m)배로 만든다"
+    case .aura(let t, let m):          "\(t.ko) 기술이 양쪽 모두 \(m)배"
+    case .auraBreak:                   "오라 효과를 뒤집는다"
+    case .badDreams(let f):            "잠든 상대가 턴마다 HP 1/\(f) 감소"
+    case .revealOnEntry:               "등장 시 상대 정보를 알려준다"
+    case .surgeAndBoost(let t, let w, let s, let m):
+        "등장 시 " + (t.map { "\($0.ko) 필드" } ?? w.map { "\($0.ko) 날씨" } ?? "")
+            + "를 만들고 \(s.ko) \(m)배"
+    // 5차
+    case .priorityBlock:               "상대의 선공 기술을 막는다"
+    case .oneHitShield:                "첫 공격을 한 번 무효로 한다"
+    case .skillLink:                   "연속 기술이 반드시 최대로 맞는다"
+    case .slowStart(let t):            "\(t)턴 동안 공격과 스피드가 반감된다"
+    case .addFlinch(let p):            "\(p)% 확률로 상대를 풀죽게 한다"
+    case .statusMoveEvasion:           "상대의 변화기가 절반만 맞는다"
+    case .evasionWhenConfused:         "혼란 중에 회피율이 오른다"
+    case .terrainSpeedBoost(let t, let m): "\(t.ko) 필드에서 스피드 \(m)배"
+    case .supremeOverlord:             "쓰러진 아군 수만큼 위력이 오른다"
+    case .toxicChain(let p):           "접촉 공격 시 \(p)% 확률로 맹독"
+    case .poisonImmunityPlus:          "독 상태이상에 걸리지 않는다"
+    case .screenCleaner:               "등장 시 양쪽 화면을 없앤다"
+    case .trapFoe(let t):              (t.map { "\($0.ko) 타입 " } ?? "") + "상대를 도망칠 수 없게 한다"
+    case .suctionCups:                 "강제로 교체당하지 않는다"
+    case .neutralizingGas:             "양쪽 특성을 없앤다"
+    case .mimicry:                     "필드에 따라 자기 타입이 바뀐다"
+    case .imposter:                    "등장 시 상대로 변신한다"
+    case .parentalBond:                "한 번 더, 약하게 때린다"
+    case .stealOnContact(let item):    item ? "접촉해 온 상대의 도구를 빼앗는다"
+                                            : "접촉해 온 상대와 특성을 바꾼다"
+    case .opportunist:                 "상대가 능력을 올리면 같이 오른다"
+    case .hazardWhenHit(let h, _):     "물리 공격을 맞으면 상대 진영에 \(h.ko)를 깐다"
+    case .embodyAspect:                "등장 시 가면에 맞는 능력치가 오른다"
+    case .lowerFoeEvasionOnEntry:      "등장 시 상대 회피율을 내린다"
+    case .formSwitchDisplay:           "조건에 따라 폼이 바뀐다 (표시만)"
+
+    case .paradoxBoost(let w, let t):
+        (w.map { "\($0.ko)" } ?? t.map { "\($0.ko) 필드" } ?? "")
+            + "나 부스트에너지로 가장 높은 능력치가 1.3배"
     case .pinchBoost(let t, _):        "HP 1/3 이하에서 \(t.ko) 기술 강화"
     case .intimidate:                  "등장 시 상대 공격 하락"
     case .typeImmunity(let t):         "\(t.ko) 기술 무효"
@@ -1072,6 +1157,75 @@ struct EligibilityBadges: View {
                 .background(Capsule().fill(color.opacity(0.25)))
                 .foregroundStyle(color)
                 .lineLimit(1)
+        }
+    }
+}
+
+/// 중계 서버로 만나기.
+///
+/// 자동 검색(Bonjour)은 같은 네트워크 안에서만 되고, 주소로 직접 붙는 방법은
+/// **방장 쪽 포트가 열려 있어야** 한다. 중계 서버를 쓰면 양쪽 모두 밖으로 나가는
+/// 연결만 걸면 되므로, 둘 다 각자의 공유기 뒤에 있어도 만난다.
+struct RelaySection: View {
+    @Bindable var model: AppModel
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("동료 중 한 명이 중계기를 띄워두면, 서로 다른 네트워크에서도 만날 수 있습니다. "
+                 + "포트를 열어야 하는 곳은 중계기 한 대뿐입니다.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Text("중계 주소").font(.caption.bold()).frame(width: 56, alignment: .leading)
+                TextField("pi.example.com:\(RelayConfig.defaultPort)", text: $model.relayServer)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                Text("암호").font(.caption.bold())
+                SecureField("없으면 비움", text: $model.relaySecret)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(width: 110)
+            }
+
+            HStack(spacing: 8) {
+                Text("방 코드").font(.caption.bold()).frame(width: 56, alignment: .leading)
+                TextField("비워두면 만들어 줍니다", text: $model.relayRoom)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(width: 150)
+                    .onSubmit { Task { await model.joinViaRelay() } }
+
+                Button("중계로 방 열기") { Task { await model.startHostingViaRelay() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!model.canUseRelay)
+                    .help("방을 등록하고 방 코드를 받습니다 — 그 코드를 상대에게 알려주세요")
+
+                Button("방 코드로 참가") { Task { await model.joinViaRelay() } }
+                    .disabled(!model.canUseRelay
+                              || model.relayRoom.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("상대가 알려준 방 코드로 들어갑니다")
+
+                if !model.relayRoom.isEmpty {
+                    Button(copied ? "복사됨" : "코드 복사") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(model.relayRoom, forType: .string)
+                        copied = true
+                    }
+                    .font(.caption)
+                }
+                Spacer()
+            }
+
+            if model.roster.isEmpty {
+                Text("PokeTokenBar 에 포켓몬이 있어야 사용할 수 있습니다.")
+                    .font(.caption2).foregroundStyle(.orange)
+            } else if !model.canUseRelay {
+                Text("중계기를 띄운 동료에게 주소를 받아 적으세요. "
+                     + "중계기 설치는 scripts/install-relay.sh 로 합니다.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
         }
     }
 }

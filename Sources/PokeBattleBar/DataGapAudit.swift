@@ -18,7 +18,25 @@ enum DataGapAudit {
         ok = auditItems(verbose: verbose) && ok
         ok = auditAbilities(verbose: verbose) && ok
         ok = auditFlingTable(verbose: verbose) && ok
+        ok = auditDeadCases() && ok
         return ok
+    }
+
+    // MARK: 죽은 case
+
+    /// 오타로 영원히 실행되지 않는 case 가 있으면 **실패**로 처리한다.
+    /// 이건 "아직 구현 안 함" 이 아니라 버그다.
+    private static func auditDeadCases() -> Bool {
+        let (ab, it) = deadCaseNames()
+        print("-- 존재하지 않는 이름을 가진 case --")
+        if ab.isEmpty && it.isEmpty {
+            print("  ✓ 없음\n")
+            return true
+        }
+        for n in ab { print("  ✗ 특성 \"\(n)\" — PokeAPI 에 이런 이름이 없다") }
+        for n in it { print("  ✗ 도구 \"\(n)\" — PokeAPI 에 이런 이름이 없다") }
+        print("")
+        return false
     }
 
     // MARK: 도구
@@ -33,7 +51,7 @@ enum DataGapAudit {
 
         for (id, it) in Showdown.items.sorted(by: { $0.key < $1.key }) {
             guard it.isUsable, it.hasBattleEffect else { skipped += 1; continue }
-            let slug = pokeAPISlug(id)
+            let slug = itemSlug(id)
             if isCovered(slug: slug, item: it) { covered += 1 } else { missing.append(slug) }
         }
 
@@ -79,8 +97,13 @@ enum DataGapAudit {
 
         for (id, ab) in Showdown.abilities.sorted(by: { $0.key < $1.key }) {
             guard ab.isUsable, ab.hasBattleEffect else { skipped += 1; continue }
-            let slug = pokeAPISlug(id)
-            if AbilityCatalog.kind(for: slug) != .none { covered += 1 }
+            // Showdown 이 쪼개 놓았지만 **PokeAPI 에는 없는** id 는 우리에게
+            // 도달할 수 없다 (오거폰의 embodyaspect* 4종). 구현 대상이 아니다.
+            guard Showdown.abilityNameByID[id] != nil else { skipped += 1; continue }
+            let slug = abilitySlug(id)
+            if AbilityCatalog.kind(for: slug) != .none || handledOutsideKind.contains(slug) {
+                covered += 1
+            }
             else { missing.append(slug) }
         }
 
@@ -116,7 +139,7 @@ enum DataGapAudit {
         print("  던질 수 있는 도구 \(flingable.count)개, 그중 부가효과가 붙는 것 \(withStatus.count)개")
         for (id, it) in withStatus.sorted(by: { $0.key < $1.key }) {
             let eff = it.flingStatus ?? it.flingVolatile ?? "?"
-            print("    · \(pokeAPISlug(id)) — 위력 \(it.flingPower ?? 0), \(eff)")
+            print("    · \(itemSlug(id)) — 위력 \(it.flingPower ?? 0), \(eff)")
         }
         print("")
         return true
@@ -127,20 +150,64 @@ enum DataGapAudit {
     /// Showdown 은 하이픈을 지운 소문자 id 를 쓴다("toxicorb"). PokeAPI 는
     /// 하이픈을 쓴다("toxic-orb"). 역변환은 불가능하므로 PokeAPI 쪽 이름 목록을
     /// 미리 만들어 대조한다.
-    private static func pokeAPISlug(_ showdownID: String) -> String {
-        slugIndex[showdownID] ?? showdownID
+    private static func itemSlug(_ showdownID: String) -> String {
+        Showdown.itemNameByID[showdownID] ?? showdownID
+    }
+    private static func abilitySlug(_ showdownID: String) -> String {
+        Showdown.abilityNameByID[showdownID] ?? showdownID
     }
 
-    /// 우리가 이름을 아는 도구·특성 slug 를 Showdown id 로 색인해 둔다.
-    private static let slugIndex: [String: String] = {
-        // Showdown id("toxicorb") → PokeAPI slug("toxic-orb").
-        //
-        // 역변환은 불가능하므로 **우리가 표로 알고 있는 이름**을 색인해 둔다.
-        // 여기 없는 것은 id 그대로 보여준다 (구현 안 된 것들이라 어차피 그렇다).
-        var out: [String: String] = [:]
-        for slug in ItemCatalog.allKnownSlugs {
-            out[Showdown.id(fromPokeAPI: slug)] = slug
+    /// **존재하지 않는 이름을 스위치에 적어두는 실수를 잡는다.**
+    ///
+    /// PokeAPI slug 은 아포스트로피를 지운다 — "dragons-maw" 이지
+    /// "dragon-s-maw" 가 아니다. 오타를 내면 그 case 는 영원히 실행되지
+    /// 않고, 우리는 "구현했다" 고 믿는다. 실제로 용의턱이 그랬다.
+    static func deadCaseNames() -> (abilities: [String], items: [String]) {
+        let realAbilities = Set(Showdown.pokeAPIAbilityNames)
+        let realItems = Set(Showdown.pokeAPIItemNames)
+        var deadAb: [String] = []
+        var deadIt: [String] = []
+        for name in switchCaseNames(inFile: "Abilities.swift")
+        where !realAbilities.contains(name) { deadAb.append(name) }
+        for name in switchCaseNames(inFile: "Items.swift")
+        where !realItems.contains(name) { deadIt.append(name) }
+        return (deadAb, deadIt)
+    }
+
+    /// 소스에서 스위치 case 문자열을 긁어온다.
+    /// 소스가 배포본에 없으면(설치된 앱) 빈 배열이라 검사가 조용히 통과한다 —
+    /// 개발 중에만 도는 검사다.
+    private static func switchCaseNames(inFile file: String) -> [String] {
+        let here = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let url = here.appending(path: "Pokedex").appending(path: file)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        var out: [String] = []
+        for line in text.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("case \"") else { continue }
+            // case "a", "b": ... 형태에서 따옴표 안만 뽑는다
+            var parts = t.split(separator: "\"").enumerated()
+                .filter { $0.offset % 2 == 1 }
+                .map { String($0.element) }
+            // 반환값 안의 문자열은 콜론 뒤라 제외한다
+            if let colon = t.firstIndex(of: ":") {
+                let head = String(t[t.startIndex..<colon])
+                parts = head.split(separator: "\"").enumerated()
+                    .filter { $0.offset % 2 == 1 }
+                    .map { String($0.element) }
+            }
+            out.append(contentsOf: parts)
         }
         return out
-    }()
+    }
+
+    /// `AbilityKind` 를 거치지 않고 다른 곳에서 처리하는 특성.
+    ///
+    /// 폼 변화(FormChange)나 개별 분기(Battler.isOblivious)로 구현한 것들은
+    /// kind 가 .none 이라 감사에 "빠졌다" 로 잡힌다. 실제로는 동작하므로
+    /// 여기 적어 둔다 — 적을 때 반드시 **어디서 처리하는지** 를 남긴다.
+    private static let handledOutsideKind: Set<String> = [
+        "forecast", "flower-gift", "zen-mode", "schooling",   // FormChange.autoRule
+        "oblivious",                                          // Battler.isOblivious
+    ]
 }

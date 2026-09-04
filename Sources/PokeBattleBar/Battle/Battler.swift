@@ -96,6 +96,13 @@ struct Battler: Codable, Identifiable, Sendable, Equatable {
 
     var isRampaging: Bool { rampageTurns > 0 && rampageMoveIndex != nil }
 
+    /// 일렉트릭변환·윈드파워로 충전됐는가 (다음 전기 기술이 두 배)
+    var chargedByAbility: Bool = false
+    /// 멸망의노래 — 0 이 되면 쓰러진다 (걸린 턴에 4, 턴마다 1 줄어든다)
+    var perishTurns: Int = 0
+    /// 옷무늬·아이스페이스의 한 번 방어를 이미 썼는가
+    var shieldUsed: Bool = false
+
     /// 쓸 수 있는 도구를 지니고 있는가 (곡예·성원의칼날 판정)
     var hasUsableItem: Bool { heldItem != nil && !itemConsumed }
 
