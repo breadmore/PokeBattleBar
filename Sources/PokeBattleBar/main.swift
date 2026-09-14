@@ -187,6 +187,15 @@ if let i = args.firstIndex(of: "--movelog"), args.count > i + 1 {
 
 // Showdown 데이터와 우리 구현을 대조한다 — 뭘 빼먹었는지 데이터가 말해준다
 // 내 로스터 기술이 실제로 작동하는지 하나하나 센다
+// 중계 서버로 **배틀이 끝까지** 되는지
+if let i = args.firstIndex(of: "--relaybattle"), args.count > i + 1 {
+    let role = args[i + 1]
+    var secs = 40
+    if let j = args.firstIndex(of: "--seconds"), j + 1 < args.count,
+       let v = Int(args[j + 1]) { secs = v }
+    BigStack.run { await RelayBattleProbe.run(role: role, seconds: secs) }
+}
+
 if args.contains("--usability") {
     // 검증은 큰 스택 스레드에서 돌린다 (BigStack 주석 참고)
     BigStack.run { await MoveUsabilityAudit.run(verbose: args.contains("--all")) }
