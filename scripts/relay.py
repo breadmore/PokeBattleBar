@@ -331,7 +331,10 @@ class Relay:
 
         room = Room(code, name, reader, writer)
         self.rooms[code] = room
-        log.info("방 등록 %s (%s) from %s — 현재 %d개", code, name, peer, len(self.rooms))
+        # peer 는 **붙어 온 쪽의 출발지 주소**다 (임시 포트라 매번 바뀐다).
+        # 남에게 알려줄 주소가 아니다 — 그 오해가 실제로 있었다.
+        log.info("방 등록 %s (%s) — 접속한 곳 %s · 현재 %d개",
+                 code, name, peer, len(self.rooms))
         try:
             await self.write_frame(writer, {"ok": True, "registered": True})
         except (OSError, ConnectionError):
@@ -619,6 +622,18 @@ def service_state():
         return None
 
 
+def make_secret(length=12):
+    """사람이 받아 적을 수 있는 암호를 만든다.
+
+    헷갈리는 글자(0/O, 1/l/I)를 빼고, 네 글자마다 하이픈을 넣는다 —
+    전화로 불러주거나 메신저로 옮겨 적기 쉬워야 한다.
+    """
+    import secrets
+    alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+    raw = "".join(secrets.choice(alphabet) for _ in range(length))
+    return "-".join(raw[i:i + 4] for i in range(0, length, 4))
+
+
 def print_guide(port, web_port):
     ip = local_ip() or "<이 기계의 주소>"
     state = service_state()
@@ -678,7 +693,10 @@ async def main():
     ap = argparse.ArgumentParser(description="PokeBattleBar 방 중계기")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=51235)
-    ap.add_argument("--secret", default=None, help="접속 암호 (앱에도 같은 값을 적는다)")
+    ap.add_argument("--secret", default=None,
+                    help="접속 암호. 안 주면 자동으로 만들어 화면에 보여준다")
+    ap.add_argument("--no-secret", action="store_true",
+                    help="암호 없이 연다 (같은 집 안에서만 쓸 때)")
     ap.add_argument("--max-rooms", type=int, default=50)
     ap.add_argument("--idle", type=int, default=1800, help="빈 방을 치우기까지 (초)")
     ap.add_argument("--web-port", type=int, default=51236,
@@ -694,11 +712,44 @@ async def main():
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
-    relay = Relay(secret=args.secret, max_rooms=args.max_rooms,
+    # **암호를 안 주면 만들어 준다.**
+    #
+    # 중계기는 오가는 내용을 볼 수 있고, 주소만 알면 누구나 붙을 수 있다.
+    # 그런데 --secret 을 깜빡하기 쉬워서 그대로 열린 채로 도는 일이 생긴다.
+    # 기본을 "암호 있음" 으로 두고, 정말 열고 싶으면 --no-secret 을 적게 한다.
+    secret = args.secret
+    generated = False
+    if args.no_secret:
+        secret = None
+    elif not secret:
+        secret = make_secret()
+        generated = True
+
+    relay = Relay(secret=secret, max_rooms=args.max_rooms,
                   idle=args.idle, port=args.port)
     server = await asyncio.start_server(relay.handle, args.host, args.port)
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
-    log.info("중계기 시작 %s%s", addrs, " (암호 있음)" if args.secret else "")
+    log.info("중계기 시작 %s", addrs)
+
+    ip = local_ip() or "<이 기계의 주소>"
+    if generated:
+        # 자동으로 만든 암호는 **눈에 띄게** 보여줘야 한다 —
+        # 로그 사이에 묻히면 동료에게 알려줄 수가 없다.
+        print(f"""
+════════════════════════════════════════════════════════════
+  암호를 지정하지 않아 자동으로 만들었습니다.
+
+    중계 주소   {ip}:{args.port}
+    중계 암호   {secret}
+
+  이 두 줄을 배틀할 동료에게 알려주세요.
+  (직접 정하려면 --secret 우리팀암호, 암호 없이 열려면 --no-secret)
+════════════════════════════════════════════════════════════
+""", flush=True)
+    elif secret:
+        log.info("암호 있음 — 앱에도 같은 값을 적어야 합니다")
+    else:
+        log.info("암호 없음 — 주소를 아는 누구나 붙을 수 있습니다 (--no-secret)")
 
     asyncio.ensure_future(relay.lobby_pusher())
 

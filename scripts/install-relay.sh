@@ -6,7 +6,9 @@
 # 파이썬 3 만 있으면 됩니다.
 #
 #   bash install-relay.sh                     암호 없이
-#   bash install-relay.sh --secret 우리팀암호   암호를 걸고 (권장)
+#   bash install-relay.sh                      암호를 자동으로 만들어 준다
+#   bash install-relay.sh --secret 우리팀암호   암호를 직접 정하고
+#   bash install-relay.sh --no-secret          암호 없이 (같은 집 안에서만)
 #   bash install-relay.sh --port 51235 --web-port 51236
 #
 # 끝나면 동료에게 알려줄 주소와 상태 화면 주소를 출력합니다.
@@ -15,11 +17,13 @@ set -euo pipefail
 PORT=51235
 WEB_PORT=51236
 SECRET=""
+NO_SECRET=""
 SERVICE=pokebattle-relay
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --secret)   SECRET="${2:-}"; shift 2 ;;
+        --no-secret) NO_SECRET=1; shift ;;
         --port)     PORT="${2:-}"; shift 2 ;;
         --web-port) WEB_PORT="${2:-}"; shift 2 ;;
         -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
@@ -46,8 +50,28 @@ exec /usr/bin/python3 /usr/local/bin/pokebattle-relay --guide \\
 EOF
 sudo chmod 0755 /usr/local/bin/pokebattle-relay-help
 
+# **암호를 안 주면 여기서 만든다.**
+#
+# 서비스로 등록하면 화면이 안 보이므로, 중계기가 켜질 때 자동 생성하게
+# 두면 동료에게 알려줄 값을 알 수가 없다. 설치 시점에 정해서 아래
+# 안내문에 찍어준다. 정말 열어두려면 --no-secret 을 준다.
+GENERATED=""
+if [ -z "$SECRET" ] && [ "$NO_SECRET" != "1" ]; then
+    SECRET=$(python3 -c "
+import secrets
+a='ABCDEFGHJKMNPQRSTUVWXYZ23456789'
+r=''.join(secrets.choice(a) for _ in range(12))
+print('-'.join(r[i:i+4] for i in range(0,12,4)))
+")
+    GENERATED="1"
+fi
+
 ARGS="--port $PORT --web-port $WEB_PORT"
-[ -n "$SECRET" ] && ARGS="$ARGS --secret $SECRET"
+if [ -n "$SECRET" ]; then
+    ARGS="$ARGS --secret $SECRET"
+else
+    ARGS="$ARGS --no-secret"
+fi
 
 if command -v systemctl >/dev/null; then
     echo "==> 부팅할 때 자동으로 뜨도록 등록 (systemd)"
@@ -92,7 +116,9 @@ cat <<EOF
 
   동료가 앱에 적을 주소   ${IP}:${PORT}
   상태 화면(브라우저)      http://${IP}:${WEB_PORT}/
-$([ -n "$SECRET" ] && echo "  중계 암호               ${SECRET}")
+$([ -n "$SECRET" ] && echo "  중계 암호               ${SECRET}")$([ -n "$GENERATED" ] && echo "
+  ↑ 암호를 지정하지 않아 자동으로 만들었습니다. 위 두 줄을 동료에게 알려주세요.")$([ -z "$SECRET" ] && echo "
+  ⚠ 암호 없이 열었습니다 — 주소를 아는 누구나 붙을 수 있습니다.")
 
 같은 네트워크 밖에서도 쓰려면 공유기에서 **${PORT} 포트**를 이 기계로
 넘겨주세요(포트포워딩). 넘겨야 하는 것은 이 기계 하나뿐이고,
