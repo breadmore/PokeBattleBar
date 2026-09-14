@@ -10,6 +10,12 @@
 #   bash install-relay.sh --no-secret          암호 없이 (같은 집 안에서만)
 #   bash install-relay.sh --port 47474 --web-port 47475
 #   bash install-relay.sh --no-auto-open       길 트는 것을 직접 하겠다
+#   bash install-relay.sh --tunnel <ngrok토큰>  **라우터를 못 건드릴 때**
+#
+# 사무실 라우터처럼 포트포워딩을 넣을 수 없으면 --tunnel 을 쓰세요.
+# 이 기계가 밖으로 나가는 연결만으로 공개 주소를 하나 받아옵니다.
+# 참가자는 아무것도 설치하지 않아도 됩니다 (Tailscale 과 다른 점입니다).
+#   토큰은 https://dashboard.ngrok.com 에서 무료로 받습니다.
 #
 # **밖에서 붙을 수 있게 하는 것까지 알아서 합니다.**
 #   1) 방화벽(ufw)이 켜져 있으면 포트를 엽니다
@@ -23,13 +29,16 @@ WEB_PORT=47475
 SECRET=""
 NO_SECRET=""
 AUTO_OPEN=1
+TUNNEL_TOKEN=""
 SERVICE=pokebattle-relay
+TUNNEL_SERVICE=pokebattle-tunnel
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --secret)   SECRET="${2:-}"; shift 2 ;;
         --no-secret) NO_SECRET=1; shift ;;
         --no-auto-open) AUTO_OPEN=""; shift ;;
+        --tunnel)   TUNNEL_TOKEN="${2:-}"; shift 2 ;;
         --port)     PORT="${2:-}"; shift 2 ;;
         --web-port) WEB_PORT="${2:-}"; shift 2 ;;
         -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
@@ -55,6 +64,32 @@ exec /usr/bin/python3 /usr/local/bin/pokebattle-relay --guide \\
     --port $PORT --web-port $WEB_PORT
 EOF
 sudo chmod 0755 /usr/local/bin/pokebattle-relay-help
+
+# 지금 동료에게 줄 주소를 한 줄로 보여준다.
+#
+# 터널(무료 요금제)은 다시 시작할 때마다 주소가 바뀐다. 그때마다 설치를
+# 다시 돌리게 할 수는 없으니, 현재 값을 읽는 명령을 따로 둔다.
+echo "==> 주소 확인 명령 설치 (pokebattle-relay-address)"
+sudo tee /usr/local/bin/pokebattle-relay-address >/dev/null <<'ADDREOF'
+#!/bin/bash
+# 지금 동료에게 알려줄 중계 주소를 보여줍니다.
+TUN=$(curl -s --max-time 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null       | grep -o '"public_url":"tcp://[^"]*"' | head -1       | sed 's|.*tcp://||; s|"$||')
+if [ -n "$TUN" ]; then
+    echo "중계 주소: $TUN      (터널 — 다시 시작하면 바뀝니다)"
+    exit 0
+fi
+TS=$(tailscale ip -4 2>/dev/null | head -1)
+PORT=$(grep -o '\-\-port [0-9]*' /etc/systemd/system/pokebattle-relay.service 2>/dev/null        | awk '{print $2}' | head -1)
+PORT=${PORT:-47474}
+if [ -n "$TS" ]; then
+    echo "중계 주소: ${TS}:${PORT}      (Tailscale — 참가자도 Tailscale 필요)"
+    exit 0
+fi
+PUB=$(curl -s --max-time 5 https://api.ipify.org 2>/dev/null)
+echo "중계 주소: ${PUB:-<공인주소를 확인하지 못했습니다>}:${PORT}"
+echo "  ※ 포트포워딩이 되어 있어야 밖에서 붙습니다. 확인:  pokebattle-relay --checknet"
+ADDREOF
+sudo chmod 0755 /usr/local/bin/pokebattle-relay-address
 
 # **암호를 안 주면 여기서 만든다.**
 #
@@ -212,8 +247,72 @@ if [ -n "$AUTO_OPEN" ]; then
         [ -n "$OPENED" ] && echo "    ✓ 밖에서 닿습니다 — ${OPENED}"
     fi
 
-    # 4) CGNAT 이면 포트포워딩으로는 답이 없다 — Tailscale 로 우회한다
-    if [ "$REACH" = "cgnat" ] && [ -z "$TS_IP" ]; then
+    # 4) **터널** — 라우터를 못 건드릴 때 (사무실 등).
+    #
+    #    이 기계가 밖으로 나가는 연결만으로 공개 주소를 하나 받아온다.
+    #    Tailscale 과 달리 **참가자는 아무것도 설치하지 않아도 된다** —
+    #    받은 host:port 를 앱에 적기만 하면 된다.
+    if [ -n "$TUNNEL_TOKEN" ]; then
+        echo "    터널을 세웁니다 (라우터를 건드리지 않습니다)"
+        if ! command -v ngrok >/dev/null; then
+            ARCH=$(uname -m)
+            case "$ARCH" in
+                aarch64|arm64) NG=arm64 ;;
+                armv7l|armv6l) NG=arm ;;
+                x86_64)        NG=amd64 ;;
+                *)             NG="" ;;
+            esac
+            if [ -n "$NG" ]; then
+                curl -sL "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-${NG}.tgz" \
+                    -o /tmp/ngrok.tgz 2>/dev/null \
+                    && sudo tar xzf /tmp/ngrok.tgz -C /usr/local/bin 2>/dev/null \
+                    && rm -f /tmp/ngrok.tgz
+            fi
+        fi
+        if command -v ngrok >/dev/null; then
+            ngrok config add-authtoken "$TUNNEL_TOKEN" >/dev/null 2>&1 || true
+            # 터널도 서비스로 띄운다 — 파이를 껐다 켜도 살아 있어야 한다
+            sudo tee /etc/systemd/system/$TUNNEL_SERVICE.service >/dev/null <<EOF
+[Unit]
+Description=PokeBattleBar relay tunnel
+After=network-online.target $SERVICE.service
+Wants=network-online.target
+
+[Service]
+ExecStart=$(command -v ngrok) tcp $PORT --log stdout
+Restart=always
+RestartSec=5
+User=$USER
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now $TUNNEL_SERVICE >/dev/null 2>&1
+            echo "    터널이 자리잡을 때까지 기다립니다…"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                sleep 2
+                TUN=$(curl -s --max-time 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null \
+                      | grep -o '"public_url":"tcp://[^"]*"' | head -1 \
+                      | sed 's|.*tcp://||; s|"$||')
+                [ -n "$TUN" ] && break
+            done
+            if [ -n "$TUN" ]; then
+                OPENED="$TUN"
+                echo "    ✓ 터널이 열렸습니다 — ${TUN}"
+            else
+                note "터널 주소를 읽지 못했습니다. 아래로 확인해 보세요:"
+                note "    sudo systemctl status ${TUNNEL_SERVICE}"
+                note "    curl -s http://127.0.0.1:4040/api/tunnels"
+            fi
+        else
+            note "ngrok 설치에 실패했습니다. 직접 설치한 뒤 다시 실행해 주세요:"
+            note "    https://ngrok.com/download"
+        fi
+    fi
+
+    # 5) CGNAT 이면 포트포워딩으로는 답이 없다 — Tailscale 로 우회한다
+    if [ "$REACH" = "cgnat" ] && [ -z "$TS_IP" ] && [ -z "$OPENED" ]; then
         echo "    통신사 CGNAT 뒤입니다 — 포트포워딩으로는 밖에서 못 붙습니다"
         echo "    Tailscale 을 설치합니다 (무료 · 기기 100대까지)"
         if curl -fsSL https://tailscale.com/install.sh 2>/dev/null | sh >/dev/null 2>&1; then
@@ -227,7 +326,8 @@ if [ -n "$AUTO_OPEN" ]; then
         fi
     fi
 
-    [ -n "$TS_IP" ] && OPENED="${TS_IP}:${PORT}"
+    # 터널이 이미 열렸으면 그쪽이 낫다 — 참가자가 아무것도 안 깔아도 된다
+    [ -n "$TS_IP" ] && [ -z "$OPENED" ] && OPENED="${TS_IP}:${PORT}"
 fi
 
 # 동료에게 줄 주소 — 확인된 것이 있으면 그것을, 없으면 짐작되는 것을
@@ -262,8 +362,10 @@ cgnat)
   echo "⚠ 통신사 CGNAT 뒤에 있습니다 (공인 주소 ${PUBLIC_IP}).
    **포트포워딩으로는 밖에서 붙을 수 없습니다** — 그 주소는 통신사 것입니다.
    아래 중 하나를 쓰세요:
-     · Tailscale  — 파이와 참가자 전원에게 깔면 100.x 주소로 바로 붙습니다
-     · TCP 터널   — 예: ngrok tcp ${PORT}  (받은 host:port 를 알려주면 끝)
+     · 터널      — 이 기계에서만 설정하면 됩니다. **참가자는 설치 불필요**
+                   bash install-relay.sh --tunnel <ngrok토큰>
+                   토큰은 https://dashboard.ngrok.com 에서 무료
+     · Tailscale — 참가자 전원에게도 깔아야 합니다 (대신 주소가 안 바뀝니다)
      · 공인 주소가 있는 서버에 중계기를 올린다 (가장 안정적)"
   ;;
 *)
@@ -283,10 +385,14 @@ fi)$([ -n "$TS_IP" ] && echo "
 $([ -n "$NOTES" ] && echo "
   남은 일${NOTES}
 ")
+  ★ 지금 줄 주소 보기          pokebattle-relay-address
   ★ 밖에서 붙을 수 있는지 판정  pokebattle-relay --checknet
   ★ 이 안내를 다시 보려면      pokebattle-relay-help
     (또는  pokebattle-relay help )
 
+$([ -n "$TUNNEL_TOKEN" ] && echo "  ⚠ 터널 주소는 다시 시작할 때마다 바뀝니다.
+    바뀐 뒤에는  pokebattle-relay-address  로 새 주소를 확인하세요.
+")
   상태 보기   sudo systemctl status ${SERVICE}
   로그 보기   journalctl -u ${SERVICE} -f
   끄기        sudo systemctl disable --now ${SERVICE}
