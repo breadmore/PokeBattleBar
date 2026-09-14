@@ -182,6 +182,7 @@ esac)$([ -n "$TS_IP" ] && echo "
 넘겨야 하는 것은 이 기계 하나뿐이고, 배틀하는 두 사람은
 아무 설정도 필요 없습니다.
 
+  ★ 밖에서 붙을 수 있는지 판정  pokebattle-relay --checknet
   ★ 이 안내를 다시 보려면      pokebattle-relay-help
     (또는  pokebattle-relay help )
 

@@ -650,6 +650,96 @@ def make_secret(length=12):
     return "-".join(raw[i:i + 4] for i in range(0, length, 4))
 
 
+def check_network(port):
+    """**밖에서 이 기계에 붙을 수 있는가.**
+
+    사설 주소만 보고는 알 수 없다. 판정을 가르는 것은 인터넷에서 보이는
+    주소다:
+
+      · 공인 주소가 이 기계에 직접 붙어 있다  → 방화벽만 열면 된다
+      · 보통 공유기 뒤                        → 포트포워딩으로 된다 (무료)
+      · 통신사 CGNAT(100.64~127.x) 뒤          → 포트포워딩 불가
+
+    CGNAT 은 통신사가 여러 가입자에게 공인 주소 하나를 나눠 쓰게 하는
+    방식이라, 넘겨줄 공유기 자체가 사용자 손에 없다.
+    """
+    import urllib.request
+
+    local = local_ip() or "?"
+    ts = tailscale_ip()
+
+    public = None
+    try:
+        with urllib.request.urlopen("https://api.ipify.org", timeout=6) as r:
+            public = r.read().decode().strip()
+    except Exception:
+        pass
+
+    def is_cgnat(ip):
+        try:
+            a, b = (int(x) for x in ip.split(".")[:2])
+        except ValueError:
+            return False
+        return a == 100 and 64 <= b <= 127
+
+    print(f"""
+이 기계의 네트워크
+════════════════════════════════════════════════════════════
+  내부 주소       {local}
+  인터넷에서 보이는 주소  {public or "확인 실패 (인터넷이 안 되는 듯합니다)"}
+  Tailscale       {ts or "없음"}
+""")
+
+    if public is None:
+        print("  인터넷 연결을 확인해 주세요.\n")
+        return
+
+    if public == local:
+        print(f"""판정: 공인 주소가 직접 붙어 있습니다 — **무료로 됩니다**
+────────────────────────────────────────────────────────────
+  방화벽에서 {port}/tcp 만 열면 밖에서 바로 붙습니다.
+
+      sudo ufw allow {port}/tcp
+
+  동료에게 알려줄 주소:  {public}:{port}
+""")
+    elif is_cgnat(public):
+        print(f"""판정: 통신사 CGNAT 뒤입니다 — **포트포워딩으로는 안 됩니다**
+────────────────────────────────────────────────────────────
+  공인 주소({public})가 통신사 것이라 넘겨줄 공유기가 없습니다.
+  돈을 들이지 않는 방법은 둘입니다.
+
+  ① Tailscale (무료 · 기기 100대까지)
+     이 기계와 참가자 전원에게 깔고 같은 계정으로 로그인합니다.
+        curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+     깔면 100.x 주소가 생기고, 중계기가 그 주소를 알려줍니다.
+     → 참가자가 프로그램을 하나 깔아야 합니다.
+
+  ② 통신사에 공인 IP 를 요청 (무료인 곳이 많습니다)
+     고객센터에 "공인 IP 로 바꿔달라" 고 하면 되는 경우가 있습니다.
+     바뀌면 아래 '공유기 뒤' 와 같은 방법을 쓸 수 있습니다.
+     → 참가자는 아무것도 안 해도 됩니다.
+""")
+    else:
+        print(f"""판정: 보통 공유기 뒤입니다 — **무료로 됩니다 (포트포워딩)**
+────────────────────────────────────────────────────────────
+  공유기 설정에서 아래를 넣으세요 (이름은 제조사마다 다릅니다):
+
+      외부 포트   {port}
+      내부 주소   {local}
+      내부 포트   {port}
+      프로토콜    TCP
+
+  넣은 뒤 동료에게 알려줄 주소:  {public}:{port}
+
+  · 참가자는 아무것도 설치하지 않아도 됩니다
+  · 공인 주소는 바뀔 수 있습니다. 바뀌면 다시 알려주거나,
+    무료 DDNS(공유기에 대개 내장)를 켜서 이름을 쓰세요
+  · 잘 됐는지는 밖에서 확인하는 게 확실합니다:
+        https://www.yougetsignal.com/tools/open-ports/  (포트 {port})
+""")
+
+
 def print_guide(port, web_port):
     ip = local_ip() or "<이 기계의 주소>"
     state = service_state()
@@ -721,9 +811,15 @@ async def main():
     ap.add_argument("--idle", type=int, default=1800, help="빈 방을 치우기까지 (초)")
     ap.add_argument("--web-port", type=int, default=47475,
                     help="상태 화면 포트 (0 이면 웹 UI 없음)")
+    ap.add_argument("--checknet", action="store_true",
+                    help="밖에서 붙을 수 있는 상태인지 판정하고 끝낸다")
     ap.add_argument("--guide", action="store_true",
                     help="설정값이 채워진 설명서를 보여주고 끝낸다")
     args = ap.parse_args()
+
+    if args.checknet:
+        check_network(args.port)
+        return
 
     if args.guide:
         print_guide(args.port, args.web_port)
