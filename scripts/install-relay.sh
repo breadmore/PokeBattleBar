@@ -9,13 +9,13 @@
 #   bash install-relay.sh                      암호를 자동으로 만들어 준다
 #   bash install-relay.sh --secret 우리팀암호   암호를 직접 정하고
 #   bash install-relay.sh --no-secret          암호 없이 (같은 집 안에서만)
-#   bash install-relay.sh --port 51235 --web-port 51236
+#   bash install-relay.sh --port 47474 --web-port 47475
 #
 # 끝나면 동료에게 알려줄 주소와 상태 화면 주소를 출력합니다.
 set -euo pipefail
 
-PORT=51235
-WEB_PORT=51236
+PORT=47474
+WEB_PORT=47475
 SECRET=""
 NO_SECRET=""
 SERVICE=pokebattle-relay

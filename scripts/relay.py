@@ -23,8 +23,8 @@ NAT 뒤에 있어도 되고, 포트를 열어야 하는 곳은 이 기계 한 �
 
 ## 실행
 
-    python3 relay.py                          기본 0.0.0.0:51235
-    python3 relay.py --port 51235 --secret 우리팀암호
+    python3 relay.py                          기본 0.0.0.0:47474
+    python3 relay.py --port 47474 --secret 우리팀암호
     python3 relay.py --max-rooms 50 --idle 1800
 
     # 부팅할 때 같이 뜨게 (라즈베리파이)
@@ -110,7 +110,7 @@ class LobbyClient:
 
 
 class Relay:
-    def __init__(self, secret=None, max_rooms=50, idle=1800, port=51235):
+    def __init__(self, secret=None, max_rooms=50, idle=1800, port=47474):
         self.secret = secret
         self.max_rooms = max_rooms
         self.idle = idle
@@ -692,14 +692,14 @@ PokeBattleBar 중계기
 async def main():
     ap = argparse.ArgumentParser(description="PokeBattleBar 방 중계기")
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=51235)
+    ap.add_argument("--port", type=int, default=47474)
     ap.add_argument("--secret", default=None,
                     help="접속 암호. 안 주면 자동으로 만들어 화면에 보여준다")
     ap.add_argument("--no-secret", action="store_true",
                     help="암호 없이 연다 (같은 집 안에서만 쓸 때)")
     ap.add_argument("--max-rooms", type=int, default=50)
     ap.add_argument("--idle", type=int, default=1800, help="빈 방을 치우기까지 (초)")
-    ap.add_argument("--web-port", type=int, default=51236,
+    ap.add_argument("--web-port", type=int, default=47475,
                     help="상태 화면 포트 (0 이면 웹 UI 없음)")
     ap.add_argument("--guide", action="store_true",
                     help="설정값이 채워진 설명서를 보여주고 끝낸다")

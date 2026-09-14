@@ -11,7 +11,7 @@ enum DirectConnect {
     /// "100.64.1.2:51234" / "example.com:51234" / "100.64.1.2" (포트 생략 시 기본값)
     ///
     /// - Parameter defaultPort: 포트를 안 적었을 때 쓸 번호.
-    ///   방은 51234, 중계 서버는 51235 로 서로 다르다.
+    ///   방은 51234, 중계 서버는 47474 로 서로 다르다.
     static func endpoint(from text: String,
                          defaultPort: UInt16 = RoomHost.preferredPort) -> NWEndpoint? {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)

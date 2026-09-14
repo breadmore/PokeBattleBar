@@ -180,7 +180,7 @@ enum RelayError: LocalizedError {
 enum RelayConfig {
     /// 중계기 기본 포트. 방 포트(51234)와 겹치지 않게 다른 번호를 쓴다 —
     /// 한 대에서 중계기와 앱을 같이 돌릴 수 있어야 진단이 편하다.
-    static let defaultPort: UInt16 = 51235
+    static let defaultPort: UInt16 = 47474
 
     /// 사람이 받아 적기 쉬운 방 코드를 만든다.
     /// 헷갈리는 글자(0/O, 1/I/L)를 뺀다 — 전화로 알려줄 수도 있다.
