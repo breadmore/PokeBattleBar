@@ -5,25 +5,31 @@
 # **이어주기만** 합니다. 그래서 포켓몬 앱을 깔 필요가 없고(맥 전용입니다),
 # 파이썬 3 만 있으면 됩니다.
 #
-#   bash install-relay.sh                     암호 없이
-#   bash install-relay.sh                      암호를 자동으로 만들어 준다
+#   bash install-relay.sh                      이거 하나면 끝납니다
 #   bash install-relay.sh --secret 우리팀암호   암호를 직접 정하고
 #   bash install-relay.sh --no-secret          암호 없이 (같은 집 안에서만)
 #   bash install-relay.sh --port 47474 --web-port 47475
+#   bash install-relay.sh --no-auto-open       길 트는 것을 직접 하겠다
 #
-# 끝나면 동료에게 알려줄 주소와 상태 화면 주소를 출력합니다.
+# **밖에서 붙을 수 있게 하는 것까지 알아서 합니다.**
+#   1) 방화벽(ufw)이 켜져 있으면 포트를 엽니다
+#   2) 공유기에 UPnP 로 포트포워딩을 요청합니다
+#   3) 그래도 안 되면(통신사 CGNAT 등) Tailscale 을 깔아 우회합니다
+# 끝나면 **실제로 통하는 주소**와 암호를 출력합니다.
 set -euo pipefail
 
 PORT=47474
 WEB_PORT=47475
 SECRET=""
 NO_SECRET=""
+AUTO_OPEN=1
 SERVICE=pokebattle-relay
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --secret)   SECRET="${2:-}"; shift 2 ;;
         --no-secret) NO_SECRET=1; shift ;;
+        --no-auto-open) AUTO_OPEN=""; shift ;;
         --port)     PORT="${2:-}"; shift 2 ;;
         --web-port) WEB_PORT="${2:-}"; shift 2 ;;
         -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
@@ -140,18 +146,108 @@ fi
 # Tailscale 주소가 있으면 그게 제일 쉽다 (포트포워딩 없이 밖에서 닿는다)
 TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
 
+# ─────────────────────────────────────────────────────────────
+# 밖에서 붙을 수 있게 길을 튼다
+# ─────────────────────────────────────────────────────────────
+#
+# 사람이 판정하고 공유기를 만지게 두면 "왜 안 되지" 로 한참 헤맨다.
+# 할 수 있는 것은 기계가 하고, 못 하는 것만 사람에게 넘긴다.
+
+OPENED=""        # 실제로 밖에서 통하는 것으로 확인된 주소
+NOTES=""         # 사람에게 넘길 남은 일
+
+note() { NOTES="${NOTES}
+  $1"; }
+
+if [ -n "$AUTO_OPEN" ]; then
+    echo "==> 밖에서 붙을 수 있게 길을 트는 중"
+
+    # 1) 방화벽 — ufw 가 켜져 있을 때만 건드린다
+    if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+        sudo ufw allow "$PORT"/tcp >/dev/null 2>&1 && echo "    방화벽 ${PORT}/tcp 열었습니다"
+    fi
+
+    # 2) 공유기에 UPnP 로 포트포워딩을 요청한다.
+    #    되는 공유기가 꽤 많고, 되면 사람이 설정을 만질 필요가 없다.
+    if [ "$REACH" = "nat" ]; then
+        if ! command -v upnpc >/dev/null; then
+            echo "    UPnP 도구를 설치합니다 (miniupnpc)"
+            sudo apt-get install -y -qq miniupnpc >/dev/null 2>&1 || true
+        fi
+        if command -v upnpc >/dev/null; then
+            if upnpc -e "PokeBattleBar relay" -a "$IP" "$PORT" "$PORT" TCP >/dev/null 2>&1; then
+                echo "    공유기에 포트포워딩을 요청했습니다 (UPnP)"
+            else
+                echo "    UPnP 가 안 됩니다 — 공유기에서 직접 넣어야 합니다"
+            fi
+        fi
+    fi
+
+    # 3) 정말 통하는지 **밖에서** 확인한다.
+    #    중계기가 실제로 떠 있어야 의미가 있다 (위에서 서비스를 시작했다).
+    #    안에서 자기 공인 IP 로 붙어보는 것은 공유기 종류에 따라
+    #    되기도 안 되기도 해서(헤어핀 NAT) 믿을 수 없다.
+    if [ -n "$PUBLIC_IP" ] && [ "$REACH" != "cgnat" ]; then
+        echo "    밖에서 ${PUBLIC_IP}:${PORT} 로 닿는지 확인하는 중…"
+        # 중계기를 잠깐 띄워 두고 확인한다 (서비스가 이미 떠 있으면 그대로 쓴다)
+        sleep 2
+        # portchecker.io 는 POST 로 물어야 한다 (GET 은 405 를 준다).
+        # 열린 포트면 status:true, 닫혀 있으면 false 가 온다 — 실제로 확인했다.
+        CHECK=$(curl -s --max-time 15 -X POST "https://portchecker.io/api/v1/query" \
+            -H "Content-Type: application/json" \
+            -d "{\"host\":\"${PUBLIC_IP}\",\"ports\":[${PORT}]}" 2>/dev/null || true)
+        case "$CHECK" in
+            *'"status":true'*) OPENED="${PUBLIC_IP}:${PORT}" ;;
+            *'"status":false'*)
+                note "밖에서 ${PUBLIC_IP}:${PORT} 로 닿지 않습니다."
+                note "  공유기에서 ${PORT}/tcp 를 ${IP} 로 넘겨 주세요(포트포워딩)."
+                note "  이미 넣으셨다면 공유기를 다시 시작해 보세요." ;;
+            *) : ;;
+        esac
+        if [ -z "$OPENED" ] && [ -z "$NOTES" ]; then
+            note "밖에서 ${PUBLIC_IP}:${PORT} 로 닿는지 확인하지 못했습니다 (확인 서비스 응답 없음)."
+            note "  직접 확인: https://www.yougetsignal.com/tools/open-ports/  (포트 ${PORT})"
+        fi
+        [ -n "$OPENED" ] && echo "    ✓ 밖에서 닿습니다 — ${OPENED}"
+    fi
+
+    # 4) CGNAT 이면 포트포워딩으로는 답이 없다 — Tailscale 로 우회한다
+    if [ "$REACH" = "cgnat" ] && [ -z "$TS_IP" ]; then
+        echo "    통신사 CGNAT 뒤입니다 — 포트포워딩으로는 밖에서 못 붙습니다"
+        echo "    Tailscale 을 설치합니다 (무료 · 기기 100대까지)"
+        if curl -fsSL https://tailscale.com/install.sh 2>/dev/null | sh >/dev/null 2>&1; then
+            echo ""
+            echo "    아래 주소를 브라우저로 열어 로그인하세요 (한 번만 하면 됩니다):"
+            sudo tailscale up 2>&1 | sed 's/^/      /' || true
+            TS_IP=$(tailscale ip -4 2>/dev/null | head -1 || true)
+        else
+            note "Tailscale 자동 설치에 실패했습니다. 직접 설치해 주세요:"
+            note "    curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up"
+        fi
+    fi
+
+    [ -n "$TS_IP" ] && OPENED="${TS_IP}:${PORT}"
+fi
+
+# 동료에게 줄 주소 — 확인된 것이 있으면 그것을, 없으면 짐작되는 것을
+SHARE="${OPENED:-${PUBLIC_IP:-$IP}:${PORT}}"
+
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
 설치 끝났습니다.
 
-  동료가 앱에 적을 주소   ${IP}:${PORT}
+  동료가 앱에 적을 주소   ${SHARE}$([ -n "$OPENED" ] && echo "   ← 밖에서 닿는 것을 확인했습니다")
   상태 화면(브라우저)      http://${IP}:${WEB_PORT}/
 $([ -n "$SECRET" ] && echo "  중계 암호               ${SECRET}")$([ -n "$GENERATED" ] && echo "
   ↑ 암호를 지정하지 않아 자동으로 만들었습니다. 위 두 줄을 동료에게 알려주세요.")$([ -z "$SECRET" ] && echo "
   ⚠ 암호 없이 열었습니다 — 주소를 아는 누구나 붙을 수 있습니다.")
 
-$(case "$REACH" in
+$(if [ -n "$OPENED" ]; then
+  echo "밖에서 닿는 것을 확인했습니다. 더 하실 일이 없습니다 —
+위 주소와 암호를 동료에게 알려주기만 하면 됩니다."
+else
+case "$REACH" in
 public)
   echo "이 기계에 공인 주소가 직접 붙어 있습니다. 방화벽에서 ${PORT}/tcp 만
 열면 밖에서도 바로 붙습니다."
@@ -173,7 +269,8 @@ cgnat)
   echo "밖에서도 쓰려면 공유기에서 **${PORT}/tcp** 를 이 기계로 넘겨주세요.
 (인터넷 쪽 주소를 확인하지 못했습니다)"
   ;;
-esac)$([ -n "$TS_IP" ] && echo "
+esac
+fi)$([ -n "$TS_IP" ] && echo "
 
   ★ Tailscale 주소가 있습니다: ${TS_IP}:${PORT}
     참가자도 Tailscale 을 깔았다면 이 주소가 제일 확실합니다
@@ -182,6 +279,9 @@ esac)$([ -n "$TS_IP" ] && echo "
 넘겨야 하는 것은 이 기계 하나뿐이고, 배틀하는 두 사람은
 아무 설정도 필요 없습니다.
 
+$([ -n "$NOTES" ] && echo "
+  남은 일${NOTES}
+")
   ★ 밖에서 붙을 수 있는지 판정  pokebattle-relay --checknet
   ★ 이 안내를 다시 보려면      pokebattle-relay-help
     (또는  pokebattle-relay help )
