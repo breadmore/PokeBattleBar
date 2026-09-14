@@ -638,16 +638,18 @@ def tailscale_ip():
         return None
 
 
-def make_secret(length=12):
-    """사람이 받아 적을 수 있는 암호를 만든다.
+def make_secret(length=4):
+    """사람이 받아 적을 수 있는 짧은 암호를 만든다.
 
-    헷갈리는 글자(0/O, 1/l/I)를 빼고, 네 글자마다 하이픈을 넣는다 —
-    전화로 불러주거나 메신저로 옮겨 적기 쉬워야 한다.
+    헷갈리는 글자(0/O, 1/l/I)를 뺀 31글자에서 고른다. 네 자리면
+    약 92만 가지다 — 아는 사람끼리 포켓몬 배틀하는 용도에는 충분하고,
+    전화로 불러주기에 길지 않다.
+
+    더 튼튼하게 하려면 --secret 으로 직접 정하면 된다.
     """
     import secrets
     alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-    raw = "".join(secrets.choice(alphabet) for _ in range(length))
-    return "-".join(raw[i:i + 4] for i in range(0, length, 4))
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def check_network(port):

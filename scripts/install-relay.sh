@@ -63,11 +63,12 @@ sudo chmod 0755 /usr/local/bin/pokebattle-relay-help
 # 안내문에 찍어준다. 정말 열어두려면 --no-secret 을 준다.
 GENERATED=""
 if [ -z "$SECRET" ] && [ "$NO_SECRET" != "1" ]; then
+    # 네 자리면 약 92만 가지 — 아는 사람끼리 쓰기에 충분하고 부르기 짧다.
+    # 헷갈리는 글자(0/O, 1/l/I)는 뺀다.
     SECRET=$(python3 -c "
 import secrets
 a='ABCDEFGHJKMNPQRSTUVWXYZ23456789'
-r=''.join(secrets.choice(a) for _ in range(12))
-print('-'.join(r[i:i+4] for i in range(0,12,4)))
+print(''.join(secrets.choice(a) for _ in range(4)))
 ")
     GENERATED="1"
 fi
