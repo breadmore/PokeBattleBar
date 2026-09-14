@@ -622,6 +622,22 @@ def service_state():
         return None
 
 
+def tailscale_ip():
+    """Tailscale 주소 (없으면 None).
+
+    회사가 다른 사람끼리 붙을 때 가장 확실한 길이다 — 양쪽 모두 밖으로
+    나가는 연결만 쓰므로 포트포워딩도 공인 주소도 필요 없다.
+    통신사 CGNAT 뒤에서는 포트포워딩 자체가 불가능해서 사실상 유일한 방법이다.
+    """
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"],
+                             capture_output=True, text=True, timeout=3)
+        ip = out.stdout.strip().splitlines()
+        return ip[0].strip() if ip and ip[0].strip() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def make_secret(length=12):
     """사람이 받아 적을 수 있는 암호를 만든다.
 
@@ -658,11 +674,15 @@ PokeBattleBar 중계기
 
 배틀하는 사람에게 전달할 것
 ────────────────────────────────────────────────────────────
-  중계 주소: {ip}:{port}
+  중계 주소: {tailscale_ip() or ip}:{port}
   중계 암호: 설치할 때 지정한 값
 ────────────────────────────────────────────────────────────
   · 같은 네트워크 안에서만 쓴다면 위 주소를 그대로 알려줍니다
-  · 밖에서도 접속한다면 공인 IP 또는 도메인을 알려줍니다
+  · **다른 회사 사람과 한다면 Tailscale 이 가장 확실합니다** —
+    파이와 참가자 전원에게 깔면 100.x 주소로 바로 붙습니다
+    (포트포워딩도 공인 주소도 필요 없습니다)
+        curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up
+  · 공인 IP 가 있다면 포트포워딩으로도 됩니다 (CGNAT 뒤에서는 불가)
   · 암호가 기억나지 않으면:  sudo grep -o 'secret [^ ]*' {unit}
 
 확인
@@ -732,6 +752,10 @@ async def main():
     log.info("중계기 시작 %s", addrs)
 
     ip = local_ip() or "<이 기계의 주소>"
+    ts = tailscale_ip()
+    # Tailscale 주소가 있으면 그걸 먼저 알려준다 — 다른 회사 사람과 붙을 때
+    # 포트포워딩 없이 되는 유일한 길인 경우가 많다.
+    share = f"{ts}:{args.port}" if ts else f"{ip}:{args.port}"
     if generated:
         # 자동으로 만든 암호는 **눈에 띄게** 보여줘야 한다 —
         # 로그 사이에 묻히면 동료에게 알려줄 수가 없다.
@@ -739,11 +763,12 @@ async def main():
 ════════════════════════════════════════════════════════════
   암호를 지정하지 않아 자동으로 만들었습니다.
 
-    중계 주소   {ip}:{args.port}
+    중계 주소   {share}
     중계 암호   {secret}
 
   이 두 줄을 배틀할 동료에게 알려주세요.
   (직접 정하려면 --secret 우리팀암호, 암호 없이 열려면 --no-secret)
+{"" if ts else chr(10) + "  ※ 위 주소는 이 네트워크 안에서만 통합니다. 다른 회사 사람과 하려면" + chr(10) + "     Tailscale 을 쓰세요:  curl -fsSL https://tailscale.com/install.sh | sh"}
 ════════════════════════════════════════════════════════════
 """, flush=True)
     elif secret:
