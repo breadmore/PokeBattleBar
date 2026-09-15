@@ -27,7 +27,7 @@ final class PeerLink: @unchecked Sendable {
     /// 아직 핸드셰이크 응답을 기다리는 중인가 (nil 이면 평범한 직접 연결)
     private var pendingHello: RelayHello?
     /// 방이 등록됐을 때 (호스트만). 짝이 맞기 전이다.
-    private var onRelayRegistered: (@Sendable () -> Void)?
+    private var onRelayRegistered: (@Sendable (Int?) -> Void)?
     /// 짝이 맞았다 — 이 뒤로는 평범한 게임 연결이다. (상대 이름)
     private var onRelayPaired: (@Sendable (String?) -> Void)?
     /// 중계기가 거절했다
@@ -106,7 +106,7 @@ final class PeerLink: @unchecked Sendable {
     /// 짝이 맞은 뒤로는 직접 연결과 **완전히 같다** — 그래서 그 시점에
     /// `onPaired` 를 받은 쪽이 평소 경로(joinAccepted·battleBegan …)를 그대로 탄다.
     func startRelay(hello: RelayHello,
-                    onRegistered: @escaping @Sendable () -> Void,
+                    onRegistered: @escaping @Sendable (Int?) -> Void,
                     onPaired: @escaping @Sendable (String?) -> Void,
                     onRejected: @escaping @Sendable (String) -> Void,
                     onMessage: @escaping @Sendable (Wire) -> Void,
@@ -131,7 +131,7 @@ final class PeerLink: @unchecked Sendable {
     /// 배틀 연결과 달리 **끝까지 중계기와 이야기한다** — 짝을 맞추는 것이 아니라
     /// "누가 있는지" 를 계속 받는 것이 목적이다. 그래서 Wire 로 넘어가지 않는다.
     func startRelay(hello: RelayHello,
-                    onRegistered: @escaping @Sendable () -> Void,
+                    onRegistered: @escaping @Sendable (Int?) -> Void,
                     onPaired: @escaping @Sendable (String?) -> Void,
                     onRejected: @escaping @Sendable (String) -> Void,
                     onLobby: @escaping @Sendable (RelayServerFrame) -> Void,
@@ -186,7 +186,7 @@ final class PeerLink: @unchecked Sendable {
                 continue                // 로비 연결은 계속 여기서 받는다
             }
             if frame.isRegistered {
-                onRelayRegistered?()
+                onRelayRegistered?(frame.cid)
                 continue                // 호스트는 짝 맞춤을, 로비는 스냅샷을 더 기다린다
             }
             if frame.isPaired {

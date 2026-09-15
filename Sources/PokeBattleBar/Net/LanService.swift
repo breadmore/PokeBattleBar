@@ -124,7 +124,7 @@ final class RoomHost: @unchecked Sendable {
         setGuest(link)
         link.startRelay(
             hello: RelayHello(role: .host, room: relayRoom, name: hostName, secret: relaySecret),
-            onRegistered: { [weak self] in
+            onRegistered: { [weak self] _ in
                 guard let self, self.isCurrentGuest(link) else { return }
                 self.onRelayRegistered?()
             },

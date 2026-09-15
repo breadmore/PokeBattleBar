@@ -88,6 +88,23 @@ class Room:
         self.released = asyncio.Event()       # 방장 감시를 접었다 (파이프가 읽어도 된다)
 
 
+def describe_junk(header):
+    """길이 앞머리로 온 4바이트가 사실 뭐였는지 짐작해서 덧붙인다.
+
+    중계 포트를 브라우저로 여는 일이 잦다 — 상태 화면은 다른 포트다.
+    터널을 켜두면 인터넷 스캐너도 긁고 가는데, bore 가 로컬로 다시
+    연결하므로 **출처가 127.0.0.1 로 보인다.** 그래서 주소만 봐서는
+    내가 연 브라우저인지 남의 스캔인지 구분할 수 없다.
+    """
+    if header[:3] in (b"GET", b"PUT") or header[:4] in (b"POST", b"HEAD", b"OPTI"):
+        return " — HTTP 요청입니다. 상태 화면은 --web-port 쪽입니다"
+    if header[0] == 0x16:
+        return " — TLS(https) 접속입니다. 중계 포트는 https 를 받지 않습니다"
+    if header[:4] == b"SSH-":
+        return " — SSH 접속입니다"
+    return ""
+
+
 class LobbyClient:
     """중계 로비에 상주하는 사람 하나.
 
@@ -97,9 +114,12 @@ class LobbyClient:
     로비만 관리한다.
     """
 
-    __slots__ = ("name", "status", "room", "writer", "lock", "joined")
+    __slots__ = ("cid", "name", "status", "room", "writer", "lock", "joined")
 
-    def __init__(self, name, writer):
+    def __init__(self, cid, name, writer):
+        # 이름은 사람이 정하는 것이라 겹친다. 겹치면 로비 목록에서 엉뚱한
+        # 사람이 사라지고 초대도 잘못 간다. 그래서 연결마다 번호를 붙인다.
+        self.cid = cid
         self.name = name
         self.status = "free"
         self.room = None
@@ -129,7 +149,9 @@ class Relay:
         header = await reader.readexactly(4)
         (length,) = struct.unpack(">I", header)
         if length > MAX_HELLO:
-            raise ValueError(f"프레임이 너무 큽니다 ({length})")
+            # 길이 앞머리 자리에 다른 프로토콜의 첫 바이트가 들어온 것이다.
+            # 그냥 숫자만 찍으면 무슨 일인지 알 수가 없어서 풀어서 적는다.
+            raise ValueError(f"프레임이 너무 큽니다 ({length}){describe_junk(header)}")
         return json.loads(await reader.readexactly(length))
 
     @staticmethod
@@ -190,7 +212,7 @@ class Relay:
         return {
             "type": "lobby",
             "peers": [
-                {"name": c.name, "status": c.status, "room": c.room}
+                {"cid": c.cid, "name": c.name, "status": c.status, "room": c.room}
                 for c in sorted(self.lobby.values(), key=lambda c: c.joined)
             ],
             "rooms": [
@@ -229,12 +251,24 @@ class Relay:
             self.sweep()
             await self.broadcast_lobby()
 
-    def find_lobby(self, name):
-        """이름으로 로비 상주자를 찾는다 (같은 이름이면 먼저 들어온 사람)."""
+    def find_lobby(self, name, cid=None):
+        """로비 상주자를 찾는다.
+
+        번호(cid)가 오면 그걸 쓴다 — 이름은 겹치기 때문이다. 번호를 모르는
+        구버전 앱은 이름으로 찾고, 그때는 같은 이름 중 먼저 들어온 사람이다.
+        """
+        if cid is not None:
+            return self.lobby.get(cid)
         for client in sorted(self.lobby.values(), key=lambda c: c.joined):
             if client.name == name:
                 return client
         return None
+
+    @staticmethod
+    def wanted_cid(frame):
+        """초대·거절 프레임에 실린 상대 번호. 구버전 앱은 안 보낸다."""
+        raw = frame.get("to_cid")
+        return raw if isinstance(raw, int) else None
 
     async def forward_invite(self, sender, frame):
         """초대를 전달한다. 중계기는 방이 실제로 있는지만 확인한다.
@@ -252,7 +286,7 @@ class Relay:
         if room not in self.rooms:
             await fail("방이 열려 있지 않습니다")
             return
-        target = self.find_lobby(target_name)
+        target = self.find_lobby(target_name, self.wanted_cid(frame))
         if target is None:
             await fail("상대가 중계 로비에 없습니다")
             return
@@ -263,7 +297,7 @@ class Relay:
             await fail("상대가 지금 배틀 중이거나 방을 열어둔 상태입니다")
             return
 
-        ok = await self.send_to(target, {"type": "invite",
+        ok = await self.send_to(target, {"type": "invite", "peer_cid": sender.cid,
                                          "peer": sender.name, "room": room})
         if ok:
             log.info("초대 전달 %s → %s (방 %s)", sender.name, target_name, room)
@@ -271,7 +305,7 @@ class Relay:
             await fail("상대에게 전달하지 못했습니다")
 
     async def forward_decline(self, sender, frame):
-        target = self.find_lobby(str(frame.get("to", ""))[:64])
+        target = self.find_lobby(str(frame.get("to", ""))[:64], self.wanted_cid(frame))
         if target is None:
             return
         await self.send_to(target, {"type": "declined", "peer": sender.name})
@@ -279,12 +313,12 @@ class Relay:
     async def serve_lobby(self, name, reader, writer, peer):
         cid = self.next_id
         self.next_id += 1
-        client = LobbyClient(name, writer)
+        client = LobbyClient(cid, name, writer)
         self.lobby[cid] = client
         log.info("로비 입장 %s from %s — 현재 %d명", name, peer, len(self.lobby))
 
         try:
-            await self.write_frame(writer, {"ok": True, "registered": True})
+            await self.write_frame(writer, {"ok": True, "registered": True, "cid": cid})
         except (OSError, ConnectionError):
             self.lobby.pop(cid, None)
             writer.close()

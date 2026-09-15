@@ -120,6 +120,8 @@ final class AppModel {
     var relayLobbyConnected = false
     /// 중계 로비에 있는 사람들 (나는 제외되어 온다)
     var relayPeers: [RelayLobbySnapshot.Peer] = []
+    /// 중계기가 붙여준 내 번호. 로비 목록에서 나를 걸러내는 데 쓴다.
+    var myRelayCid: Int?
     /// 중계기에서 상대를 기다리는 방들
     var relayRooms: [RelayLobbySnapshot.Room] = []
     var relayLobbyStatus: String?
@@ -147,12 +149,25 @@ final class AppModel {
                 }
             }
         }
+        relayLobby.onMyCid = { [weak self] cid in
+            Task { @MainActor in self?.myRelayCid = cid }
+        }
         relayLobby.onSnapshot = { [weak self] snap in
             Task { @MainActor in
                 guard let self else { return }
-                // 내 이름은 목록에서 뺀다 (중계기는 이름으로만 구분한다)
-                self.relayPeers = snap.peers.filter { $0.name != self.playerName }
-                self.relayRooms = snap.rooms.filter { $0.host != self.playerName }
+                // 목록에서 나를 뺀다. 번호가 있으면 번호로 — 이름은 겹치므로
+                // 이름으로 거르면 동명이인이 같이 사라진다. 구버전 중계기는
+                // 번호를 안 주니 그때만 이름으로 거른다.
+                self.relayPeers = snap.peers.filter { peer in
+                    if let mine = self.myRelayCid, let theirs = peer.cid {
+                        return theirs != mine
+                    }
+                    return peer.name != self.playerName
+                }
+                // 내 방도 뺀다 — 방 코드가 있으니 이름을 볼 이유가 없다
+                self.relayRooms = snap.rooms.filter {
+                    !(self.hostingViaRelay && $0.code == self.relayRoom)
+                }
             }
         }
         relayLobby.onRejected = { [weak self] why in
@@ -163,15 +178,16 @@ final class AppModel {
                 self.errorMessage = "중계 로비 접속이 거절됐습니다: \(why)"
             }
         }
-        relayLobby.onInvite = { [weak self] from, room in
+        relayLobby.onInvite = { [weak self] from, fromCid, room in
             Task { @MainActor in
                 guard let self else { return }
                 // 배틀 중이면 자동으로 거절한다 (초대창이 배틀을 가리면 안 된다)
                 guard self.screen == .lobby else {
-                    self.relayLobby.decline(to: from)
+                    self.relayLobby.decline(to: from, cid: fromCid)
                     return
                 }
-                self.incomingInvite = Invite(from: from, roomName: room, viaRelay: true)
+                self.incomingInvite = Invite(from: from, fromCid: fromCid,
+                                             roomName: room, viaRelay: true)
                 self.notify(.invite, "\(from) 님이 중계 서버에서 초대했습니다 (방 \(room))")
             }
         }
@@ -228,6 +244,8 @@ final class AppModel {
     var lobbyPeers: [LobbyPeer] = []
     struct Invite: Equatable, Sendable {
         var from: String
+        /// 중계 로비에서 온 초대면 보낸 사람의 번호 (이름이 겹쳐도 맞게 회신한다)
+        var fromCid: Int?
         var roomName: String
         /// 중계 서버를 거쳐 온 초대인가.
         ///
@@ -1682,7 +1700,7 @@ final class AppModel {
         guard let inv = incomingInvite else { return }
         incomingInvite = nil
         if inv.viaRelay {
-            relayLobby.decline(to: inv.from)
+            relayLobby.decline(to: inv.from, cid: inv.fromCid)
         } else {
             presence.decline(from: inv.from, myName: playerName)
         }
@@ -1704,7 +1722,7 @@ final class AppModel {
             return
         }
         invitesSent.insert(peer.name)
-        relayLobby.sendInvite(to: peer.name, room: relayRoom)
+        relayLobby.sendInvite(to: peer.name, cid: peer.cid, room: relayRoom)
         status = "\(peer.name) 님에게 초대를 보냈습니다 — 수락을 기다립니다"
     }
 
@@ -2045,7 +2063,7 @@ final class AppModel {
         link.startRelay(
             hello: RelayHello(role: .guest, room: code, name: playerName,
                               secret: relaySecret.isEmpty ? nil : relaySecret),
-            onRegistered: {},
+            onRegistered: { _ in },
             onPaired: { [weak self] peer in
                 Task { @MainActor in
                     guard let self else { return }

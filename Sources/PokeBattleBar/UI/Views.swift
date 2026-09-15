@@ -1264,7 +1264,7 @@ struct RelayLobbyView: View {
                 Text(model.relayLobbyConnected ? "중계 로비 접속됨" : "중계 로비 접속 안 됨")
                     .font(.caption.bold())
                 if model.relayLobbyConnected {
-                    Text("\(model.relayPeers.count)명 · 열린 방 \(model.relayRooms.count)개")
+                    Text("다른 사람 \(model.relayPeers.count)명 · 열린 방 \(model.relayRooms.count)개")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()

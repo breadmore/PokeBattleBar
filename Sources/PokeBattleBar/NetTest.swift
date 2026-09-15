@@ -336,7 +336,7 @@ enum NetTest {
         let guest = PeerLink(to: endpoint)
         guest.startRelay(
             hello: RelayHello(role: .guest, room: "T1", name: "중계게스트", secret: nil),
-            onRegistered: {},
+            onRegistered: { _ in },
             onPaired: { _ in guest.send(.chat(from: "게스트", text: "올라간다")) },
             onRejected: { box.errors.append("거절: \($0)") },
             onMessage: { msg in if case .chat = msg { box.guestGotBegan = msg } },

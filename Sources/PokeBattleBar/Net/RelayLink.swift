@@ -54,12 +54,15 @@ struct RelayLobbySnapshot: Codable, Sendable {
     var rooms: [Room] = []
 
     struct Peer: Codable, Sendable, Identifiable, Equatable {
+        /// 중계기가 연결마다 붙이는 번호. 구버전 중계기는 안 보낸다.
+        var cid: Int?
         var name: String
         var status: String
         /// 방을 열어둔 사람이면 그 방 코드
         var room: String?
 
-        var id: String { name }
+        /// 이름은 사람이 정하는 것이라 겹친다 — 번호가 있으면 그걸 쓴다
+        var id: String { cid.map(String.init) ?? name }
         var state: PeerStatus { PeerStatus(rawValue: status) ?? .free }
     }
 
@@ -81,16 +84,24 @@ struct RelayClientFrame: Codable, Sendable {
     var room: String?
     /// 초대·거절을 받을 상대 이름
     var to: String?
+    /// 그 상대의 번호. 이름이 겹쳐도 엉뚱한 사람에게 가지 않는다.
+    /// 구버전 중계기는 이 칸을 무시하고 이름으로 찾는다.
+    var toCid: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case type, status, room, to
+        case toCid = "to_cid"
+    }
 
     static func status(_ s: PeerStatus, room: String?) -> RelayClientFrame {
         RelayClientFrame(type: "status", status: s.rawValue, room: room)
     }
     static let ping = RelayClientFrame(type: "ping")
-    static func invite(to peer: String, room: String) -> RelayClientFrame {
-        RelayClientFrame(type: "invite", room: room, to: peer)
+    static func invite(to peer: String, cid: Int?, room: String) -> RelayClientFrame {
+        RelayClientFrame(type: "invite", room: room, to: peer, toCid: cid)
     }
-    static func decline(to peer: String) -> RelayClientFrame {
-        RelayClientFrame(type: "decline", to: peer)
+    static func decline(to peer: String, cid: Int?) -> RelayClientFrame {
+        RelayClientFrame(type: "decline", to: peer, toCid: cid)
     }
 }
 
@@ -116,6 +127,15 @@ struct RelayServerFrame: Codable, Sendable {
     var room: String?
     var peers: [RelayLobbySnapshot.Peer]?
     var rooms: [RelayLobbySnapshot.Room]?
+    /// 등록 응답에 실려오는 **내** 번호. 로비 목록에서 나를 걸러내는 데 쓴다.
+    var cid: Int?
+    /// 초대를 보낸 사람의 번호 (거절을 되돌려 보낼 때 쓴다)
+    var peerCid: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case type, ok, reason, registered, paired, peer, room, peers, rooms, cid
+        case peerCid = "peer_cid"
+    }
 
     var isLobbyUpdate: Bool { type == "lobby" }
     var isRejection: Bool { ok == false }

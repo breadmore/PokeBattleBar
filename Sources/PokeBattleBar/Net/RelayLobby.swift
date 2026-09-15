@@ -21,6 +21,9 @@ final class RelayLobby: @unchecked Sendable {
     /// 지금 붙어 있는 중계 서버 (재접속에 쓴다)
     private var endpoint: NWEndpoint?
     private var displayName = ""
+    /// 중계기가 붙여준 **내** 번호. 로비 목록에서 나를 걸러내는 데 쓴다.
+    /// 구버전 중계기는 안 보내주므로 nil 일 수 있다.
+    private var _myCid: Int?
     private var secret: String?
     private var lastStatus: PeerStatus = .free
     private var lastRoom: String?
@@ -40,13 +43,15 @@ final class RelayLobby: @unchecked Sendable {
     var onConnectedChanged: (@Sendable (Bool) -> Void)?
     /// 중계기가 거절했다 (암호 불일치 등) — 재접속하지 않는다
     var onRejected: (@Sendable (String) -> Void)?
-    /// 초대를 받았다 (보낸 사람, 방 코드)
-    var onInvite: (@Sendable (String, String) -> Void)?
+    /// 초대를 받았다 (보낸 사람, 그 사람의 번호, 방 코드)
+    var onInvite: (@Sendable (String, Int?, String) -> Void)?
     /// 내가 보낸 초대를 상대가 거절했다
     var onDeclined: (@Sendable (String) -> Void)?
     /// 초대를 전달하지 못했다 (상대가 나갔거나 방이 없다)
     var onInviteFailed: (@Sendable (String, String) -> Void)?
     var onError: (@Sendable (String) -> Void)?
+    /// 중계기가 붙여준 내 번호를 알려준다 (등록 직후)
+    var onMyCid: (@Sendable (Int?) -> Void)?
 
     // MARK: 접속
 
@@ -74,8 +79,10 @@ final class RelayLobby: @unchecked Sendable {
         setLink(link)
         link.startRelay(
             hello: RelayHello(role: .lobby, room: "", name: name, secret: secret),
-            onRegistered: { [weak self] in
+            onRegistered: { [weak self] cid in
                 guard let self, self.isCurrentLink(link) else { return }
+                self.lock.lock(); self._myCid = cid; self.lock.unlock()
+                self.onMyCid?(cid)
                 self.setConnected(true)
                 // 붙자마자 지금 상태를 알려준다 (배틀 중이면 초대 대상이 아니다)
                 self.pushStatus()
@@ -96,7 +103,7 @@ final class RelayLobby: @unchecked Sendable {
                     self.onSnapshot?(frame.snapshot)
                 case "invite":
                     if let from = frame.peer, let room = frame.room {
-                        self.onInvite?(from, room)
+                        self.onInvite?(from, frame.peerCid, room)
                     }
                 case "declined":
                     if let who = frame.peer { self.onDeclined?(who) }
@@ -193,15 +200,18 @@ final class RelayLobby: @unchecked Sendable {
     // 수락하면 방 코드로 들어가면 되므로 별도의 "수락" 메시지가 필요 없다.
 
     /// 중계 로비의 상대를 내 방으로 부른다. 방을 먼저 열어야 한다.
-    func sendInvite(to peer: String, room: String) {
+    ///
+    /// 번호를 같이 보내는 이유는 이름이 겹치기 때문이다 — 이름만 보내면
+    /// 중계기가 같은 이름 중 먼저 들어온 사람에게 보낸다.
+    func sendInvite(to peer: String, cid: Int?, room: String) {
         guard let link = currentLink else { return }
-        link.sendRelay(.invite(to: peer, room: room))
+        link.sendRelay(.invite(to: peer, cid: cid, room: room))
     }
 
     /// 초대를 거절한다고 알린다 (상대가 계속 기다리지 않게)
-    func decline(to peer: String) {
+    func decline(to peer: String, cid: Int?) {
         guard let link = currentLink else { return }
-        link.sendRelay(.decline(to: peer))
+        link.sendRelay(.decline(to: peer, cid: cid))
     }
 
     private var currentLink: PeerLink? {

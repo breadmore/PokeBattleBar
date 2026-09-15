@@ -163,7 +163,7 @@ enum RelayBattleProbe {
         link.startRelay(
             hello: RelayHello(role: .guest, room: room, name: "relaybattle-guest",
                               secret: secret),
-            onRegistered: {},
+            onRegistered: { _ in },
             onPaired: { _ in
                 Task { @MainActor in
                     print("[\(tag)] 짝 성사 — 팀을 보냅니다 (\(team.count)마리)")

@@ -132,7 +132,7 @@ enum LanProbe {
                 let link = PeerLink(to: endpoint)
                 link.startRelay(
                     hello: RelayHello(role: .guest, room: room, name: "relayguest", secret: secret),
-                    onRegistered: {},
+                    onRegistered: { _ in },
                     onPaired: { peer in
                         print("[\(tag)] 짝 성사 — 상대 \(peer ?? "?")")
                         Task { await box.sawPeer() }
@@ -208,9 +208,10 @@ enum LanProbe {
             let lobby = RelayLobby()
             lobby.onRejected = { print("  ✗ 거절: \($0)") }
             lobby.onError = { print("  · \($0)") }
-            lobby.onInvite = { from, room in
-                print("[\(tag)] 초대 받음: \(from) → 방 \(room)")
-                Task { await seen.got(from: from, room: room) }
+            lobby.onSnapshot = { snap in Task { await seen.note(snap.peers) } }
+            lobby.onInvite = { from, fromCid, room in
+                print("[\(tag)] 초대 받음: \(from)#\(fromCid.map(String.init) ?? "?") → 방 \(room)")
+                Task { await seen.got(from: from, cid: fromCid, room: room) }
             }
             lobby.onDeclined = { who in
                 print("[\(tag)] 거절 회신: \(who)")
@@ -238,14 +239,23 @@ enum LanProbe {
             try? await Task.sleep(for: .seconds(min(5, seconds)))
             if tag == "A" {
                 print("[A] probe-B 에게 초대 전송 (방 \(room))")
-                lobby.sendInvite(to: "probe-B", room: room)
+                lobby.sendInvite(to: "probe-B", cid: await seen.cidOf("probe-B"), room: room)
             }
             try? await Task.sleep(for: .seconds(seconds))
 
             // B 는 받은 초대를 거절해서 회신 경로까지 확인한다
             if tag == "B", let got = await seen.invite {
-                lobby.decline(to: got.0)
+                lobby.decline(to: got.name, cid: got.cid)
                 try? await Task.sleep(for: .seconds(2))
+            }
+            // **A 는 그 거절이 돌아올 때까지 기다린다.** 둘은 같은 순간에
+            // 깨어나므로, 여기서 바로 끊으면 B 가 보내는 찰나에 A 가 연결을
+            // 닫아 회신을 영영 못 본다.
+            if tag == "A" {
+                for _ in 0..<40 {
+                    if await seen.settled { break }
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
             }
             lobby.stop()
             host?.stop()
@@ -262,7 +272,7 @@ enum LanProbe {
                 return declined != nil
             } else {
                 let got = await seen.invite
-                print(got != nil ? "  ✓ 초대를 받았다 (\(got!.0) → 방 \(got!.1))"
+                print(got != nil ? "  ✓ 초대를 받았다 (\(got!.name) → 방 \(got!.room))"
                                  : "  ✗ 초대를 받지 못했다")
                 return got != nil
             }
@@ -275,11 +285,19 @@ enum LanProbe {
     }
 
     private actor SeenInvite {
-        var invite: (String, String)?
+        var invite: (name: String, cid: Int?, room: String)?
         var declinedBy: String?
         var failure: String?
+        /// 스냅샷에서 본 사람들의 번호 — 이름이 아니라 번호로 초대해야 한다
+        private var cids: [String: Int] = [:]
 
-        func got(from: String, room: String) { invite = (from, room) }
+        func got(from: String, cid: Int?, room: String) { invite = (from, cid, room) }
+        func note(_ peers: [RelayLobbySnapshot.Peer]) {
+            for p in peers where p.cid != nil { cids[p.name] = p.cid }
+        }
+        func cidOf(_ name: String) -> Int? { cids[name] }
+        /// 회신(거절 또는 전달 실패)이 왔는가
+        var settled: Bool { declinedBy != nil || failure != nil }
         func declined(_ who: String) { declinedBy = who }
         func failed(_ why: String) { failure = why }
     }
