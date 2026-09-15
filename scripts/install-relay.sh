@@ -10,12 +10,14 @@
 #   bash install-relay.sh --no-secret          암호 없이 (같은 집 안에서만)
 #   bash install-relay.sh --port 47474 --web-port 47475
 #   bash install-relay.sh --no-auto-open       길 트는 것을 직접 하겠다
-#   bash install-relay.sh --tunnel <ngrok토큰>  **라우터를 못 건드릴 때**
+#   bash install-relay.sh --tunnel             **라우터를 못 건드릴 때**
+#   bash install-relay.sh --tunnel-ngrok <토큰>  ngrok 계정이 이미 있다면
 #
 # 사무실 라우터처럼 포트포워딩을 넣을 수 없으면 --tunnel 을 쓰세요.
 # 이 기계가 밖으로 나가는 연결만으로 공개 주소를 하나 받아옵니다.
 # 참가자는 아무것도 설치하지 않아도 됩니다 (Tailscale 과 다른 점입니다).
-#   토큰은 https://dashboard.ngrok.com 에서 무료로 받습니다.
+#   bore(https://github.com/ekzhang/bore)를 씁니다 — 가입도 토큰도 없습니다.
+#   공개 중계는 bore.pub 이며, 오가는 바이트는 암호화되지 않습니다.
 #
 # **밖에서 붙을 수 있게 하는 것까지 알아서 합니다.**
 #   1) 방화벽(ufw)이 켜져 있으면 포트를 엽니다
@@ -29,7 +31,10 @@ WEB_PORT=47475
 SECRET=""
 NO_SECRET=""
 AUTO_OPEN=1
+TUNNEL=""
 TUNNEL_TOKEN=""
+BORE_VERSION=v0.6.0
+BORE_SERVER=bore.pub
 SERVICE=pokebattle-relay
 TUNNEL_SERVICE=pokebattle-tunnel
 
@@ -38,10 +43,11 @@ while [ $# -gt 0 ]; do
         --secret)   SECRET="${2:-}"; shift 2 ;;
         --no-secret) NO_SECRET=1; shift ;;
         --no-auto-open) AUTO_OPEN=""; shift ;;
-        --tunnel)   TUNNEL_TOKEN="${2:-}"; shift 2 ;;
+        --tunnel)   TUNNEL=1; shift ;;
+        --tunnel-ngrok) TUNNEL_TOKEN="${2:-}"; shift 2 ;;
         --port)     PORT="${2:-}"; shift 2 ;;
         --web-port) WEB_PORT="${2:-}"; shift 2 ;;
-        -h|--help)  sed -n '2,14p' "$0"; exit 0 ;;
+        -h|--help)  sed -n '2,15p' "$0"; exit 0 ;;
         *) echo "모르는 옵션: $1" >&2; exit 1 ;;
     esac
 done
@@ -67,13 +73,19 @@ sudo chmod 0755 /usr/local/bin/pokebattle-relay-help
 
 # 지금 동료에게 줄 주소를 한 줄로 보여준다.
 #
-# 터널(무료 요금제)은 다시 시작할 때마다 주소가 바뀐다. 그때마다 설치를
-# 다시 돌리게 할 수는 없으니, 현재 값을 읽는 명령을 따로 둔다.
+# 터널은 고정 포트를 못 받으면 다시 시작할 때 주소가 바뀐다. 그때마다
+# 설치를 다시 돌리게 할 수는 없으니, 현재 값을 읽는 명령을 따로 둔다.
 echo "==> 주소 확인 명령 설치 (pokebattle-relay-address)"
 sudo tee /usr/local/bin/pokebattle-relay-address >/dev/null <<'ADDREOF'
 #!/bin/bash
 # 지금 동료에게 알려줄 중계 주소를 보여줍니다.
-TUN=$(curl -s --max-time 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null       | grep -o '"public_url":"tcp://[^"]*"' | head -1       | sed 's|.*tcp://||; s|"$||')
+# bore 는 주소를 로그로만 알려준다 — 서비스 로그에서 마지막 값을 읽는다
+TUN=$(journalctl -u pokebattle-tunnel -n 200 --no-pager 2>/dev/null \
+      | grep -o 'listening at [^ ]*' | tail -1 | awk '{print $3}')
+if [ -z "$TUN" ]; then
+    TUN=$(curl -s --max-time 3 http://127.0.0.1:4040/api/tunnels 2>/dev/null \
+          | grep -o '"public_url":"tcp://[^"]*"' | head -1 | sed 's|.*tcp://||; s|"$||')
+fi
 if [ -n "$TUN" ]; then
     echo "중계 주소: $TUN      (터널 — 다시 시작하면 바뀝니다)"
     exit 0
@@ -252,8 +264,92 @@ if [ -n "$AUTO_OPEN" ]; then
     #    이 기계가 밖으로 나가는 연결만으로 공개 주소를 하나 받아온다.
     #    Tailscale 과 달리 **참가자는 아무것도 설치하지 않아도 된다** —
     #    받은 host:port 를 앱에 적기만 하면 된다.
-    if [ -n "$TUNNEL_TOKEN" ]; then
+    if [ -n "$TUNNEL" ] || [ -n "$TUNNEL_TOKEN" ]; then
         echo "    터널을 세웁니다 (라우터를 건드리지 않습니다)"
+    fi
+
+    # 4-1) bore — 가입도 토큰도 없다. 기본값이다.
+    if [ -n "$TUNNEL" ]; then
+        if ! command -v bore >/dev/null; then
+            case "$(uname -m)" in
+                aarch64|arm64) BT=aarch64-unknown-linux-musl ;;
+                armv7l)        BT=armv7-unknown-linux-musleabihf ;;
+                armv6l)        BT=arm-unknown-linux-musleabi ;;
+                x86_64)        BT=x86_64-unknown-linux-musl ;;
+                i686|i386)     BT=i686-unknown-linux-musl ;;
+                *)             BT="" ;;
+            esac
+            if [ -n "$BT" ]; then
+                # musl 정적 바이너리라 파이의 libc 판을 타지 않는다
+                BURL="https://github.com/ekzhang/bore/releases/download"
+                BURL="$BURL/$BORE_VERSION/bore-$BORE_VERSION-$BT.tar.gz"
+                curl -fsSL --max-time 120 "$BURL" -o /tmp/bore.tgz 2>/dev/null \
+                    && sudo tar xzf /tmp/bore.tgz -C /usr/local/bin bore 2>/dev/null \
+                    && sudo chmod 0755 /usr/local/bin/bore
+                rm -f /tmp/bore.tgz
+            else
+                note "이 기계의 아키텍처($(uname -m))용 bore 가 없습니다"
+            fi
+        fi
+
+        if command -v bore >/dev/null; then
+            # **같은 포트를 먼저 달라고 한다.** 받아지면 파이를 껐다 켜도
+            # 동료에게 준 주소가 그대로다. 남이 쓰고 있으면 bore 가 곧바로
+            # 죽으므로, 그때는 아무 포트나 받는 쪽으로 넘어간다.
+            sudo tee /usr/local/bin/pokebattle-tunnel-run >/dev/null <<EOF
+#!/bin/bash
+START=\$(date +%s)
+$(command -v bore) local $PORT --to $BORE_SERVER --port $PORT
+# 한참 붙어 있다가 끊긴 거라면 **같은 포트로 다시** 시도해야 한다.
+# 여기서 그냥 아래로 내려가면 주소가 조용히 바뀐다.
+[ \$(( \$(date +%s) - START )) -gt 30 ] && exit 1
+echo "고정 포트 $PORT 를 못 받았습니다 — 아무 포트나 받습니다" >&2
+exec $(command -v bore) local $PORT --to $BORE_SERVER
+EOF
+            sudo chmod 0755 /usr/local/bin/pokebattle-tunnel-run
+
+            sudo tee /etc/systemd/system/$TUNNEL_SERVICE.service >/dev/null <<EOF
+[Unit]
+Description=PokeBattleBar relay tunnel (bore)
+After=network-online.target $SERVICE.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pokebattle-tunnel-run
+# bore 는 주소를 로그로만 알려준다 — 레벨을 낮추면 주소를 못 읽는다
+Environment=RUST_LOG=info
+Restart=always
+RestartSec=5
+User=$(id -un)
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now $TUNNEL_SERVICE >/dev/null 2>&1
+            echo "    터널이 자리잡을 때까지 기다립니다…"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+                sleep 2
+                TUN=$(journalctl -u $TUNNEL_SERVICE -n 200 --no-pager 2>/dev/null \
+                      | grep -o 'listening at [^ ]*' | tail -1 | awk '{print $3}')
+                [ -n "$TUN" ] && break
+            done
+            if [ -n "$TUN" ]; then
+                OPENED="$TUN"
+                echo "    ✓ 터널이 열렸습니다 — ${TUN}"
+            else
+                note "터널 주소를 읽지 못했습니다. 아래로 확인해 보세요:"
+                note "    sudo systemctl status ${TUNNEL_SERVICE}"
+                note "    journalctl -u ${TUNNEL_SERVICE} -n 50"
+            fi
+        else
+            note "bore 설치에 실패했습니다. 직접 받아 /usr/local/bin 에 두세요:"
+            note "    https://github.com/ekzhang/bore/releases"
+        fi
+    fi
+
+    # 4-2) ngrok — 계정이 이미 있는 사람만
+    if [ -n "$TUNNEL_TOKEN" ]; then
         if ! command -v ngrok >/dev/null; then
             ARCH=$(uname -m)
             case "$ARCH" in
@@ -274,7 +370,7 @@ if [ -n "$AUTO_OPEN" ]; then
             # 터널도 서비스로 띄운다 — 파이를 껐다 켜도 살아 있어야 한다
             sudo tee /etc/systemd/system/$TUNNEL_SERVICE.service >/dev/null <<EOF
 [Unit]
-Description=PokeBattleBar relay tunnel
+Description=PokeBattleBar relay tunnel (ngrok)
 After=network-online.target $SERVICE.service
 Wants=network-online.target
 
@@ -363,8 +459,8 @@ cgnat)
    **포트포워딩으로는 밖에서 붙을 수 없습니다** — 그 주소는 통신사 것입니다.
    아래 중 하나를 쓰세요:
      · 터널      — 이 기계에서만 설정하면 됩니다. **참가자는 설치 불필요**
-                   bash install-relay.sh --tunnel <ngrok토큰>
-                   토큰은 https://dashboard.ngrok.com 에서 무료
+                   bash install-relay.sh --tunnel
+                   가입도 토큰도 필요 없습니다
      · Tailscale — 참가자 전원에게도 깔아야 합니다 (대신 주소가 안 바뀝니다)
      · 공인 주소가 있는 서버에 중계기를 올린다 (가장 안정적)"
   ;;
@@ -390,7 +486,7 @@ $([ -n "$NOTES" ] && echo "
   ★ 이 안내를 다시 보려면      pokebattle-relay-help
     (또는  pokebattle-relay help )
 
-$([ -n "$TUNNEL_TOKEN" ] && echo "  ⚠ 터널 주소는 다시 시작할 때마다 바뀝니다.
+$([ -n "$TUNNEL$TUNNEL_TOKEN" ] && echo "  ⚠ 터널 주소는 다시 시작할 때 바뀔 수 있습니다.
     바뀐 뒤에는  pokebattle-relay-address  로 새 주소를 확인하세요.
 ")
   상태 보기   sudo systemctl status ${SERVICE}
