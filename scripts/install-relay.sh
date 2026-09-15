@@ -282,7 +282,7 @@ Wants=network-online.target
 ExecStart=$(command -v ngrok) tcp $PORT --log stdout
 Restart=always
 RestartSec=5
-User=$USER
+User=$(id -un)
 
 [Install]
 WantedBy=multi-user.target
